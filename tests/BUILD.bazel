@@ -1,0 +1,8 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# Header-only std-only test harness, included as "tests/check.hpp".
+cc_library(
+    name = "check",
+    hdrs = ["check.hpp"],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,8 @@
+# Bazel convenience symlinks (bazel-bin, bazel-out, bazel-cppgpt, bazel-testlogs)
+/bazel-*
+
+# Per-user Bazel overrides (machine-local, never checked in)
+/user.bazelrc
+
+# MODULE.bazel.lock IS committed (pins transitive deps + registry hashes for
+# reproducible resolution) — do not ignore it.

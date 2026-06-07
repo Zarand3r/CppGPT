@@ -1,0 +1,45 @@
+# cppgpt — Bazel module (bzlmod).
+#
+# Hermetic build: Bazel itself is pinned in .bazelversion (fetched by bazelisk),
+# and the C/C++ toolchain is a pinned LLVM/Clang downloaded by toolchains_llvm —
+# NOT the system compiler. Nothing here links a third-party *runtime* library
+# into cppgpt; these are build-time inputs only (PLAN.md: "no external runtime
+# deps"). The default stdlib ("builtin-libc++") statically links the toolchain's
+# own libc++/libc++abi, so the shipped binary's only runtime deps are glibc
+# (libc/libm/libpthread) — see PLAN.md invariant 10.
+module(
+    name = "cppgpt",
+    version = "0.0.0",
+    compatibility_level = 1,
+)
+
+# Build-rule providers and platform constraints (not runtime deps).
+bazel_dep(name = "rules_cc", version = "0.2.19")
+bazel_dep(name = "platforms", version = "1.1.0")
+
+# Python rules for the oracle / dataset scripts (py_binary, py_test). These run
+# OUTSIDE the C++ binary — they emit .bin fixtures/data the C++ side consumes,
+# so they do not affect the shipped binary's runtime deps (invariant 10).
+bazel_dep(name = "rules_python", version = "1.5.1")
+
+# Hermetic LLVM/Clang toolchain (downloaded + pinned, not the host compiler).
+bazel_dep(name = "toolchains_llvm", version = "1.7.0")
+
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+llvm.toolchain(
+    llvm_version = "20.1.8",
+    # stdlib defaults to "builtin-libc++": the pinned toolchain's libc++,
+    # statically linked. Keeps the C++ runtime pinned with the compiler and
+    # sidesteps GCC-15 libstdc++ header incompatibilities with clang 20.
+)
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")
+
+# Hermetic Python interpreter (downloaded + pinned by rules_python, not system
+# python). is_default makes py_binary/py_test use it without per-target wiring.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    python_version = "3.12",
+    is_default = True,
+)

@@ -1,0 +1,3 @@
+# CLI tools (train, generate, bench, verify) land here from M1 onward.
+# Empty for now; the directory is part of the M0 skeleton.
+package(default_visibility = ["//visibility:private"])

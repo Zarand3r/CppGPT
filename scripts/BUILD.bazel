@@ -1,0 +1,17 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+
+# Python scripts run the PyTorch numerical oracle and dataset prep. They are NOT
+# linked into the C++ binary (PLAN.md invariant 10) — they generate .bin
+# fixtures/data that the C++ side consumes as plain files.
+
+py_binary(
+    name = "env_info",
+    srcs = ["env_info.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "env_test",
+    size = "small",
+    srcs = ["env_test.py"],
+)

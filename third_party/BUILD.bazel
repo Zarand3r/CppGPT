@@ -1,0 +1,4 @@
+# Intentionally empty. cppgpt links no third-party runtime libraries
+# (PLAN.md invariant 10). This package exists to make that discipline visible
+# and to give CI a stable target to assert emptiness against.
+package(default_visibility = ["//visibility:private"])

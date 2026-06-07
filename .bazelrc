@@ -1,0 +1,43 @@
+# cppgpt — Bazel configuration.
+
+# bzlmod only (Bazel 9 default; stated explicitly so a stray WORKSPACE is ignored).
+common --noenable_workspace
+
+# Language standard per PLAN.md (C++23 — for std::expected, used by Result<T,E>).
+build --cxxopt=-std=c++23
+build --host_cxxopt=-std=c++23
+
+# Build hygiene (PLAN.md): warnings are errors. Safe to apply globally because
+# the repo compiles no third-party C++ sources — rules_cc / toolchains_llvm
+# provide prebuilt inputs, and toolchain/libc++ headers are treated as system
+# headers (so warnings there are suppressed).
+build --cxxopt=-Wall
+build --cxxopt=-Wextra
+build --cxxopt=-Wpedantic
+build --cxxopt=-Werror
+
+# --- config=release: optimized, PLAN.md "-O3 -march=native". ---
+build:release --compilation_mode=opt
+build:release --cxxopt=-O3
+build:release --cxxopt=-march=native
+
+# --- config=dev: PLAN.md "-O1 -g -fsanitize=address,undefined". ---
+build:dev --compilation_mode=fastbuild
+build:dev --cxxopt=-O1
+build:dev --cxxopt=-g
+build:dev --cxxopt=-fno-omit-frame-pointer
+build:dev --cxxopt=-fsanitize=address,undefined
+build:dev --linkopt=-fsanitize=address,undefined
+# Disable UBSan's vptr check: it is triggered inside libc++'s <format>/<locale>
+# polymorphic facets, needs RTTI + the standalone runtime (unlinked under the
+# hermetic toolchain), and catches nothing in our (polymorphism-free) code.
+build:dev --cxxopt=-fno-sanitize=vptr
+# Make sanitizer findings fatal so tests actually fail on ASan/UBSan hits.
+test:dev --test_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+test:dev --test_env=ASAN_OPTIONS=halt_on_error=1
+
+# Readable test output.
+test --test_output=errors
+
+# Per-user machine-local overrides (git-ignored), if present.
+try-import %workspace%/user.bazelrc

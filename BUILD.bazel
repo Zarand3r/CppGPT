@@ -1,0 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# The cppgpt library. Small and multi-TU (not header-only): src/*.cpp compiled,
+# include/cppgpt/*.hpp exported as <cppgpt/...> via strip_include_prefix.
+# Warning flags (-Wall -Wextra -Wpedantic -Werror) come from .bazelrc globally.
+cc_library(
+    name = "cppgpt",
+    srcs = glob(["src/**/*.cpp"]),
+    hdrs = glob(["include/cppgpt/**/*.hpp"]),
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
