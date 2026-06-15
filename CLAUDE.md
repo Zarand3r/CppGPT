@@ -2,6 +2,8 @@
 
 This repository follows a set of skills that encode the engineering doctrine, workflow, and language-specific reference material to apply here. Load and apply them as described below — do not paraphrase the doctrine; invoke the skill so its full content is in context.
 
+These skills are provided by the **`eng-skills`** plugin (marketplace `Zarand3r/claude-skills`), wired to this repo in `.claude/settings.json`. They are auto-invoked by description and can also be called namespaced (e.g. `/eng-skills:elves`). When in doubt, start with `principal-production-engineer` — it is the single entry point that routes to the rest.
+
 ## Skills to use
 
 ### Core behavior
@@ -42,6 +44,16 @@ Skip the heavy workflow for small mechanical edits, but preserve the non-negotia
 Explore → Map → State invariants → State failure model → Plan minimal change → Implement narrowly → Verify → Self-review → Simplify → Report.
 
 For architecturally significant work, run the `strategic-engineering-planner` planning loop first and stop after the roadmap for review. Once the design is locked, use `implementation-plan` to produce an executable `IMPLEMENTATION_PLAN.md` before writing code. For overnight or unattended runs, drive execution through `elves` (batched plan execution) or `auto-research` (metric optimization loop).
+
+## Autonomous development harness
+
+Unattended/overnight development runs on **`elves`** (batched plan execution with test + PR-based review) or **`auto-research`** (metric-optimization loop). The frozen seam the human locks before walking away is `PLAN.md`/the design plus **`docs/constitution.md`** — the ungameable, human-authored deal-breakers the elves Judge checks every batch (numerical parity, determinism, no-runtime-deps, canonical-GPT-2 semantics, fail-fast). Before launching elves, these must hold:
+
+- **Verification gate** — `bazel test //...` must exit 0 on a clean checkout. Satisfied today (the `tests/unit` suite passes). The canonical-GPT-2 PyTorch fixture harness — the oracle the constitution's parity promises depend on — is the next thing each numerics batch must extend.
+- **git + `gh`** — elves' review loop runs on GitHub pull requests, so a pushable remote and an authenticated `gh` are required. **Not yet configured.**
+- **Run mode** — finite (default, build the plan then stop) vs open-ended (keep going until told to stop); chosen at planning time.
+
+The skills repo's `docs/AGENT_HARNESS.md` describes a future hook-enforced harness intended to replace elves; it is design-only and not implemented — use `elves` today.
 
 ## Before implementing nontrivial code — state briefly
 

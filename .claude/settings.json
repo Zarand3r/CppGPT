@@ -1,0 +1,14 @@
+{
+  "//": "Wires the eng-skills plugin (planning, production-engineering, cpp-internals, auto-research, elves harness) to this repo. When the repo folder is trusted, Claude Code installs the marketplace + plugin. Committed so the setup is portable and reproducible.",
+  "extraKnownMarketplaces": {
+    "claude-skills": {
+      "source": {
+        "source": "github",
+        "repo": "Zarand3r/claude-skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "eng-skills@claude-skills": true
+  }
+}
