@@ -19,6 +19,8 @@ These skills are provided by the **`eng-skills`** plugin (marketplace `Zarand3r/
 ### C++ reference
 
 - **`cpp-systems-internals`** — load when touching C++ runtime mechanics, API design, ownership vocabulary, data-oriented layout, codegen cost, hardware behavior, or OS-level memory (`mmap`/`madvise`/paging). This repo is C++; expect to load relevant reference files (`data_oriented_design.md`, `cpp_api_style.md`, `cpp_ownership_and_arenas.md`, `cache_lines_and_alignment.md`, `vtables_and_polymorphism.md`, `templates_and_codegen.md`, `memory_mapping.md`, etc.) for the specific task at hand.
+- **`data-oriented-design`** — load when performance is a first-class requirement — hot paths, real-time/embedded, low-latency, SIMD/vectorization, parsers, allocators, codecs, game/engine, HPC, or any "as fast as possible" task. Loads the model-the-computation doctrine, the optimization order, cache/SoA layout, branchless + SIMD + bit-packing idioms, and a measure-first verification protocol. Routes to `cpp-systems-internals` for C++ mechanism depth.
+- **`python-style`** — load when writing or reviewing Python where style/design matters — flattening logical branches (guard clauses, dispatch/`match` over `if`/`elif`), enums/`StrEnum` over magic strings, fail-fast validation (narrow `except`, no silent fallbacks), no optional imports (`try`/`except ImportError`) or redundancy, choosing abstractions (ABC vs `Protocol`, composition over inheritance). Load only the relevant topic file.
 
 ### Autonomous & measurement modes
 
