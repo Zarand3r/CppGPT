@@ -12,3 +12,14 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+cc_test(
+    name = "attn_block_test",
+    size = "small",
+    srcs = ["attn_block_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
