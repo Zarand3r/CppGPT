@@ -255,6 +255,69 @@ void attention_backward_cpu(float* dinp, float* datt, float* dpreatt, const floa
     }
 }
 
+void encoder_forward_cpu(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                         int T, int C, int V) noexcept {
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            const int token = tokens[static_cast<std::size_t>(b) * Tz + t];
+            ASSERT(token >= 0 && token < V);  // out-of-range token id -> fail fast
+            const float* tok_row = wte + static_cast<std::size_t>(token) * Cz;
+            const float* pos_row = wpe + static_cast<std::size_t>(t) * Cz;
+            float* out_bt = out + (static_cast<std::size_t>(b) * Tz + t) * Cz;
+            for (std::size_t c = 0; c < Cz; ++c) out_bt[c] = tok_row[c] + pos_row[c];
+        }
+    }
+}
+
+void encoder_backward_cpu(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                          int T, int C, int V) noexcept {
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            const int token = tokens[static_cast<std::size_t>(b) * Tz + t];
+            ASSERT(token >= 0 && token < V);
+            float* dtok_row = dwte + static_cast<std::size_t>(token) * Cz;
+            float* dpos_row = dwpe + static_cast<std::size_t>(t) * Cz;
+            const float* dout_bt = dout + (static_cast<std::size_t>(b) * Tz + t) * Cz;
+            for (std::size_t c = 0; c < Cz; ++c) {
+                dtok_row[c] += dout_bt[c];
+                dpos_row[c] += dout_bt[c];
+            }
+        }
+    }
+}
+
+void cross_entropy_forward_cpu(float* losses, const float* probs, const int* targets, int B, int T,
+                               int V) noexcept {
+    const std::size_t BT = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
+    const std::size_t Vz = static_cast<std::size_t>(V);
+    for (std::size_t bt = 0; bt < BT; ++bt) {
+        const int target = targets[bt];
+        ASSERT(target >= 0 && target < V);
+        losses[bt] = -std::log(probs[bt * Vz + static_cast<std::size_t>(target)]);
+    }
+}
+
+void cross_entropy_backward_cpu(float* dlogits, const float* probs, const int* targets, int B,
+                                int T, int V) noexcept {
+    const std::size_t BT = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
+    const std::size_t Vz = static_cast<std::size_t>(V);
+    const float scale = 1.0f / static_cast<float>(BT);  // mean reduction over positions
+    for (std::size_t bt = 0; bt < BT; ++bt) {
+        const int target = targets[bt];
+        ASSERT(target >= 0 && target < V);
+        float* dl = dlogits + bt * Vz;
+        const float* p = probs + bt * Vz;
+        for (std::size_t v = 0; v < Vz; ++v) {
+            const float indicator = (v == static_cast<std::size_t>(target)) ? 1.0f : 0.0f;
+            dl[v] += scale * (p[v] - indicator);
+        }
+    }
+}
+
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
@@ -354,6 +417,38 @@ void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* 
            inp != nullptr && weight != nullptr && mean != nullptr && rstd != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0);
     layernorm_backward_cpu(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
+}
+
+void encoder_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                     int T, int C, int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && tokens != nullptr && wte != nullptr && wpe != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
+    encoder_forward_cpu(out, tokens, wte, wpe, B, T, C, V);
+}
+
+void encoder_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                      int T, int C, int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dwte != nullptr && dwpe != nullptr && tokens != nullptr && dout != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
+    encoder_backward_cpu(dwte, dwpe, tokens, dout, B, T, C, V);
+}
+
+void cross_entropy_forward(float* losses, const float* probs, const int* targets, int B, int T,
+                           int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(losses != nullptr && probs != nullptr && targets != nullptr);
+    ASSERT(B >= 0 && T >= 0 && V > 0);
+    cross_entropy_forward_cpu(losses, probs, targets, B, T, V);
+}
+
+void cross_entropy_backward(float* dlogits, const float* probs, const int* targets, int B, int T,
+                            int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dlogits != nullptr && probs != nullptr && targets != nullptr);
+    ASSERT(B >= 0 && T >= 0 && V > 0);
+    cross_entropy_backward_cpu(dlogits, probs, targets, B, T, V);
 }
 
 }  // namespace cppgpt
