@@ -58,4 +58,14 @@ void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* 
                         const float* inp, const float* weight, const float* mean,
                         const float* rstd, int B, int T, int C, Device dev) noexcept;
 
+// Softmax over a vector of length N (N > 0): out[i] = exp(inp[i]) / Σ exp(inp),
+// using the max-subtraction trick for numerical stability. Overwrites `out`.
+void softmax_forward(float* out, const float* inp, int N, Device dev) noexcept;
+
+// Backward of softmax_forward from the upstream gradient `dout` and the softmax
+// output `out`. ACCUMULATES (+=) into dinp (caller zeroes):
+//   dinp[i] += out[i] · (dout[i] − Σ_j dout[j]·out[j]).
+void softmax_backward(float* dinp, const float* dout, const float* out, int N,
+                      Device dev) noexcept;
+
 }  // namespace cppgpt

@@ -147,6 +147,29 @@ void layernorm_backward_cpu(float* dinp, float* dweight, float* dbias, const flo
     }
 }
 
+void softmax_forward_cpu(float* out, const float* inp, int N) noexcept {
+    const std::size_t n = static_cast<std::size_t>(N);
+    float maxv = inp[0];
+    for (std::size_t i = 1; i < n; ++i) maxv = std::fmax(maxv, inp[i]);
+    float sum = 0.0f;
+    for (std::size_t i = 0; i < n; ++i) {
+        const float e = std::exp(inp[i] - maxv);
+        out[i] = e;
+        sum += e;
+    }
+    const float inv = 1.0f / sum;
+    for (std::size_t i = 0; i < n; ++i) out[i] *= inv;
+}
+
+void softmax_backward_cpu(float* dinp, const float* dout, const float* out, int N) noexcept {
+    const std::size_t n = static_cast<std::size_t>(N);
+    // dinp_i = out_i·(dout_i − Σ_j dout_j·out_j); the subtracted term is the
+    // projection of dout onto the softmax output.
+    float d = 0.0f;
+    for (std::size_t i = 0; i < n; ++i) d += dout[i] * out[i];
+    for (std::size_t i = 0; i < n; ++i) dinp[i] += out[i] * (dout[i] - d);
+}
+
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
@@ -165,6 +188,21 @@ void matmul_backward(float* dinp, float* dweight, float* dbias, const float* dou
            weight != nullptr);
     ASSERT(B >= 0 && T >= 0 && C >= 0 && OC >= 0);
     matmul_backward_cpu(dinp, dweight, dbias, dout, inp, weight, B, T, C, OC);
+}
+
+void softmax_forward(float* out, const float* inp, int N, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && inp != nullptr);
+    ASSERT(N > 0);
+    softmax_forward_cpu(out, inp, N);
+}
+
+void softmax_backward(float* dinp, const float* dout, const float* out, int N,
+                      Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dinp != nullptr && dout != nullptr && out != nullptr);
+    ASSERT(N > 0);
+    softmax_backward_cpu(dinp, dout, out, N);
 }
 
 void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept {
