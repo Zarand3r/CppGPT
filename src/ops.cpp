@@ -170,6 +170,91 @@ void softmax_backward_cpu(float* dinp, const float* dout, const float* out, int 
     for (std::size_t i = 0; i < n; ++i) dinp[i] += out[i] * (dout[i] - d);
 }
 
+void attention_forward_cpu(float* out, float* preatt, float* att, const float* inp, int B, int T,
+                           int C, int NH) noexcept {
+    const int hs = C / NH;  // head size
+    const float scale = 1.0f / std::sqrt(static_cast<float>(hs));
+    const std::size_t C3 = static_cast<std::size_t>(3 * C);
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    const std::size_t hz = static_cast<std::size_t>(hs);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            for (int h = 0; h < NH; ++h) {
+                const float* q = inp + (static_cast<std::size_t>(b) * Tz + t) * C3 + h * hz;
+                float* preatt_row = preatt + ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
+                float* att_row = att + ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
+                for (int t2 = 0; t2 <= t; ++t2) {  // causal: only keys at t2 <= t
+                    const float* k = inp + (static_cast<std::size_t>(b) * Tz + t2) * C3 + Cz + h * hz;
+                    float s = 0.0f;
+                    for (std::size_t i = 0; i < hz; ++i) s += q[i] * k[i];
+                    preatt_row[t2] = s * scale;
+                }
+                softmax_forward_cpu(att_row, preatt_row, t + 1);
+                float* out_row = out + (static_cast<std::size_t>(b) * Tz + t) * Cz + h * hz;
+                for (std::size_t i = 0; i < hz; ++i) out_row[i] = 0.0f;
+                for (int t2 = 0; t2 <= t; ++t2) {
+                    const float* v =
+                        inp + (static_cast<std::size_t>(b) * Tz + t2) * C3 + 2 * Cz + h * hz;
+                    const float a = att_row[t2];
+                    for (std::size_t i = 0; i < hz; ++i) out_row[i] += a * v[i];
+                }
+            }
+        }
+    }
+}
+
+void attention_backward_cpu(float* dinp, float* datt, float* dpreatt, const float* dout,
+                            const float* inp, const float* att, int B, int T, int C,
+                            int NH) noexcept {
+    const int hs = C / NH;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(hs));
+    const std::size_t C3 = static_cast<std::size_t>(3 * C);
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    const std::size_t hz = static_cast<std::size_t>(hs);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            for (int h = 0; h < NH; ++h) {
+                const std::size_t row = ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
+                const float* att_row = att + row;
+                float* datt_row = datt + row;
+                float* dpreatt_row = dpreatt + row;
+                const float* dout_row = dout + (static_cast<std::size_t>(b) * Tz + t) * Cz + h * hz;
+                const float* q = inp + (static_cast<std::size_t>(b) * Tz + t) * C3 + h * hz;
+                float* dq = dinp + (static_cast<std::size_t>(b) * Tz + t) * C3 + h * hz;
+                // 1. datt[t2] = Σ_i v_{t2}[i]·dout[i];  dv_{t2} += att·dout
+                for (int t2 = 0; t2 <= t; ++t2) {
+                    const std::size_t base = (static_cast<std::size_t>(b) * Tz + t2) * C3 + h * hz;
+                    const float* v = inp + base + 2 * Cz;
+                    float* dv = dinp + base + 2 * Cz;
+                    const float a = att_row[t2];
+                    float d = 0.0f;
+                    for (std::size_t i = 0; i < hz; ++i) {
+                        d += v[i] * dout_row[i];
+                        dv[i] += a * dout_row[i];
+                    }
+                    datt_row[t2] = d;
+                }
+                // 2. softmax backward (zero the causal row, then accumulate the Jacobian).
+                for (int t2 = 0; t2 <= t; ++t2) dpreatt_row[t2] = 0.0f;
+                softmax_backward_cpu(dpreatt_row, datt_row, att_row, t + 1);
+                // 3. scores backward: preatt[t2] = (q·k_{t2})·scale.
+                for (int t2 = 0; t2 <= t; ++t2) {
+                    const std::size_t base = (static_cast<std::size_t>(b) * Tz + t2) * C3 + h * hz;
+                    const float* k = inp + base + Cz;
+                    float* dk = dinp + base + Cz;
+                    const float g = dpreatt_row[t2] * scale;
+                    for (std::size_t i = 0; i < hz; ++i) {
+                        dq[i] += g * k[i];
+                        dk[i] += g * q[i];
+                    }
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
@@ -203,6 +288,24 @@ void softmax_backward(float* dinp, const float* dout, const float* out, int N,
     ASSERT(dinp != nullptr && dout != nullptr && out != nullptr);
     ASSERT(N > 0);
     softmax_backward_cpu(dinp, dout, out, N);
+}
+
+void attention_forward(float* out, float* preatt, float* att, const float* inp, int B, int T,
+                       int C, int NH, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && preatt != nullptr && att != nullptr && inp != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && NH > 0 && C % NH == 0);
+    attention_forward_cpu(out, preatt, att, inp, B, T, C, NH);
+}
+
+void attention_backward(float* dinp, float* datt, float* dpreatt, const float* dout,
+                        const float* inp, const float* att, int B, int T, int C, int NH,
+                        Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dinp != nullptr && datt != nullptr && dpreatt != nullptr && dout != nullptr &&
+           inp != nullptr && att != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && NH > 0 && C % NH == 0);
+    attention_backward_cpu(dinp, datt, dpreatt, dout, inp, att, B, T, C, NH);
 }
 
 void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept {

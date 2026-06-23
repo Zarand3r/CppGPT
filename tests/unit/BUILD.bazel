@@ -103,3 +103,14 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+cc_test(
+    name = "attention_test",
+    size = "small",
+    srcs = ["attention_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)

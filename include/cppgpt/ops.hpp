@@ -68,4 +68,18 @@ void softmax_forward(float* out, const float* inp, int N, Device dev) noexcept;
 void softmax_backward(float* dinp, const float* dout, const float* out, int N,
                       Device dev) noexcept;
 
+// Causal multi-head self-attention core. `inp` is [B,T,3C] (concatenated q,k,v,
+// each [B,T,C]; head h occupies columns [h·hs,(h+1)·hs), hs = C/NH). Writes `out`
+// [B,T,C] and the scores `preatt`/`att` ([B,NH,T,T]; only the causal triangle
+// t2≤t is written/meaningful). C must be divisible by NH.
+void attention_forward(float* out, float* preatt, float* att, const float* inp, int B, int T,
+                       int C, int NH, Device dev) noexcept;
+
+// Backward of attention_forward. ACCUMULATES (+=) into dinp [B,T,3C] (caller
+// zeroes). `att` is the buffer saved by the forward; `datt`/`dpreatt` ([B,NH,T,T])
+// are scratch fully overwritten by this call (need not be zeroed).
+void attention_backward(float* dinp, float* datt, float* dpreatt, const float* dout,
+                        const float* inp, const float* att, int B, int T, int C, int NH,
+                        Device dev) noexcept;
+
 }  // namespace cppgpt
