@@ -124,3 +124,14 @@ cc_test(
         "//tests:check",
     ],
 )
+
+cc_test(
+    name = "cross_entropy_test",
+    size = "small",
+    srcs = ["cross_entropy_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
