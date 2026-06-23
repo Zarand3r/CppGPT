@@ -57,6 +57,7 @@ cc_test(
     deps = [
         "//:cppgpt",
         "//tests:check",
+        "//tests:numeric",
     ],
 )
 
