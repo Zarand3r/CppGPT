@@ -14,10 +14,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 - [x] `core.hpp` errors: `Result<T,E> = std::expected` (enregisterable, C++23) · `ErrorCode` + `describe()` · `ASSERT`/`DCHECK`/`MUST`/`UNREACHABLE` · `TRY`/`ASSIGN_OR_RETURN`/`RETURN_IF_ERROR`/`TRY_OR`/`TRY_OR_CONTINUE`
 - [x] `log.hpp`: leveled Logger — `LOG_INFO`/`WARNING`/`ERROR`/`FATAL` + `LOG_EVERY_N`; level threshold; swappable sink; `std::format`
 - [x] `random.hpp`: explicit `Generator` (`mt19937_64`; no global, no default ctor) — `uniform`/`uniform_int`/`normal`
-- [ ] `Storage` (aligned, `Device`-tagged, arena/bump) · `TensorView` (`{float*,shape,stride,rank,device}`) · `Config`
-- [ ] `matmul_forward` / `matmul_backward` (CPU, device-dispatched)
-- [ ] `scripts/gen_fixtures.py` (canonical-GPT-2 PyTorch oracle, tanh GELU) · `verify.hpp`
-- [ ] `tests/unit/matmul_test.cpp` (fwd+bwd ≤ 1e-4 / 1e-3)
+- [~] `Storage` (aligned, `Device`-tagged, arena/bump) **done** (`storage.hpp` + `device.hpp`); `TensorView`/`Config`/`DType` deferred (no consumer until the first multi-op/model code — ops take raw `float*`)
+- [x] `matmul_forward` / `matmul_backward` (CPU, device-dispatched) — `ops.hpp` + `src/ops.cpp`
+- [ ] `scripts/gen_fixtures.py` (canonical-GPT-2 PyTorch oracle, tanh GELU) · `verify.hpp` — **deferred**: no PyTorch in this env; needed for the first GPT-2-specific op (gelu-tanh/layernorm), not for matmul
+- [x] `tests/unit/matmul_test.cpp` — fwd exact fixtures + bwd **adjoint identity** + finite-difference (independent of PyTorch); `storage_test.cpp` covers the arena
 - [ ] CI: one Linux build + `ldd` allow-list + ASan/UBSan
 
 ## M1 — Full GPT-2 forward + backward (Slice 0)

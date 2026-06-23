@@ -39,3 +39,23 @@ cc_test(
         "//tests:check",
     ],
 )
+
+cc_test(
+    name = "storage_test",
+    size = "small",
+    srcs = ["storage_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
+    name = "matmul_test",
+    size = "small",
+    srcs = ["matmul_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
