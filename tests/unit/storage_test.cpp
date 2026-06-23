@@ -54,5 +54,17 @@ int main() {
     float* e = moved.alloc(8);
     CHECK(aligned(e, Storage::kAlign));
 
+    // alloc_zeroed returns zeroed, aligned storage even when reusing dirty memory.
+    moved.reset();
+    float* dirty = moved.alloc(8);
+    for (int i = 0; i < 8; ++i) dirty[i] = 7.0f;
+    moved.reset();
+    float* z = moved.alloc_zeroed(8);
+    CHECK(z == dirty);  // same region reused after reset
+    CHECK(aligned(z, Storage::kAlign));
+    bool all_zero = true;
+    for (int i = 0; i < 8; ++i) all_zero = all_zero && (z[i] == 0.0f);
+    CHECK(all_zero);
+
     return cppgpt::test::summary();
 }

@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <new>
 
 #include "cppgpt/core.hpp"
@@ -33,10 +34,16 @@ public:
     static constexpr std::size_t kAlign = 64;  // base + sub-alloc alignment (cache line)
 
     // Reserve capacity_floats of fp32 storage, rounded up to kAlign bytes.
-    explicit Storage(std::size_t capacity_floats, Device dev = Device::CPU)
+    // Allocation failure is fatal: there is no degraded path without the arena,
+    // so OOM aborts with a message (nothrow new + fail-fast) rather than raising
+    // an exception — the ctor is therefore noexcept.
+    explicit Storage(std::size_t capacity_floats, Device dev = Device::CPU) noexcept
         : dev_(dev), capacity_(detail::round_up(capacity_floats * sizeof(float), kAlign)) {
-        if (capacity_ != 0)
-            base_ = static_cast<std::byte*>(::operator new(capacity_, std::align_val_t{kAlign}));
+        if (capacity_ != 0) {
+            base_ = static_cast<std::byte*>(
+                ::operator new(capacity_, std::align_val_t{kAlign}, std::nothrow));
+            ASSERT_MSG(base_ != nullptr, "Storage: out of memory");
+        }
     }
 
     ~Storage() { ::operator delete(base_, std::align_val_t{kAlign}); }
@@ -74,6 +81,16 @@ public:
         ASSERT_MSG(head_ + need <= capacity_, "Storage::alloc exceeds capacity");
         float* p = reinterpret_cast<float*>(base_ + head_);
         head_ += need;
+        return p;
+    }
+
+    // Like alloc(), but zero-initializes the slice. Use for accumulator buffers
+    // (e.g. gradients written with +=) that must start at zero each phase. alloc()
+    // deliberately returns uninitialized memory — there is no hidden memset on the
+    // hot path; callers that need zeros ask for them here, explicitly.
+    [[nodiscard]] float* alloc_zeroed(std::size_t n_floats, std::size_t align = kAlign) {
+        float* p = alloc(n_floats, align);
+        std::memset(p, 0, n_floats * sizeof(float));
         return p;
     }
 
