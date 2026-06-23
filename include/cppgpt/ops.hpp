@@ -43,4 +43,18 @@ void residual_forward(float* out, const float* a, const float* b, int N, Device 
 // both receive the upstream gradient, since d(a+b)/da = d(a+b)/db = 1.
 void residual_backward(float* da, float* db, const float* dout, int N, Device dev) noexcept;
 
+// LayerNorm over the last dim C of an [B,T,C] activation (canonical GPT-2:
+// affine, eps=1e-5). Per row: out = (x − mean)/√(var + eps) · weight + bias.
+// Writes `out`, and `mean`/`rstd` ([B*T] each) — the per-row mean and
+// 1/√(var+eps) saved for the backward pass.
+void layernorm_forward(float* out, float* mean, float* rstd, const float* inp,
+                       const float* weight, const float* bias, int B, int T, int C,
+                       Device dev) noexcept;
+
+// Backward of layernorm_forward. ACCUMULATES (+=) into dinp, dweight, dbias
+// (caller zeroes first); `mean`/`rstd` are the buffers saved by the forward.
+void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* dout,
+                        const float* inp, const float* weight, const float* mean,
+                        const float* rstd, int B, int T, int C, Device dev) noexcept;
+
 }  // namespace cppgpt

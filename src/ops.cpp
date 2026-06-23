@@ -87,6 +87,66 @@ void residual_backward_cpu(float* da, float* db, const float* dout, int N) noexc
     }
 }
 
+// Canonical GPT-2 LayerNorm epsilon (protocol-fixed, not a tunable).
+constexpr float kLayerNormEps = 1e-5f;
+
+void layernorm_forward_cpu(float* out, float* mean, float* rstd, const float* inp,
+                           const float* weight, const float* bias, int B, int T, int C) noexcept {
+    const std::size_t BT = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const float inv_c = 1.0f / static_cast<float>(C);
+    for (std::size_t bt = 0; bt < BT; ++bt) {
+        const float* x = inp + bt * Cz;
+        float m = 0.0f;
+        for (std::size_t c = 0; c < Cz; ++c) m += x[c];
+        m *= inv_c;
+        float v = 0.0f;
+        for (std::size_t c = 0; c < Cz; ++c) {
+            const float d = x[c] - m;
+            v += d * d;
+        }
+        v *= inv_c;
+        const float s = 1.0f / std::sqrt(v + kLayerNormEps);
+        float* out_bt = out + bt * Cz;
+        for (std::size_t c = 0; c < Cz; ++c) out_bt[c] = (x[c] - m) * s * weight[c] + bias[c];
+        mean[bt] = m;
+        rstd[bt] = s;
+    }
+}
+
+void layernorm_backward_cpu(float* dinp, float* dweight, float* dbias, const float* dout,
+                            const float* inp, const float* weight, const float* mean,
+                            const float* rstd, int B, int T, int C) noexcept {
+    const std::size_t BT = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const float inv_c = 1.0f / static_cast<float>(C);
+    for (std::size_t bt = 0; bt < BT; ++bt) {
+        const float* dout_bt = dout + bt * Cz;
+        const float* x = inp + bt * Cz;
+        float* dinp_bt = dinp + bt * Cz;
+        const float m = mean[bt];
+        const float s = rstd[bt];
+        // Two reductions over the row: mean of dnorm and of dnorm·norm.
+        float dnorm_mean = 0.0f;
+        float dnorm_norm_mean = 0.0f;
+        for (std::size_t c = 0; c < Cz; ++c) {
+            const float norm = (x[c] - m) * s;
+            const float dnorm = weight[c] * dout_bt[c];
+            dnorm_mean += dnorm;
+            dnorm_norm_mean += dnorm * norm;
+        }
+        dnorm_mean *= inv_c;
+        dnorm_norm_mean *= inv_c;
+        for (std::size_t c = 0; c < Cz; ++c) {
+            const float norm = (x[c] - m) * s;
+            const float dnorm = weight[c] * dout_bt[c];
+            dbias[c] += dout_bt[c];
+            dweight[c] += norm * dout_bt[c];
+            dinp_bt[c] += (dnorm - dnorm_mean - norm * dnorm_norm_mean) * s;
+        }
+    }
+}
+
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
@@ -133,6 +193,26 @@ void residual_backward(float* da, float* db, const float* dout, int N, Device de
     ASSERT(da != nullptr && db != nullptr && dout != nullptr);
     ASSERT(N >= 0);
     residual_backward_cpu(da, db, dout, N);
+}
+
+void layernorm_forward(float* out, float* mean, float* rstd, const float* inp,
+                       const float* weight, const float* bias, int B, int T, int C,
+                       Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && mean != nullptr && rstd != nullptr && inp != nullptr &&
+           weight != nullptr && bias != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0);
+    layernorm_forward_cpu(out, mean, rstd, inp, weight, bias, B, T, C);
+}
+
+void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* dout,
+                        const float* inp, const float* weight, const float* mean,
+                        const float* rstd, int B, int T, int C, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dinp != nullptr && dweight != nullptr && dbias != nullptr && dout != nullptr &&
+           inp != nullptr && weight != nullptr && mean != nullptr && rstd != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0);
+    layernorm_backward_cpu(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
 }
 
 }  // namespace cppgpt
