@@ -59,3 +59,14 @@ cc_test(
         "//tests:check",
     ],
 )
+
+cc_test(
+    name = "gelu_test",
+    size = "small",
+    srcs = ["gelu_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)

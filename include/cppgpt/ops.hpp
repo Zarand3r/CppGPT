@@ -27,4 +27,12 @@ void matmul_backward(float* dinp, float* dweight, float* dbias, const float* dou
                      const float* inp, const float* weight, int B, int T, int C, int OC,
                      Device dev) noexcept;
 
+// GELU, tanh approximation (canonical GPT-2 `gelu_new`), element-wise over N:
+//   out = 0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³))).
+// Overwrites `out`; in-place (out == inp) is allowed.
+void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept;
+
+// Backward of gelu_forward. ACCUMULATES (+=) into dinp (caller zeroes first).
+void gelu_backward(float* dinp, const float* inp, const float* dout, int N, Device dev) noexcept;
+
 }  // namespace cppgpt
