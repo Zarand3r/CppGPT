@@ -35,4 +35,12 @@ void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept;
 // Backward of gelu_forward. ACCUMULATES (+=) into dinp (caller zeroes first).
 void gelu_backward(float* dinp, const float* inp, const float* dout, int N, Device dev) noexcept;
 
+// Element-wise residual add: out = a + b over N. Overwrites `out`; in-place
+// (out == a or out == b) is allowed.
+void residual_forward(float* out, const float* a, const float* b, int N, Device dev) noexcept;
+
+// Backward of residual_forward. ACCUMULATES (+=) into da and db (caller zeroes):
+// both receive the upstream gradient, since d(a+b)/da = d(a+b)/db = 1.
+void residual_backward(float* da, float* db, const float* dout, int N, Device dev) noexcept;
+
 }  // namespace cppgpt

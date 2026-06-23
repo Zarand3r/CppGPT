@@ -70,3 +70,13 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+cc_test(
+    name = "residual_test",
+    size = "small",
+    srcs = ["residual_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)

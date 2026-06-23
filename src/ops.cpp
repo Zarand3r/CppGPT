@@ -74,6 +74,19 @@ void gelu_backward_cpu(float* dinp, const float* inp, const float* dout, int N) 
     }
 }
 
+void residual_forward_cpu(float* out, const float* a, const float* b, int N) noexcept {
+    const std::size_t n = static_cast<std::size_t>(N);
+    for (std::size_t i = 0; i < n; ++i) out[i] = a[i] + b[i];
+}
+
+void residual_backward_cpu(float* da, float* db, const float* dout, int N) noexcept {
+    const std::size_t n = static_cast<std::size_t>(N);
+    for (std::size_t i = 0; i < n; ++i) {
+        da[i] += dout[i];
+        db[i] += dout[i];
+    }
+}
+
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
@@ -106,6 +119,20 @@ void gelu_backward(float* dinp, const float* inp, const float* dout, int N, Devi
     ASSERT(dinp != nullptr && inp != nullptr && dout != nullptr);
     ASSERT(N >= 0);
     gelu_backward_cpu(dinp, inp, dout, N);
+}
+
+void residual_forward(float* out, const float* a, const float* b, int N, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && a != nullptr && b != nullptr);
+    ASSERT(N >= 0);
+    residual_forward_cpu(out, a, b, N);
+}
+
+void residual_backward(float* da, float* db, const float* dout, int N, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(da != nullptr && db != nullptr && dout != nullptr);
+    ASSERT(N >= 0);
+    residual_backward_cpu(da, db, dout, N);
 }
 
 }  // namespace cppgpt
