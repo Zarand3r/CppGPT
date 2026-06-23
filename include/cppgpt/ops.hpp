@@ -46,7 +46,8 @@ void residual_backward(float* da, float* db, const float* dout, int N, Device de
 // LayerNorm over the last dim C of an [B,T,C] activation (canonical GPT-2:
 // affine, eps=1e-5). Per row: out = (x − mean)/√(var + eps) · weight + bias.
 // Writes `out`, and `mean`/`rstd` ([B*T] each) — the per-row mean and
-// 1/√(var+eps) saved for the backward pass.
+// 1/√(var+eps) saved for the backward pass. `out` must not alias `inp`: the
+// backward reads the original `inp`, so an in-place forward would corrupt it.
 void layernorm_forward(float* out, float* mean, float* rstd, const float* inp,
                        const float* weight, const float* bias, int B, int T, int C,
                        Device dev) noexcept;
