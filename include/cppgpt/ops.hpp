@@ -27,4 +27,35 @@ void matmul_backward(float* dinp, float* dweight, float* dbias, const float* dou
                      const float* inp, const float* weight, int B, int T, int C, int OC,
                      Device dev) noexcept;
 
+// GELU, tanh approximation (canonical GPT-2 `gelu_new`), element-wise over N:
+//   out = 0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³))).
+// Overwrites `out`; in-place (out == inp) is allowed.
+void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept;
+
+// Backward of gelu_forward. ACCUMULATES (+=) into dinp (caller zeroes first).
+void gelu_backward(float* dinp, const float* inp, const float* dout, int N, Device dev) noexcept;
+
+// Element-wise residual add: out = a + b over N. Overwrites `out`; in-place
+// (out == a or out == b) is allowed.
+void residual_forward(float* out, const float* a, const float* b, int N, Device dev) noexcept;
+
+// Backward of residual_forward. ACCUMULATES (+=) into da and db (caller zeroes):
+// both receive the upstream gradient, since d(a+b)/da = d(a+b)/db = 1.
+void residual_backward(float* da, float* db, const float* dout, int N, Device dev) noexcept;
+
+// LayerNorm over the last dim C of an [B,T,C] activation (canonical GPT-2:
+// affine, eps=1e-5). Per row: out = (x − mean)/√(var + eps) · weight + bias.
+// Writes `out`, and `mean`/`rstd` ([B*T] each) — the per-row mean and
+// 1/√(var+eps) saved for the backward pass. `out` must not alias `inp`: the
+// backward reads the original `inp`, so an in-place forward would corrupt it.
+void layernorm_forward(float* out, float* mean, float* rstd, const float* inp,
+                       const float* weight, const float* bias, int B, int T, int C,
+                       Device dev) noexcept;
+
+// Backward of layernorm_forward. ACCUMULATES (+=) into dinp, dweight, dbias
+// (caller zeroes first); `mean`/`rstd` are the buffers saved by the forward.
+void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* dout,
+                        const float* inp, const float* weight, const float* mean,
+                        const float* rstd, int B, int T, int C, Device dev) noexcept;
+
 }  // namespace cppgpt

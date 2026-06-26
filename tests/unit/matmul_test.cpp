@@ -10,35 +10,24 @@
 //         F := <dout, inp @ Wᵀ>  ==  <dinp, inp>  ==  <dweight, weight>
 //         <dout, broadcast(bias)>  ==  <dbias, bias>
 //     These hold to floating-point rounding, independent of how the backward is
-//     coded. A finite-difference spot check is added as defense in depth.
+//     coded — for a linear op this is the exact, complete form of a gradient
+//     check, so no separate finite-difference pass is needed here. (The MLP-block
+//     integration test exercises matmul inside a composed finite-difference check.)
 //
 // (When a PyTorch environment is available, scripts/gen_fixtures.py will add a
 // cross-framework .bin fixture comparison; the adjoint law already pins matmul.)
 #include "cppgpt/ops.hpp"
 
-#include <cmath>
 #include <cstddef>
 #include <vector>
 
 #include "cppgpt/random.hpp"
 #include "tests/check.hpp"
+#include "tests/numeric.hpp"
 
 using namespace cppgpt;
-
-namespace {
-
-double dot(const float* a, const float* b, std::size_t n) {
-    double s = 0.0;
-    for (std::size_t i = 0; i < n; ++i) s += static_cast<double>(a[i]) * static_cast<double>(b[i]);
-    return s;
-}
-
-bool rel_close(double x, double y, double tol) {
-    const double denom = std::fmax(1.0, std::fmax(std::fabs(x), std::fabs(y)));
-    return std::fabs(x - y) / denom <= tol;
-}
-
-}  // namespace
+using cppgpt::test::dot;
+using cppgpt::test::rel_close;
 
 int main() {
     // ---- Forward: exact fixtures (integer-valued, so == is safe in fp32) ----
@@ -73,7 +62,7 @@ int main() {
         CHECK(out[0] == 3.0f && out[1] == 7.0f);
     }
 
-    // ---- Backward: adjoint identities + finite-difference spot check ----
+    // ---- Backward: adjoint identities (exact to fp rounding) ----
     {
         const int B = 2, T = 3, C = 4, OC = 5;
         const std::size_t n_in = static_cast<std::size_t>(B * T * C);
@@ -123,22 +112,6 @@ int main() {
                         B, T, C, OC, Device::CPU);
         CHECK(dinp2 == dinp);
         CHECK(dweight2 == dweight);
-
-        // Finite-difference spot check on dinp: scalar loss L = <dout, forward(inp)>,
-        // dL/dinp[i] via central difference (bias is constant, so it cancels).
-        std::vector<float> work(n_out);
-        auto loss = [&](const std::vector<float>& in) {
-            matmul_forward(work.data(), in.data(), w.data(), bias.data(), B, T, C, OC, Device::CPU);
-            return dot(dout.data(), work.data(), n_out);
-        };
-        const float h = 1e-2f;
-        for (std::size_t idx : {std::size_t{0}, n_in / 2, n_in - 1}) {
-            std::vector<float> ip = inp, im = inp;
-            ip[idx] += h;
-            im[idx] -= h;
-            const double fd = (loss(ip) - loss(im)) / (2.0 * static_cast<double>(h));
-            CHECK(rel_close(fd, static_cast<double>(dinp[idx]), 2e-2));
-        }
     }
 
     return cppgpt::test::summary();

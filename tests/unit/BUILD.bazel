@@ -57,5 +57,38 @@ cc_test(
     deps = [
         "//:cppgpt",
         "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "gelu_test",
+    size = "small",
+    srcs = ["gelu_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "residual_test",
+    size = "small",
+    srcs = ["residual_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
+    name = "layernorm_test",
+    size = "small",
+    srcs = ["layernorm_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
     ],
 )

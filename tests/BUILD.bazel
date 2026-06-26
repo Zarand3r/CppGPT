@@ -6,3 +6,10 @@ cc_library(
     hdrs = ["check.hpp"],
     visibility = ["//visibility:public"],
 )
+
+# Numeric helpers (dot, rel_close, finite-difference grad_check) for op tests.
+cc_library(
+    name = "numeric",
+    hdrs = ["numeric.hpp"],
+    visibility = ["//visibility:public"],
+)
