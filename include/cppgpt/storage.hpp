@@ -33,6 +33,9 @@ class Storage {
 public:
     static constexpr std::size_t kAlign = 64;  // base + sub-alloc alignment (cache line)
 
+    // Empty arena (capacity 0); for members initialized later via move-assignment.
+    Storage() noexcept = default;
+
     // Reserve capacity_floats of fp32 storage, rounded up to kAlign bytes.
     // Allocation failure is fatal: there is no degraded path without the arena,
     // so OOM aborts with a message (nothrow new + fail-fast) rather than raising
@@ -95,6 +98,11 @@ public:
     }
 
     void reset() noexcept { head_ = 0; }
+
+    // Zero the allocated region (e.g. gradient arenas before a backward pass).
+    void zero() noexcept {
+        if (base_ != nullptr) std::memset(base_, 0, head_);
+    }
 
     [[nodiscard]] Device device() const noexcept { return dev_; }
     [[nodiscard]] std::size_t capacity_bytes() const noexcept { return capacity_; }

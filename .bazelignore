@@ -1,0 +1,4 @@
+# Directories Bazel must not traverse for BUILD files.
+# The notebooks virtualenv ships packages (e.g. torchgen) that contain their own
+# stray Bazel files, which break `bazel ... //...` package loading.
+.venv

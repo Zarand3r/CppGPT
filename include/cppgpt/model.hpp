@@ -88,8 +88,19 @@ public:
     // filling activations and `mean_loss`. B, T must match construction.
     void forward(const int* tokens, const int* targets, int B, int T);
 
+    // Zero the parameter-gradient and activation-gradient arenas. Call before
+    // backward(), since every op's backward accumulates (+=).
+    void zero_grads() noexcept;
+
+    // Backward pass for the same tokens/targets as the preceding forward(),
+    // accumulating into the gradient arenas. `dwte` receives contributions from
+    // both the classifier (tied head) and the embedding paths (weight tying).
+    void backward(const int* tokens, const int* targets, int B, int T);
+
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }
+    [[nodiscard]] ParamTensors& params() noexcept { return params_; }  // mutable: optimizer / tests
+    [[nodiscard]] const ParamTensors& grads() const noexcept { return grads_; }
     [[nodiscard]] const ActTensors& acts() const noexcept { return acts_; }
     [[nodiscard]] float mean_loss() const noexcept { return mean_loss_; }
 
@@ -97,9 +108,16 @@ private:
     Config cfg_;
     int B_, T_;
     Storage param_store_;
+    Storage grad_store_;
     Storage act_store_;
+    Storage act_grad_store_;
+    Storage scratch_store_;  // attention backward scratch (datt, dpreatt)
     ParamTensors params_{};
+    ParamTensors grads_{};
     ActTensors acts_{};
+    ActTensors act_grads_{};
+    float* datt_ = nullptr;
+    float* dpreatt_ = nullptr;
     float mean_loss_ = 0.0f;
 };
 

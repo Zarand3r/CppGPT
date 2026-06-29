@@ -22,8 +22,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 
 ## M1 — Full GPT-2 forward + backward (Slice 0)
 - [x] Ops fwd+bwd, each tested (exact/property fixtures + finite-difference gradcheck — no PyTorch in env): `gelu` (tanh), `residual`, `layernorm`, `softmax`, `attention` (reuses `softmax`), `encoder` (tok+pos), `cross_entropy` (softmax-fused). `classifier` = `matmul` with the tied `wte` (no new op). Full transformer block integration-tested (`tests/integration/transformer_block_test`).
-- [~] `GPT2` struct (`Config`, param/activation `Storage` arenas, llm.c `.bin` layout) + **`gpt2_forward` done** (`model.hpp`/`model.cpp`); `gpt2_backward` / `gpt2_update` next
-- [x] Weight tying (`lm_head` aliases `wte`) — forward classifier uses `wte`; backward `dwte` accumulation lands with `gpt2_backward`
+- [~] `GPT2` struct (`Config`, param/grad/activation `Storage` arenas, llm.c `.bin` layout) + **`gpt2_forward` and `gpt2_backward` done** (`model.hpp`/`model.cpp`, end-to-end gradcheck); `gpt2_update` next
+- [x] Weight tying (`lm_head` aliases `wte`) — forward classifier uses `wte`; `dwte` accumulates from classifier + embedding paths in `gpt2_backward` (gradcheck-verified)
 - [~] **GPT-2 init + residual-proj scaling done** (`init_weights`); AdamW (2-group decay: ≥2D weights decay, biases/LN don't) next
 - [ ] `CharTokenizer`
 - [ ] `tools/train.cpp` (baby config, 10 steps) · `tools/verify.cpp` (full fwd/bwd)
