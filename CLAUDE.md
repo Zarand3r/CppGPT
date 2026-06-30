@@ -14,7 +14,9 @@ These skills are provided by the **`eng-skills`** plugin (marketplace `Zarand3r/
 ### Planning → execution chain
 
 - **`strategic-engineering-planner`** — load *before* implementation when the task is architecturally significant, ambiguous, multi-file, distributed, performance-sensitive, concurrency-heavy, safety-critical, or likely to need multiple passes. Produces the architectural roadmap; hand off to execute.
+- **`spec-driven-development`** — load *before* coding on complex or ambiguous work, to prevent drift. Turns a goal into an executable spec — EARS requirements, binary acceptance criteria, scope/invariants, requirement→test traceability — that code and tests are derived from. Sits between the planner and `implementation-plan`.
 - **`implementation-plan`** — load *after* the design/roadmap is locked and *before* writing implementation code, to turn it into a checklist-first `IMPLEMENTATION_PLAN.md` with vertical-slice steps, binary acceptance gates, property tests tied to invariants, a golden-path integration test, and an explicit iteration loop. Feeds `principal-production-engineer` for execution.
+- **`test-driven-verification`** — load when implementing or hardening any nontrivial change. Derive tests from acceptance criteria first, loop red→green→refactor, capture re-runnable evidence (unit/property tests, Playwright/tmux artifacts), and gate merges on binary criteria.
 
 ### C++ reference
 
