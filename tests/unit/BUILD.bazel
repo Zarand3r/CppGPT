@@ -146,3 +146,14 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+cc_test(
+    name = "adamw_test",
+    size = "small",
+    srcs = ["adamw_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
