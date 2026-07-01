@@ -71,5 +71,31 @@ int main() {
     // final layernorm gain
     CHECK(grad_check(loss, model.params().lnfw, model.grads().lnfw, sz(C)) < 3e-2);
 
+    // ---- training step (golden path): forward → backward → AdamW must overfit a
+    // fixed batch, driving the loss far below its ≈ln(V) start. ----
+    {
+        Generator gen3(0x6072ULL);
+        GPT2 trainee(cfg, B, T);
+        trainee.init_weights(gen3);
+        trainee.forward(tokens.data(), targets.data(), B, T);
+        const float start = trainee.mean_loss();
+        float prev = start;
+        bool monotonic = true;
+        for (int step = 0; step < 200; ++step) {
+            trainee.forward(tokens.data(), targets.data(), B, T);
+            const float cur = trainee.mean_loss();
+            monotonic = monotonic && (cur <= prev + 1e-4f);  // non-increasing (small slack)
+            prev = cur;
+            trainee.zero_grads();
+            trainee.backward(tokens.data(), targets.data(), B, T);
+            trainee.update(1e-2f, 0.9f, 0.95f, 1e-8f, 0.0f);
+        }
+        trainee.forward(tokens.data(), targets.data(), B, T);
+        const float end = trainee.mean_loss();
+        CHECK(std::isfinite(end));
+        CHECK(monotonic);            // AdamW descends the fixed-batch loss
+        CHECK(end < 0.1f * start);   // and overfits it far below the init loss
+    }
+
     return cppgpt::test::summary();
 }

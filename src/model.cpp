@@ -336,4 +336,50 @@ void GPT2::backward(const int* tokens, const int* targets, int B, int T) {
     encoder_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V, Device::CPU);
 }
 
+void GPT2::update(float lr, float beta1, float beta2, float eps, float weight_decay) noexcept {
+    std::size_t ps[kNumParamTensors];
+    const std::size_t ptot = param_sizes(cfg_, ps);
+
+    // Lazily allocate the AdamW moment arenas on the first step (zeroed: m=v=0).
+    if (m_ == nullptr) {
+        m_store_ = Storage(ptot);
+        v_store_ = Storage(ptot);
+        m_ = m_store_.alloc_zeroed(ptot);
+        v_ = v_store_.alloc_zeroed(ptot);
+    }
+    ++adam_step_;
+
+    // Canonical GPT-2 2-group weight decay: only weight matrices and embeddings
+    // (dim ≥ 2 in PyTorch) decay; biases and LayerNorm gains/shifts do not. In
+    // .bin/declaration order: wte, wpe, qkvw, attprojw, fcw, fcprojw.
+    static constexpr bool kDecay[kNumParamTensors] = {
+        true,   // wte
+        true,   // wpe
+        false,  // ln1w
+        false,  // ln1b
+        true,   // qkvw
+        false,  // qkvb
+        true,   // attprojw
+        false,  // attprojb
+        false,  // ln2w
+        false,  // ln2b
+        true,   // fcw
+        false,  // fcb
+        true,   // fcprojw
+        false,  // fcprojb
+        false,  // lnfw
+        false,  // lnfb
+    };
+    // params_, grads_, m_, v_ share one contiguous layout; walk them by offset.
+    float* param = params_.wte;
+    const float* grad = grads_.wte;
+    std::size_t off = 0;
+    for (int i = 0; i < kNumParamTensors; ++i) {
+        const float wd = kDecay[i] ? weight_decay : 0.0f;
+        adamw_update(param + off, grad + off, m_ + off, v_ + off, static_cast<int>(ps[i]), lr, beta1,
+                     beta2, eps, wd, adam_step_, Device::CPU);
+        off += ps[i];
+    }
+}
+
 }  // namespace cppgpt
