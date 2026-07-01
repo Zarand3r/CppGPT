@@ -21,7 +21,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 - [ ] CI: one Linux build + `ldd` allow-list + ASan/UBSan
 
 ## M1 — Full GPT-2 forward + backward (Slice 0)
-- [~] Ops fwd+bwd, each tested: **`gelu` (tanh), `residual`, `layernorm` done** (exact/property fixtures + finite-difference gradcheck — no PyTorch in env); remaining: `softmax`, `attention`, `encoder` (tok+pos), `classifier`, `cross_entropy`
+- [~] Ops fwd+bwd, each tested: **`gelu` (tanh), `residual`, `layernorm`, `softmax`, `attention` done** (exact/property fixtures + finite-difference gradcheck — no PyTorch in env; `attention` reuses `softmax`); both transformer sub-blocks integration-tested (`tests/integration/{mlp,attn}_block_test`). Remaining: `encoder` (tok+pos), `classifier`, `cross_entropy`
 - [ ] `GPT2` struct + `gpt2_forward` / `gpt2_backward` / `gpt2_update`
 - [ ] Weight tying (`lm_head` aliases `wte`)
 - [ ] AdamW (2-group decay: ≥2D weights decay, biases/LN don't) · GPT-2 init + residual-proj scaling

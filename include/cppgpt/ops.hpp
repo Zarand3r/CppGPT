@@ -58,4 +58,28 @@ void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* 
                         const float* inp, const float* weight, const float* mean,
                         const float* rstd, int B, int T, int C, Device dev) noexcept;
 
+// Softmax over a vector of length N (N > 0): out[i] = exp(inp[i]) / Σ exp(inp),
+// using the max-subtraction trick for numerical stability. Overwrites `out`.
+void softmax_forward(float* out, const float* inp, int N, Device dev) noexcept;
+
+// Backward of softmax_forward from the upstream gradient `dout` and the softmax
+// output `out`. ACCUMULATES (+=) into dinp (caller zeroes):
+//   dinp[i] += out[i] · (dout[i] − Σ_j dout[j]·out[j]).
+void softmax_backward(float* dinp, const float* dout, const float* out, int N,
+                      Device dev) noexcept;
+
+// Causal multi-head self-attention core. `inp` is [B,T,3C] (concatenated q,k,v,
+// each [B,T,C]; head h occupies columns [h·hs,(h+1)·hs), hs = C/NH). Writes `out`
+// [B,T,C] and the scores `preatt`/`att` ([B,NH,T,T]; only the causal triangle
+// t2≤t is written/meaningful). C must be divisible by NH.
+void attention_forward(float* out, float* preatt, float* att, const float* inp, int B, int T,
+                       int C, int NH, Device dev) noexcept;
+
+// Backward of attention_forward. ACCUMULATES (+=) into dinp [B,T,3C] (caller
+// zeroes). `att` is the buffer saved by the forward; `datt`/`dpreatt` ([B,NH,T,T])
+// are scratch fully overwritten by this call (need not be zeroed).
+void attention_backward(float* dinp, float* datt, float* dpreatt, const float* dout,
+                        const float* inp, const float* att, int B, int T, int C, int NH,
+                        Device dev) noexcept;
+
 }  // namespace cppgpt
