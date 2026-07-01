@@ -97,6 +97,14 @@ public:
     // both the classifier (tied head) and the embedding paths (weight tying).
     void backward(const int* tokens, const int* targets, int B, int T);
 
+    // AdamW step over all parameters using the current gradients (from backward).
+    // Canonical GPT-2 2-group weight decay: only weight matrices and embeddings
+    // (wte, wpe, and the per-layer qkvw/attprojw/fcw/fcprojw) decay; biases and
+    // LayerNorm gains/shifts do not. The optimizer moments are allocated lazily on
+    // the first call (inference-only use pays no moment memory). Advances the
+    // internal step counter used for bias correction.
+    void update(float lr, float beta1, float beta2, float eps, float weight_decay) noexcept;
+
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }
     [[nodiscard]] ParamTensors& params() noexcept { return params_; }  // mutable: optimizer / tests
@@ -112,12 +120,17 @@ private:
     Storage act_store_;
     Storage act_grad_store_;
     Storage scratch_store_;  // attention backward scratch (datt, dpreatt)
+    Storage m_store_;        // AdamW first moments (lazily allocated in update())
+    Storage v_store_;        // AdamW second moments (lazily allocated in update())
     ParamTensors params_{};
     ParamTensors grads_{};
     ActTensors acts_{};
     ActTensors act_grads_{};
     float* datt_ = nullptr;
     float* dpreatt_ = nullptr;
+    float* m_ = nullptr;  // AdamW moment arenas, same flat layout as the params
+    float* v_ = nullptr;
+    int adam_step_ = 0;  // 1-based step counter for bias correction
     float mean_loss_ = 0.0f;
 };
 
