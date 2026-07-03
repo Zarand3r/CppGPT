@@ -180,7 +180,7 @@ void GPT2::forward(const int* tokens, const int* targets, int B, int T) {
     const ParamTensors& p = params_;
     const ActTensors& a = acts_;
 
-    encoder_forward(a.encoded, tokens, p.wte, p.wpe, B, T, C, V, Device::CPU);
+    embedding_forward(a.encoded, tokens, p.wte, p.wpe, B, T, C, V, Device::CPU);
 
     for (int l = 0; l < L; ++l) {
         const auto ll = static_cast<std::size_t>(l);
@@ -333,7 +333,7 @@ void GPT2::backward(const int* tokens, const int* targets, int B, int T) {
     }
 
     // Embedding: dwte += embedding path (so dwte = classifier + embedding — weight tying); dwpe +=.
-    encoder_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V, Device::CPU);
+    embedding_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V, Device::CPU);
 }
 
 void GPT2::update(float lr, float beta1, float beta2, float eps, float weight_decay) noexcept {

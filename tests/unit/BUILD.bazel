@@ -116,9 +116,9 @@ cc_test(
 )
 
 cc_test(
-    name = "encoder_test",
+    name = "embedding_test",
     size = "small",
-    srcs = ["encoder_test.cpp"],
+    srcs = ["embedding_test.cpp"],
     deps = [
         "//:cppgpt",
         "//tests:check",
