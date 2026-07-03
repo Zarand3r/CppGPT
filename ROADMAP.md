@@ -42,7 +42,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 ## M3 — BPE + pretrained GPT-2 124M inference
 - [ ] BPE: byte-level encoder, merges parser, hand-rolled regex pre-tokenizer
 - [ ] `scripts/convert_gpt2.py` (HF → `.bin`)
-- [ ] KV cache · prefix + autoregressive decode · logit cropping (last position)
+- [ ] KV cache (fp32; the `Storage` that later becomes the E2/E3 quantization seam) · prefix + autoregressive decode · logit cropping (last position)
 - [ ] **Gate:** tokenizer byte-exact vs tiktoken (1000+ strings); generation token-exact vs HF for ≥ 50 tokens; KV-cache on/off identical
 
 ## M4 — Polish + GPT-2 medium inference + GPU-seam readiness
@@ -56,8 +56,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 ---
 
 ## Future phase (post-v1, do not start)
+
+**GPU phase (headline):**
 - [ ] **GPU: from-scratch CUDA backend** behind the device seam (kernels, H2D/streams, mixed precision, memory budgeting)
-- [ ] SIMD intrinsics (AVX2/NEON) — measured-need only
+- [ ] SIMD intrinsics (AVX2/NEON) for the CPU path — measured-need only
 - [ ] Tape autograd — only if we start varying architectures (RoPE/GQA/…)
-- [ ] Top-p / repetition penalty · quantization/GGUF · macOS/Windows
 - [ ] Deferred scaffolding (multi-stream RNG, SHA-256 ckpt, fuzz harness, CI matrix, coverage gates) — only on concrete need
+- [ ] Top-p / repetition penalty · macOS/Windows
+
+**Efficiency & Research Track** — ordered least→most numerical perturbation. Each is opt-in and validated against the fp32 CPU path within a *documented* tolerance; **none relax the canonical parity gates** (fp32 CPU stays the oracle — see PLAN invariant 11). Do not start.
+- [ ] **E1 · Flash attention (exact).** Online-softmax tiled attention behind the existing `attention_forward/backward` signature; O(T) score memory vs O(T²). Numerically equivalent to fp32 vanilla attention → **preserves parity**. Mainly a GPU / long-context-inference win. (Not needed to retire R5 — big models are inference-only in v1.)
+- [ ] **E2 · Post-training quantization (inference).** int8/int4 weights + KV-cache quant, opt-in inference mode via the reserved `DType` seam. Validated within documented tolerance vs fp32 — **not** token-exact; lives behind a flag.
+- [ ] **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious online vector quant (random-rotate → per-coordinate optimal scalar quantizers; 2-stage MSE + 1-bit QJL for unbiased inner products). ~2.5–3.5 bits/channel KV cache near quality-neutral. Plugs into the E2 KV-cache seam. (arXiv 2504.19874)
+- [ ] **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Approximates attention → **breaks canonical GPT-2 parity by construction**; lives on a separate architecture path (also the trigger to reconsider a tape). Hybrid (linear backbone + interleaved full/sparse) is the current sweet spot; watch for "component collapse." Validated on task metrics, not token-exact. (surveys arXiv 2507.19595, 2504.17768)
