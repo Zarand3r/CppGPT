@@ -157,3 +157,13 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+cc_test(
+    name = "tokenizer_test",
+    size = "small",
+    srcs = ["tokenizer_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
