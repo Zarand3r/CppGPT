@@ -25,10 +25,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 - [x] `GPT2` struct (`Config`, param/grad/activation `Storage` arenas, llm.c `.bin` layout) + **`gpt2_forward`, `gpt2_backward`, `gpt2_update` done** (`model.hpp`/`model.cpp`, end-to-end gradcheck + overfit smoke)
 - [x] Weight tying (`lm_head` aliases `wte`) — forward classifier uses `wte`; `dwte` accumulates from classifier + embedding paths in `gpt2_backward` (gradcheck-verified)
 - [x] **GPT-2 init + residual-proj scaling** (`init_weights`) + **AdamW** (`adamw_update` op + `GPT2::update`; 2-group decay: ≥2D weights decay, biases/LN don't; torch-parity fixture)
-- [ ] `CharTokenizer`
-- [ ] `tools/train.cpp` (baby config, 10 steps) · `tools/verify.cpp` (full fwd/bwd)
-- [ ] Finite-difference gradient checker test
-- [ ] **Gate:** 10-step loss matches PyTorch ≤ 1e-3
+- [x] `CharTokenizer` (deterministic byte-level vocab, exact round-trip; BPE is M3)
+- [~] `tools/train.cpp` (baby config, char-level, random-window batches — **trains end to end**, loss descends from ≈ln(V)); `tools/verify.cpp` (full fwd/bwd) next
+- [x] Finite-difference gradient checker test (`model_test` end-to-end gradcheck + `tests/numeric.hpp`)
+- [ ] **Gate:** 10-step loss matches PyTorch ≤ 1e-3 (`scripts/gen_fixtures.py` vs `notebooks/train_gpt2.py`)
 
 ## M2 — TinyShakespeare convergence + CPU perf
 - [ ] `dataloader` (mmap uint16, shuffled epochs) · `scripts/prepare_shakespeare.py`
