@@ -10,6 +10,7 @@
 // Usage: train [corpus.txt] [steps]
 //   corpus.txt  path to a UTF-8/ASCII text file (default: a small built-in corpus)
 //   steps       number of optimizer steps (default: 30)
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -57,9 +58,10 @@ std::string read_file(const char* path) {
 // the next-token shift of inputs. Requires data.size() > T (checked by caller).
 void sample_batch(const std::vector<int>& data, int B, int T, Generator& gen,
                   std::vector<int>& inputs, std::vector<int>& targets) {
-    const int max_start = static_cast<int>(data.size()) - T - 1;
+    // 64-bit start index so a large corpus never truncates through int.
+    const std::int64_t max_start = static_cast<std::int64_t>(data.size()) - T - 1;
     for (int b = 0; b < B; ++b) {
-        const int s = static_cast<int>(gen.uniform_int(0, max_start));
+        const std::int64_t s = gen.uniform_int(0, max_start);
         for (int t = 0; t < T; ++t) {
             const std::size_t o = static_cast<std::size_t>(b) * T + t;
             inputs[o] = data[static_cast<std::size_t>(s + t)];
@@ -74,6 +76,10 @@ int main(int argc, char** argv) {
     const std::string corpus = (argc > 1) ? read_file(argv[1]) : std::string(kDefaultCorpus);
     const int steps = (argc > 2) ? std::atoi(argv[2]) : 30;
 
+    if (corpus.empty()) {
+        std::fprintf(stderr, "train: corpus is empty\n");
+        return 1;
+    }
     CharTokenizer tok(corpus);
     const std::vector<int> data = tok.encode(corpus);
 
@@ -86,7 +92,7 @@ int main(int argc, char** argv) {
     cfg.n_embd = 64;
     const int B = 4, T = 32;
 
-    if (static_cast<int>(data.size()) <= T + 1) {
+    if (data.size() <= static_cast<std::size_t>(T) + 1) {
         std::fprintf(stderr, "train: corpus too short (%zu tokens) for context T=%d\n", data.size(),
                      T);
         return 1;
