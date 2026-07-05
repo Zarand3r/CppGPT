@@ -458,6 +458,15 @@ Other GPU-adjacent items: **SIMD intrinsics (AVX2/NEON)** for the CPU path (meas
 
 **Ambition ceiling (noted, not planned).** TurboQuant-style near-optimal KV-cache quantization (E3) composed with a hybrid sparse/linear backbone (E4) is roughly the frontier a from-scratch, dependency-free GPT-2 could chase for long-context, low-memory inference. Recorded as direction only; every item above is behind invariant 11 and the "do not start" gate.
 
+**Alignment & Post-Training Track (RLHF).** A separate capability axis from the Efficiency Track and the GPU phase: it changes what the model *does* (instruction-following, preference alignment), not how fast or cheap it runs. The core ops (forward/backward/AdamW), tokenizer, and dataloader are reused unchanged, so ops-level parity is untouched — but this is the one track whose *success* is metric-based rather than token-exact-parity-based: there is no canonical "GPT-2 RLHF" reference to match, because outcomes depend on the preference data. New losses are still gradient-checked against a PyTorch reference; invariant 11's canonical gates are added to, never relaxed. Two new pieces of long-lived state appear: a frozen **reference model** (a second param `Storage`, for the A3/A4 KL term) and a **scalar reward head** (for A2/A4).
+
+- **A1 · SFT (supervised fine-tuning).** Fine-tune the pretrained LM on demonstration / chat data, with the loss masked to completion tokens (prompt tokens contribute no gradient). Reuses forward/backward/AdamW + tokenizer verbatim; the only new surface is an instruction-format dataloader and the loss mask. Cheapest step; the base every later step builds on.
+- **A2 · Reward model.** A pairwise-preference dataset (chosen vs rejected) and a reward model = the LM backbone + a scalar head, trained with a Bradley–Terry / pairwise ranking loss. New surface: the scalar head and the ranking loss (forward + hand-derived backward, gradient-checked).
+- **A3 · DPO — the recommended alignment step.** Direct Preference Optimization replaces the reward model + RL loop with a single offline classification-style loss over preference pairs, scored against a frozen reference model (the A1 SFT weights) with an implicit KL regularizer. No reward model, no in-loop sampling, no value network — dramatically more tractable for a std-only CPU implementation than PPO. Reuses the SFT model as a second frozen `Storage`; the only new op is the DPO loss (gradient-checked).
+- **A4 · PPO — research / ambitious ceiling.** Full online RLHF: generate rollouts inside the training loop (the sampler moves onto the hot path), score them with the A2 reward model, and optimize a clipped policy objective with a value head + GAE and a KL-to-reference penalty. Needs 2–3 resident model copies (policy, frozen reference, reward) and generation on the training path — the most complex extension in this document. GRPO and other critic-free RL variants are noted as simpler alternatives if A4 is ever attempted.
+
+DPO-first is deliberate: it delivers most of RLHF's alignment benefit while reusing the existing training machinery almost entirely, whereas PPO drags in generation-in-the-loop, a value network, and multi-model memory pressure. PPO/GRPO stay recorded as the ambitious frontier, gated "do not start" like everything in this section.
+
 ## Verification Strategy
 
 | Layer | Method | When |
@@ -473,6 +482,7 @@ Other GPU-adjacent items: **SIMD intrinsics (AVX2/NEON)** for the CPU path (meas
 | Determinism | Same seed → bit-identical logits across runs | Every CI run |
 | Build hygiene | `ldd` allow-list; `-Werror`; no external deps | Every CI run |
 | CPU↔GPU parity | Same fixture harness, both backends | GPU phase only |
+| RLHF (SFT / RM / DPO / PPO) | New losses (ranking, DPO) gradient-checked vs PyTorch; **success is metric-based** — RM ranking accuracy on held-out prefs, reward / win-rate up, KL-to-reference bounded (no token-exact oracle exists) | Post-v1 (Alignment Track) |
 
 Anti-pattern to avoid: "ship now, write tests later." The fixture harness is M0 deliverable #1 because every later milestone leans on it.
 
@@ -494,6 +504,7 @@ Things we explicitly do *not* build in v1, and the trigger that would change tha
 | Activation checkpointing | OOM on a target model size (GPU phase) |
 | Multi-GPU / distributed | Single-GPU training is genuinely throughput-bound |
 | RoPE / GQA / RMSNorm / SwiGLU | We start porting a non-GPT-2 architecture (Llama-family) — would also motivate a tape |
+| RLHF / instruction-tuning (SFT → RM → DPO → PPO) | We want an aligned / instruction-following model, not just a base LM. DPO-first (reuses training machinery); PPO/GRPO the ambitious ceiling. Metric-verified, not parity-verified. |
 | HTTP server / Python bindings | A downstream user asks |
 | macOS / Windows build | A developer needs it |
 
