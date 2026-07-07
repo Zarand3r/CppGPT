@@ -66,5 +66,19 @@ int main() {
     for (int i = 0; i < 8; ++i) all_zero = all_zero && (z[i] == 0.0f);
     CHECK(all_zero);
 
+    // Default-constructed arena is empty.
+    Storage empty;
+    CHECK(empty.capacity_bytes() == 0 && empty.used_bytes() == 0);
+
+    // zero() clears the allocated region in place.
+    Storage zs(8);
+    float* zp = zs.alloc(8);
+    for (int i = 0; i < 8; ++i) zp[i] = 3.0f;
+    zs.zero();
+    bool cleared = true;
+    for (int i = 0; i < 8; ++i) cleared = cleared && (zp[i] == 0.0f);
+    CHECK(cleared);
+    CHECK(zs.used_bytes() == 8 * sizeof(float));  // zero() keeps the bump head
+
     return cppgpt::test::summary();
 }

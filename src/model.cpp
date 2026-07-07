@@ -112,26 +112,37 @@ void fill_const(float* p, std::size_t n, float v) {
 
 }  // namespace
 
-GPT2::GPT2(const Config& cfg, int B, int T)
-    : cfg_(cfg),
-      B_(B),
-      T_(T),
-      param_store_([&] {
-          std::size_t s[kNumParamTensors];
-          return Storage(param_sizes(cfg, s));
-      }()),
-      act_store_([&] {
-          std::size_t s[kNumActTensors];
-          return Storage(act_sizes(cfg, B, T, s));
-      }()) {
+GPT2::GPT2(const Config& cfg, int B, int T) : cfg_(cfg), B_(B), T_(T) {
     ASSERT(cfg.n_embd > 0 && cfg.n_head > 0 && cfg.n_embd % cfg.n_head == 0);
     ASSERT(cfg.n_layer >= 0 && cfg.vocab_size > 0 && T <= cfg.max_seq_len);
+
+    // Parameters and their gradients share the same layout.
     std::size_t ps[kNumParamTensors];
     const std::size_t ptot = param_sizes(cfg, ps);
+    param_store_ = Storage(ptot);
+    grad_store_ = Storage(ptot);
     point_params(params_, param_store_.alloc(ptot), ps);
+    point_params(grads_, grad_store_.alloc(ptot), ps);
+
+    // Activations and their gradients share the same layout.
     std::size_t as[kNumActTensors];
     const std::size_t atot = act_sizes(cfg, B, T, as);
+    act_store_ = Storage(atot);
+    act_grad_store_ = Storage(atot);
     point_acts(acts_, act_store_.alloc(atot), as);
+    point_acts(act_grads_, act_grad_store_.alloc(atot), as);
+
+    // Attention-backward scratch: datt, dpreatt, each [B, NH, T, T]. One block,
+    // split in two (a second alloc() would re-align the bump head and overflow).
+    const auto att = static_cast<std::size_t>(B) * cfg.n_head * T * T;
+    scratch_store_ = Storage(2 * att);
+    datt_ = scratch_store_.alloc(2 * att);
+    dpreatt_ = datt_ + att;
+}
+
+void GPT2::zero_grads() noexcept {
+    grad_store_.zero();
+    act_grad_store_.zero();
 }
 
 void GPT2::init_weights(Generator& gen) {
@@ -229,6 +240,100 @@ void GPT2::forward(const int* tokens, const int* targets, int B, int T) {
     double sum = 0.0;
     for (std::size_t bt = 0; bt < BT; ++bt) sum += a.losses[bt];
     mean_loss_ = static_cast<float>(sum / static_cast<double>(BT));
+}
+
+void GPT2::backward(const int* tokens, const int* targets, int B, int T) {
+    ASSERT(B == B_ && T == T_);
+    const int C = cfg_.n_embd, L = cfg_.n_layer, NH = cfg_.n_head, V = cfg_.vocab_size;
+    const auto BTC = static_cast<std::size_t>(B) * T * C;
+    const auto BT = static_cast<std::size_t>(B) * T;
+    const auto ATT = static_cast<std::size_t>(B) * NH * T * T;
+    const auto Cz = static_cast<std::size_t>(C);
+    const ParamTensors& p = params_;
+    const ParamTensors& g = grads_;
+    const ActTensors& a = acts_;
+    const ActTensors& d = act_grads_;  // gradient activations (zeroed by zero_grads)
+
+    // Loss + classifier (tied head): dlogits = (probs − onehot)/(B·T); dwte += classifier path.
+    cross_entropy_backward(d.logits, a.probs, targets, B, T, V, Device::CPU);
+    matmul_backward(d.lnf, g.wte, nullptr, d.logits, a.lnf, p.wte, B, T, C, V, Device::CPU);
+
+    // Final LayerNorm; its input gradient is the gradient of the last block output.
+    const float* last = (L == 0) ? a.encoded : a.residual3 + static_cast<std::size_t>(L - 1) * BTC;
+    float* d_last = (L == 0) ? d.encoded : d.residual3 + static_cast<std::size_t>(L - 1) * BTC;
+    layernorm_backward(d_last, g.lnfw, g.lnfb, d.lnf, last, p.lnfw, a.lnf_mean, a.lnf_rstd, B, T, C,
+                       Device::CPU);
+
+    // Transformer blocks in reverse.
+    for (int l = L - 1; l >= 0; --l) {
+        const auto ll = static_cast<std::size_t>(l);
+        const float* res = (l == 0) ? a.encoded : a.residual3 + (ll - 1) * BTC;
+        float* d_res = (l == 0) ? d.encoded : d.residual3 + (ll - 1) * BTC;  // outgoing (accumulates)
+        float* d_res3 = d.residual3 + ll * BTC;                              // incoming
+        // Per-layer parameter / gradient slices.
+        const float* ln1w = p.ln1w + ll * Cz;
+        const float* qkvw = p.qkvw + ll * 3 * Cz * Cz;
+        const float* aprojw = p.attprojw + ll * Cz * Cz;
+        const float* ln2w = p.ln2w + ll * Cz;
+        const float* fcw = p.fcw + ll * 4 * Cz * Cz;
+        const float* fcprojw = p.fcprojw + ll * Cz * 4 * Cz;
+        float* g_ln1w = g.ln1w + ll * Cz;
+        float* g_ln1b = g.ln1b + ll * Cz;
+        float* g_qkvw = g.qkvw + ll * 3 * Cz * Cz;
+        float* g_qkvb = g.qkvb + ll * 3 * Cz;
+        float* g_aprojw = g.attprojw + ll * Cz * Cz;
+        float* g_aprojb = g.attprojb + ll * Cz;
+        float* g_ln2w = g.ln2w + ll * Cz;
+        float* g_ln2b = g.ln2b + ll * Cz;
+        float* g_fcw = g.fcw + ll * 4 * Cz * Cz;
+        float* g_fcb = g.fcb + ll * 4 * Cz;
+        float* g_fcprojw = g.fcprojw + ll * Cz * 4 * Cz;
+        float* g_fcprojb = g.fcprojb + ll * Cz;
+        // Per-layer forward activations (read).
+        const float* ln1 = a.ln1 + ll * BTC;
+        const float* qkv = a.qkv + ll * BTC * 3;
+        const float* att = a.att + ll * ATT;
+        const float* atty = a.atty + ll * BTC;
+        const float* residual2 = a.residual2 + ll * BTC;
+        const float* ln2 = a.ln2 + ll * BTC;
+        const float* fch = a.fch + ll * BTC * 4;
+        const float* fch_gelu = a.fch_gelu + ll * BTC * 4;
+        const float* ln1_mean = a.ln1_mean + ll * BT;
+        const float* ln1_rstd = a.ln1_rstd + ll * BT;
+        const float* ln2_mean = a.ln2_mean + ll * BT;
+        const float* ln2_rstd = a.ln2_rstd + ll * BT;
+        // Per-layer gradient activations (zeroed; written here).
+        float* d_ln1 = d.ln1 + ll * BTC;
+        float* d_qkv = d.qkv + ll * BTC * 3;
+        float* d_atty = d.atty + ll * BTC;
+        float* d_attproj = d.attproj + ll * BTC;
+        float* d_residual2 = d.residual2 + ll * BTC;
+        float* d_ln2 = d.ln2 + ll * BTC;
+        float* d_fch = d.fch + ll * BTC * 4;
+        float* d_fch_gelu = d.fch_gelu + ll * BTC * 4;
+        float* d_fcproj = d.fcproj + ll * BTC;
+        const int btc = static_cast<int>(BTC);
+
+        // MLP sub-block (reverse): residual3 = residual2 + fcproj.
+        residual_backward(d_residual2, d_fcproj, d_res3, btc, Device::CPU);
+        matmul_backward(d_fch_gelu, g_fcprojw, g_fcprojb, d_fcproj, fch_gelu, fcprojw, B, T, 4 * C, C,
+                        Device::CPU);
+        gelu_backward(d_fch, fch, d_fch_gelu, btc * 4, Device::CPU);
+        matmul_backward(d_ln2, g_fcw, g_fcb, d_fch, ln2, fcw, B, T, C, 4 * C, Device::CPU);
+        layernorm_backward(d_residual2, g_ln2w, g_ln2b, d_ln2, residual2, ln2w, ln2_mean, ln2_rstd,
+                           B, T, C, Device::CPU);  // d_residual2 += (onto residual contribution)
+
+        // Attention sub-block (reverse): residual2 = res + attproj.
+        residual_backward(d_res, d_attproj, d_residual2, btc, Device::CPU);
+        matmul_backward(d_atty, g_aprojw, g_aprojb, d_attproj, atty, aprojw, B, T, C, C, Device::CPU);
+        attention_backward(d_qkv, datt_, dpreatt_, d_atty, qkv, att, B, T, C, NH, Device::CPU);
+        matmul_backward(d_ln1, g_qkvw, g_qkvb, d_qkv, ln1, qkvw, B, T, C, 3 * C, Device::CPU);
+        layernorm_backward(d_res, g_ln1w, g_ln1b, d_ln1, res, ln1w, ln1_mean, ln1_rstd, B, T, C,
+                           Device::CPU);  // d_res += (onto residual contribution)
+    }
+
+    // Embedding: dwte += embedding path (so dwte = classifier + embedding — weight tying); dwpe +=.
+    encoder_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V, Device::CPU);
 }
 
 }  // namespace cppgpt

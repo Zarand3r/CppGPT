@@ -1,15 +1,19 @@
-// GPT2 forward: a baby model produces a finite loss ≈ ln(V) at init, and the
-// forward is deterministic (repeat and a fresh same-seed model reproduce it
-// bit-for-bit). The end-to-end gradient check arrives with gpt2_backward.
+// GPT2 forward + backward: a baby model produces a finite loss ≈ ln(V) at init,
+// the forward is deterministic (bit-for-bit), and gpt2_backward's gradients match
+// finite differences of the loss end to end — including wte, whose gradient flows
+// through both the tied classifier and the embedding (weight tying).
 #include "cppgpt/model.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <vector>
 
 #include "cppgpt/random.hpp"
 #include "tests/check.hpp"
+#include "tests/numeric.hpp"
 
 using namespace cppgpt;
+using cppgpt::test::grad_check;
 
 int main() {
     Config cfg{};
@@ -44,6 +48,28 @@ int main() {
     model2.init_weights(gen2);
     model2.forward(tokens.data(), targets.data(), B, T);
     CHECK(model2.mean_loss() == loss1);
+
+    // ---- end-to-end gradient check ----
+    model.forward(tokens.data(), targets.data(), B, T);
+    model.zero_grads();
+    model.backward(tokens.data(), targets.data(), B, T);
+
+    auto loss = [&]() {
+        model.forward(tokens.data(), targets.data(), B, T);
+        return static_cast<double>(model.mean_loss());
+    };
+    const int C = cfg.n_embd, L = cfg.n_layer, maxT = cfg.max_seq_len;
+    const auto sz = [](int n) { return static_cast<std::size_t>(n); };
+
+    // wte: the tied weight — its gradient must be correct through BOTH the
+    // classifier head and the token embedding.
+    CHECK(grad_check(loss, model.params().wte, model.grads().wte, sz(V * C)) < 3e-2);
+    CHECK(grad_check(loss, model.params().wpe, model.grads().wpe, sz(maxT * C)) < 3e-2);
+    // an attention weight and an MLP weight (per-layer backward chain)
+    CHECK(grad_check(loss, model.params().qkvw, model.grads().qkvw, sz(L * 3 * C * C)) < 3e-2);
+    CHECK(grad_check(loss, model.params().fcw, model.grads().fcw, sz(L * 4 * C * C)) < 3e-2);
+    // final layernorm gain
+    CHECK(grad_check(loss, model.params().lnfw, model.grads().lnfw, sz(C)) < 3e-2);
 
     return cppgpt::test::summary();
 }
