@@ -14,6 +14,7 @@
 
 using namespace cppgpt;
 using cppgpt::test::grad_check;
+using cppgpt::test::rel_close;
 
 int main() {
     Config cfg{};
@@ -95,6 +96,38 @@ int main() {
         CHECK(std::isfinite(end));
         CHECK(monotonic);            // AdamW descends the fixed-batch loss
         CHECK(end < 0.1f * start);   // and overfits it far below the init loss
+    }
+
+    // ---- 2-group weight-decay routing: with zero grads and fresh moments (m=v=0),
+    // one AdamW step is pure decay — decaying tensors scale by (1−lr·wd), non-decaying
+    // tensors are bit-unchanged. This pins GPT2::update's kDecay mask to the right
+    // tensors (the overfit smoke above runs wd=0 and can't catch a mis-mapped flag). ----
+    {
+        Generator gen4(0x6072ULL);
+        GPT2 dm(cfg, B, T);
+        dm.init_weights(gen4);
+        const std::size_t nwte = sz(V * C);
+        const std::vector<float> wte0(dm.params().wte, dm.params().wte + nwte);   // decays
+        const std::vector<float> qkvw0(dm.params().qkvw,
+                                       dm.params().qkvw + sz(L * 3 * C * C));      // decays
+        const std::vector<float> lnfw0(dm.params().lnfw, dm.params().lnfw + sz(C));    // no decay
+        const std::vector<float> qkvb0(dm.params().qkvb, dm.params().qkvb + sz(L * 3 * C));  // no
+
+        dm.zero_grads();  // grads = 0 ⇒ moments stay 0 ⇒ step = −lr·wd·param on the decay group
+        const float lr = 0.1f, wd = 0.5f, scale = 1.0f - lr * wd;
+        dm.update(lr, 0.9f, 0.95f, 1e-8f, wd);
+
+        bool decay_ok = true, nodecay_ok = true;
+        for (std::size_t i = 0; i < nwte; ++i)
+            decay_ok = decay_ok && rel_close(dm.params().wte[i], wte0[i] * scale, 1e-5);
+        for (std::size_t i = 0; i < sz(L * 3 * C * C); ++i)
+            decay_ok = decay_ok && rel_close(dm.params().qkvw[i], qkvw0[i] * scale, 1e-5);
+        for (std::size_t i = 0; i < sz(C); ++i)
+            nodecay_ok = nodecay_ok && (dm.params().lnfw[i] == lnfw0[i]);  // exactly unchanged
+        for (std::size_t i = 0; i < sz(L * 3 * C); ++i)
+            nodecay_ok = nodecay_ok && (dm.params().qkvb[i] == qkvb0[i]);
+        CHECK(decay_ok);
+        CHECK(nodecay_ok);
     }
 
     return cppgpt::test::summary();

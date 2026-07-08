@@ -85,13 +85,15 @@ void attention_backward(float* dinp, float* datt, float* dpreatt, const float* d
 // Token + learned-position embedding: out[b,t,:] = wte[tokens[b,t],:] + wpe[t,:].
 // `tokens` is [B*T] ids in [0,V); `wte` is [V,C]; `wpe` is [T,C] (or larger).
 // Writes `out` [B,T,C]. An out-of-range token id aborts (fail fast).
-void encoder_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
-                     int T, int C, int V, Device dev) noexcept;
+// (This is the embedding lookup, not a Transformer encoder; llm.c calls it
+// encoder_forward.)
+void embedding_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                       int T, int C, int V, Device dev) noexcept;
 
-// Backward of encoder_forward. ACCUMULATES (+=) into dwte [V,C] and dwpe [T,C]
+// Backward of embedding_forward. ACCUMULATES (+=) into dwte [V,C] and dwpe [T,C]
 // (caller zeroes), scattering dout to the looked-up token row and position row.
-void encoder_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
-                      int T, int C, int V, Device dev) noexcept;
+void embedding_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                        int T, int C, int V, Device dev) noexcept;
 
 // Per-position cross-entropy from softmax probabilities: losses[b,t] =
 // −log(probs[b,t,targets[b,t]]). `probs` is [B,T,V] (a softmax over V); `targets`

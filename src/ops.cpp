@@ -255,8 +255,8 @@ void attention_backward_cpu(float* dinp, float* datt, float* dpreatt, const floa
     }
 }
 
-void encoder_forward_cpu(float* out, const int* tokens, const float* wte, const float* wpe, int B,
-                         int T, int C, int V) noexcept {
+void embedding_forward_cpu(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                           int T, int C, int V) noexcept {
     const std::size_t Cz = static_cast<std::size_t>(C);
     const std::size_t Tz = static_cast<std::size_t>(T);
     for (int b = 0; b < B; ++b) {
@@ -271,8 +271,8 @@ void encoder_forward_cpu(float* out, const int* tokens, const float* wte, const 
     }
 }
 
-void encoder_backward_cpu(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
-                          int T, int C, int V) noexcept {
+void embedding_backward_cpu(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                            int T, int C, int V) noexcept {
     const std::size_t Cz = static_cast<std::size_t>(C);
     const std::size_t Tz = static_cast<std::size_t>(T);
     for (int b = 0; b < B; ++b) {
@@ -436,20 +436,20 @@ void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* 
     layernorm_backward_cpu(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
 }
 
-void encoder_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
-                     int T, int C, int V, Device dev) noexcept {
+void embedding_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                       int T, int C, int V, Device dev) noexcept {
     ASSERT(dev == Device::CPU);
     ASSERT(out != nullptr && tokens != nullptr && wte != nullptr && wpe != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
-    encoder_forward_cpu(out, tokens, wte, wpe, B, T, C, V);
+    embedding_forward_cpu(out, tokens, wte, wpe, B, T, C, V);
 }
 
-void encoder_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
-                      int T, int C, int V, Device dev) noexcept {
+void embedding_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                        int T, int C, int V, Device dev) noexcept {
     ASSERT(dev == Device::CPU);
     ASSERT(dwte != nullptr && dwpe != nullptr && tokens != nullptr && dout != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
-    encoder_backward_cpu(dwte, dwpe, tokens, dout, B, T, C, V);
+    embedding_backward_cpu(dwte, dwpe, tokens, dout, B, T, C, V);
 }
 
 void cross_entropy_forward(float* losses, const float* probs, const int* targets, int B, int T,

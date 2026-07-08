@@ -55,9 +55,9 @@ Non-numeric: the code reads cleanly, ownership is obvious, hot paths perform no 
 - **Vendor math/comm runtimes** — no NCCL, MPI, cuBLAS, cuDNN, Thrust, CUTLASS, MKL — ever (even in the GPU phase, which uses hand-written kernels).
 - **Multi-GPU, multi-node, distributed training** — single process, single machine.
 - **ZeRO / FSDP / pipeline / tensor parallelism; gradient checkpointing for VRAM relief.**
-- **Mixed precision (bf16/fp16) and quantization (int8/int4)** — fp32 only in v1; mixed precision is a GPU-phase item.
+- **Mixed precision (bf16/fp16) and quantization (int8/int4)** — fp32 only in v1; mixed precision is a GPU-phase item, and int8/int4 post-training quantization is the Efficiency Track's E2/E3 (opt-in, tolerance-validated, never a parity gate).
 - **Training models > ~350M from scratch** — needs the GPU phase.
-- **Mixture-of-Experts, RoPE, GQA, sliding-window attention, FlashAttention** — vanilla causal MHA only. `Config::n_kv_head` exists (defaults to `n_head`) so GQA is a future config flip, but no implementation in v1.
+- **Mixture-of-Experts, RoPE, GQA, sliding-window / sparse / linear attention** — vanilla causal MHA only. These *change the model* (approximation or new params) and so break canonical parity by construction; they are Efficiency-Track E4, on a separate architecture path. `Config::n_kv_head` exists (defaults to `n_head`) so GQA is a future config flip, but no implementation in v1. **Flash attention is not in this list** — it is numerically *exact* (same softmax, tiled) and parity-preserving, filed as E1; still out of v1 scope, but for a different reason (not needed until GPU / long-context).
 - Beam search, speculative decoding, grammars, structured output.
 - Multimodal anything; web server, HTTP API, gRPC, Python bindings.
 - Windows/macOS before Linux works.
@@ -261,7 +261,7 @@ prefix tokens ─► forward(B=1, T=prefix_len) ─► save K,V into cache
 new token     ─► forward_step(B=1, T=1, uses kv_cache) ─► logits ─► sample ─► append
 ```
 
-KV cache is a separate `Storage` of shape `[n_layer, 2, max_seq, n_head, head_dim]`. Forward-step writes the new k/v slice and reads the full prefix. Logit cropping: when generating, run the classifier head on the last position only.
+KV cache is a separate `Storage` of shape `[n_layer, 2, max_seq, n_head, head_dim]`. Forward-step writes the new k/v slice and reads the full prefix. Logit cropping: when generating, run the classifier head on the last position only. This `Storage` is also the insertion point for the Efficiency Track's KV-cache quantization (E2/E3) — its element type moves from fp32 to a quantized `DType` behind the reserved seam, with the fp32 cache staying the tolerance oracle (invariant 11).
 
 ## State Machines / Lifecycles
 
@@ -387,6 +387,7 @@ Each maps to a test, assertion, or check.
 8. **Every op carries its `Device`; v1 asserts `CPU`.** The seam never silently assumes host memory. *(Op-entry assertion + R7 lint.)*
 9. **Verification is run, not promised** — every commit touching an op runs the fixture vs PyTorch. *(CI gate.)*
 10. **No third-party runtime deps** — `ldd` allow-list (libc/libm/libstdc++/libpthread). *(CI gate.)*
+11. **Efficiency/approximation modes never relax the canonical gates.** Any quantized, sparse, linear, or otherwise-approximate path is opt-in and validated against the fp32 CPU path within a *documented, committed* tolerance; the fp32 CPU path remains the parity oracle. A mode that loosens, skips, or replaces a canonical parity check to "pass" is out of scope by construction. *(Applies to the whole Efficiency & Research Track; exact modes like E1 flash attention still meet the standard fp32 tolerance.)*
 
 (Future-phase invariant, M-GPU: CPU and CUDA paths are numerically equivalent within a documented tolerance — same fixture harness, both backends.)
 
@@ -443,10 +444,28 @@ Each milestone: goal, deliverable, scope/non-scope, risks retired, definition-of
 **Effort:** 1–2 weeks.
 
 ### Beyond v1 (each its own future plan)
-- **GPU phase — from-scratch CUDA backend** behind the device seam (the headline future work): hand-written kernels, host↔device transfers + streams, mixed precision (bf16/tf32), GPU memory budgeting, relaxed determinism contract; targets a single workstation GPU (e.g. NVIDIA RTX 6000 Ada/Pro) for real GPT-2-scale training. CPU stays the numerical oracle.
-- **SIMD intrinsics (AVX2/NEON)** for the CPU path — measured-need only.
-- **Architecture extensions** (RMSNorm, RoPE, GQA, SwiGLU) — added when a real need exists (would also be the trigger to reconsider a tape).
-- **Top-p / repetition penalty; quantization/GGUF; macOS/Windows.**
+
+**GPU phase (headline).** From-scratch CUDA backend behind the device seam: hand-written kernels, host↔device transfers + streams, mixed precision (bf16/tf32), GPU memory budgeting, relaxed determinism contract; targets a single workstation GPU (e.g. NVIDIA RTX 6000 Ada/Pro) for real GPT-2-scale training. CPU stays the numerical oracle.
+
+Other GPU-adjacent items: **SIMD intrinsics (AVX2/NEON)** for the CPU path (measured-need only); **tape autograd** (only if we start varying architectures); **top-p / repetition penalty; GGUF; macOS/Windows**.
+
+**Efficiency & Research Track.** Ordered least→most numerical perturbation. Governed by invariant 11: each is opt-in and validated against the fp32 CPU oracle within a documented tolerance; none relax the canonical parity gates. The v1 seams they reuse (the reserved `DType` field, the device-dispatched op signatures, the KV-cache `Storage`) already exist — no new abstraction is paid for now (see "Deferred Complexity").
+
+- **E1 · Flash attention (exact, parity-preserving).** Online-softmax tiled attention behind the existing `attention_forward/backward` call site — additive, exactly like the GPU seam. O(T) score memory instead of O(L·B·NH·T²); this is the general fix for R5, though R5 is already handled in v1 by scoping big models to inference-only. Same softmax → meets the standard fp32 tolerance, not a looser one. Primary payoff: GPU training and long-context inference. Validated against fp32 vanilla attention.
+- **E2 · Post-training quantization (inference).** int8/int4 weight quantization + KV-cache quantization as an opt-in inference mode, via the reserved `DType` seam (or a parallel quantized `Storage` with dequant-on-the-fly in the matmul). Not token-exact — lives behind a flag, validated within a committed tolerance vs the fp32 path. The KV-cache `Storage` (already shaped `[n_layer,2,max_seq,n_head,head_dim]` in v1) is the quantization insertion point.
+- **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious *online* vector quantization suited to KV cache: randomly rotate vectors (inducing a concentrated Beta distribution per coordinate), then apply per-coordinate optimal scalar quantizers; a two-stage MSE quantizer + 1-bit Quantized-JL residual yields an *unbiased inner-product* estimator (the quantity attention actually needs). Reported ≈ quality-neutral at 3.5 bits/channel and marginal at 2.5, within a small constant of the information-theoretic distortion bound. Plugs into the E2 KV-cache seam; accelerator-friendly and online, so it also fits the GPU phase. Reference: TurboQuant, arXiv 2504.19874.
+- **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Sub-quadratic attention: linear (kernel/recurrent, O(N) but a known reasoning / long-retrieval penalty and non-injective attention), sparse (block/pattern/routed token subsets), or **hybrid** (linear backbone with interleaved full or sparse-softmax layers) — the current consensus sweet spot, with "component collapse" (the model ignoring the linear branch) as the documented failure mode. These change the computation, so they break canonical GPT-2 token-exact parity by construction and live on a separate architecture path — the same trigger that would justify reconsidering a tape/autograd. Validated on task metrics (perplexity, long-context retrieval), not token-exact parity. References: surveys arXiv 2507.19595, 2504.17768.
+
+**Ambition ceiling (noted, not planned).** TurboQuant-style near-optimal KV-cache quantization (E3) composed with a hybrid sparse/linear backbone (E4) is roughly the frontier a from-scratch, dependency-free GPT-2 could chase for long-context, low-memory inference. Recorded as direction only; every item above is behind invariant 11 and the "do not start" gate.
+
+**Alignment & Post-Training Track (RLHF).** A separate capability axis from the Efficiency Track and the GPU phase: it changes what the model *does* (instruction-following, preference alignment), not how fast or cheap it runs. The core ops (forward/backward/AdamW), tokenizer, and dataloader are reused unchanged, so ops-level parity is untouched — but this is the one track whose *success* is metric-based rather than token-exact-parity-based: there is no canonical "GPT-2 RLHF" reference to match, because outcomes depend on the preference data. New losses are still gradient-checked against a PyTorch reference; invariant 11's canonical gates are added to, never relaxed. Two new pieces of long-lived state appear: a frozen **reference model** (a second param `Storage`, for the A3/A4 KL term) and a **scalar reward head** (for A2/A4).
+
+- **A1 · SFT (supervised fine-tuning).** Fine-tune the pretrained LM on demonstration / chat data, with the loss masked to completion tokens (prompt tokens contribute no gradient). Reuses forward/backward/AdamW + tokenizer verbatim; the only new surface is an instruction-format dataloader and the loss mask. Cheapest step; the base every later step builds on.
+- **A2 · Reward model.** A pairwise-preference dataset (chosen vs rejected) and a reward model = the LM backbone + a scalar head, trained with a Bradley–Terry / pairwise ranking loss. New surface: the scalar head and the ranking loss (forward + hand-derived backward, gradient-checked).
+- **A3 · DPO — the recommended alignment step.** Direct Preference Optimization replaces the reward model + RL loop with a single offline classification-style loss over preference pairs, scored against a frozen reference model (the A1 SFT weights) with an implicit KL regularizer. No reward model, no in-loop sampling, no value network — dramatically more tractable for a std-only CPU implementation than PPO. Reuses the SFT model as a second frozen `Storage`; the only new op is the DPO loss (gradient-checked).
+- **A4 · PPO — research / ambitious ceiling.** Full online RLHF: generate rollouts inside the training loop (the sampler moves onto the hot path), score them with the A2 reward model, and optimize a clipped policy objective with a value head + GAE and a KL-to-reference penalty. Needs 2–3 resident model copies (policy, frozen reference, reward) and generation on the training path — the most complex extension in this document. GRPO and other critic-free RL variants are noted as simpler alternatives if A4 is ever attempted.
+
+DPO-first is deliberate: it delivers most of RLHF's alignment benefit while reusing the existing training machinery almost entirely, whereas PPO drags in generation-in-the-loop, a value network, and multi-model memory pressure. PPO/GRPO stay recorded as the ambitious frontier, gated "do not start" like everything in this section.
 
 ## Verification Strategy
 
@@ -463,6 +482,7 @@ Each milestone: goal, deliverable, scope/non-scope, risks retired, definition-of
 | Determinism | Same seed → bit-identical logits across runs | Every CI run |
 | Build hygiene | `ldd` allow-list; `-Werror`; no external deps | Every CI run |
 | CPU↔GPU parity | Same fixture harness, both backends | GPU phase only |
+| RLHF (SFT / RM / DPO / PPO) | New losses (ranking, DPO) gradient-checked vs PyTorch; **success is metric-based** — RM ranking accuracy on held-out prefs, reward / win-rate up, KL-to-reference bounded (no token-exact oracle exists) | Post-v1 (Alignment Track) |
 
 Anti-pattern to avoid: "ship now, write tests later." The fixture harness is M0 deliverable #1 because every later milestone leans on it.
 
@@ -476,10 +496,15 @@ Things we explicitly do *not* build in v1, and the trigger that would change tha
 | CUDA backend | The GPU phase begins (the planned next major effort) |
 | Mixed precision (bf16/tf32) | GPU phase / memory or throughput pressure |
 | Multi-stream RNG, SHA-256 checkpoints, fuzz harness, CI build matrix, coverage/clang-tidy gates | A concrete failure or contributor need demands it — not pre-emptively |
-| GGUF / quantization | Need to run > ~1B-param models on consumer hardware |
+| Flash attention (E1, exact) | Long-context inference, or GPU training where the O(T²) score buffer dominates. Parity-preserving, so it can enter whenever measured need appears — no architecture change. |
+| Int8/int4 post-training quantization (E2) | Need to fit 124M/350M+ inference in a tighter memory/latency budget than fp32 allows. Opt-in; tolerance-validated (invariant 11). |
+| TurboQuant-class KV-cache quantization (E3) | E2 exists and KV-cache memory is the inference bottleneck at long context; want near-optimal bits/channel. Research-grade. |
+| Sparse / linear / hybrid attention (E4) | We deliberately trade token-exact parity for sub-quadratic long-context compute — a separate architecture path, not the canonical GPT-2 model. Also the trigger to reconsider a tape. |
+| GGUF weight format | Interop with the llama.cpp ecosystem, or shipping quantized weights (pairs with E2/E3). |
 | Activation checkpointing | OOM on a target model size (GPU phase) |
 | Multi-GPU / distributed | Single-GPU training is genuinely throughput-bound |
-| RoPE / GQA / FlashAttention | We start porting Llama, not just GPT-2 |
+| RoPE / GQA / RMSNorm / SwiGLU | We start porting a non-GPT-2 architecture (Llama-family) — would also motivate a tape |
+| RLHF / instruction-tuning (SFT → RM → DPO → PPO) | We want an aligned / instruction-following model, not just a base LM. DPO-first (reuses training machinery); PPO/GRPO the ambitious ceiling. Metric-verified, not parity-verified. |
 | HTTP server / Python bindings | A downstream user asks |
 | macOS / Windows build | A developer needs it |
 
