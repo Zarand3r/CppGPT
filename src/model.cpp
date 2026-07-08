@@ -170,8 +170,8 @@ void GPT2::init_weights(Generator& gen) {
     fill_const(p.lnfb, Cz, 0.0f);
 }
 
-void GPT2::forward(const int* tokens, const int* targets, int B, int T) {
-    ASSERT(B == B_ && T == T_);
+void GPT2::forward(const int* tokens, const int* targets) {
+    const int B = B_, T = T_;
     const int C = cfg_.n_embd, L = cfg_.n_layer, NH = cfg_.n_head, V = cfg_.vocab_size;
     const auto BTC = static_cast<std::size_t>(B) * T * C;
     const auto BT = static_cast<std::size_t>(B) * T;
@@ -242,8 +242,8 @@ void GPT2::forward(const int* tokens, const int* targets, int B, int T) {
     mean_loss_ = static_cast<float>(sum / static_cast<double>(BT));
 }
 
-void GPT2::backward(const int* tokens, const int* targets, int B, int T) {
-    ASSERT(B == B_ && T == T_);
+void GPT2::backward(const int* tokens, const int* targets) {
+    const int B = B_, T = T_;
     const int C = cfg_.n_embd, L = cfg_.n_layer, NH = cfg_.n_head, V = cfg_.vocab_size;
     const auto BTC = static_cast<std::size_t>(B) * T * C;
     const auto BT = static_cast<std::size_t>(B) * T;

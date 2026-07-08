@@ -111,11 +111,11 @@ int main(int argc, char** argv) {
 
     for (int step = 1; step <= steps; ++step) {
         sample_batch(data, B, T, gen, inputs, targets);
-        model.forward(inputs.data(), targets.data(), B, T);
+        model.forward(inputs.data(), targets.data());
         const float loss = model.mean_loss();
         std::printf("step %3d/%d  loss %.4f\n", step, steps, static_cast<double>(loss));
         model.zero_grads();
-        model.backward(inputs.data(), targets.data(), B, T);
+        model.backward(inputs.data(), targets.data());
         model.update(opt);
     }
 
