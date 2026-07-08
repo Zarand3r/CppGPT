@@ -11,7 +11,7 @@
 //     −lr·wd·p and a non-decaying tensor does not move at all.
 //   * Convergence — on a convex quadratic (grad = x−a) the iterate approaches the
 //     minimum a, exercising the moments and bias correction over many steps.
-#include "cppgpt/ops.hpp"
+#include "cppgpt/optimizer.hpp"
 
 #include <cmath>
 #include <cstddef>

@@ -336,7 +336,7 @@ void GPT2::backward(const int* tokens, const int* targets, int B, int T) {
     embedding_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V, Device::CPU);
 }
 
-void GPT2::update(float lr, float beta1, float beta2, float eps, float weight_decay) noexcept {
+void GPT2::update(const AdamW& opt) noexcept {
     std::size_t ps[kNumParamTensors];
     const std::size_t ptot = param_sizes(cfg_, ps);
 
@@ -375,9 +375,9 @@ void GPT2::update(float lr, float beta1, float beta2, float eps, float weight_de
     const float* grad = grads_.wte;
     std::size_t off = 0;
     for (int i = 0; i < kNumParamTensors; ++i) {
-        const float wd = kDecay[i] ? weight_decay : 0.0f;
-        adamw_update(param + off, grad + off, m_ + off, v_ + off, static_cast<int>(ps[i]), lr, beta1,
-                     beta2, eps, wd, adam_step_, Device::CPU);
+        const float wd = kDecay[i] ? opt.weight_decay : 0.0f;
+        adamw_update(param + off, grad + off, m_ + off, v_ + off, static_cast<int>(ps[i]), opt.lr,
+                     opt.beta1, opt.beta2, opt.eps, wd, adam_step_);
         off += ps[i];
     }
 }

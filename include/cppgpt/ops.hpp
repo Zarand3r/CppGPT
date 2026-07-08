@@ -107,16 +107,4 @@ void cross_entropy_forward(float* losses, const float* probs, const int* targets
 void cross_entropy_backward(float* dlogits, const float* probs, const int* targets, int B, int T,
                             int V, Device dev) noexcept;
 
-// AdamW step for one parameter tensor of `n` floats, with decoupled weight decay
-// (Loshchilov & Hutter; matches torch.optim.AdamW). Updates `param` in place and
-// the running first/second moments `m`, `v` (both start at zero); `grad` is read,
-// never modified. `t` is the 1-based step index, used for bias correction. With
-// bc1 = 1/(1−β1ᵗ), bc2 = 1/(1−β2ᵗ):
-//     m ← β1·m + (1−β1)·g;   v ← β2·v + (1−β2)·g²
-//     param −= lr · ( (m·bc1)/(√(v·bc2) + eps) + weight_decay·param )
-// Pass weight_decay = 0 for tensors that must not decay (biases, LayerNorm gains).
-void adamw_update(float* param, const float* grad, float* m, float* v, int n, float lr,
-                  float beta1, float beta2, float eps, float weight_decay, int t,
-                  Device dev) noexcept;
-
 }  // namespace cppgpt

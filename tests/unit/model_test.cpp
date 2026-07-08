@@ -89,7 +89,7 @@ int main() {
             prev = cur;
             trainee.zero_grads();
             trainee.backward(tokens.data(), targets.data(), B, T);
-            trainee.update(1e-2f, 0.9f, 0.95f, 1e-8f, 0.0f);
+            trainee.update(AdamW{.lr = 1e-2f});
         }
         trainee.forward(tokens.data(), targets.data(), B, T);
         const float end = trainee.mean_loss();
@@ -115,7 +115,7 @@ int main() {
 
         dm.zero_grads();  // grads = 0 ⇒ moments stay 0 ⇒ step = −lr·wd·param on the decay group
         const float lr = 0.1f, wd = 0.5f, scale = 1.0f - lr * wd;
-        dm.update(lr, 0.9f, 0.95f, 1e-8f, wd);
+        dm.update(AdamW{.lr = lr, .weight_decay = wd});
 
         bool decay_ok = true, nodecay_ok = true;
         for (std::size_t i = 0; i < nwte; ++i)

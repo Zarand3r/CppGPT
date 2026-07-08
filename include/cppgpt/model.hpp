@@ -11,6 +11,7 @@
 
 #include <cstddef>
 
+#include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/storage.hpp"
 
@@ -103,7 +104,7 @@ public:
     // LayerNorm gains/shifts do not. The optimizer moments are allocated lazily on
     // the first call (inference-only use pays no moment memory). Advances the
     // internal step counter used for bias correction.
-    void update(float lr, float beta1, float beta2, float eps, float weight_decay) noexcept;
+    void update(const AdamW& opt) noexcept;
 
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }
