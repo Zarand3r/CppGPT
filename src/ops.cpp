@@ -147,6 +147,194 @@ void layernorm_backward_cpu(float* dinp, float* dweight, float* dbias, const flo
     }
 }
 
+void softmax_forward_cpu(float* out, const float* inp, int N) noexcept {
+    const std::size_t n = static_cast<std::size_t>(N);
+    float maxv = inp[0];
+    for (std::size_t i = 1; i < n; ++i) maxv = std::fmax(maxv, inp[i]);
+    float sum = 0.0f;
+    for (std::size_t i = 0; i < n; ++i) {
+        const float e = std::exp(inp[i] - maxv);
+        out[i] = e;
+        sum += e;
+    }
+    const float inv = 1.0f / sum;
+    for (std::size_t i = 0; i < n; ++i) out[i] *= inv;
+}
+
+void softmax_backward_cpu(float* dinp, const float* dout, const float* out, int N) noexcept {
+    const std::size_t n = static_cast<std::size_t>(N);
+    // dinp_i = out_i·(dout_i − Σ_j dout_j·out_j); the subtracted term is the
+    // projection of dout onto the softmax output.
+    float d = 0.0f;
+    for (std::size_t i = 0; i < n; ++i) d += dout[i] * out[i];
+    for (std::size_t i = 0; i < n; ++i) dinp[i] += out[i] * (dout[i] - d);
+}
+
+void attention_forward_cpu(float* out, float* preatt, float* att, const float* inp, int B, int T,
+                           int C, int NH) noexcept {
+    const int hs = C / NH;  // head size
+    const float scale = 1.0f / std::sqrt(static_cast<float>(hs));
+    const std::size_t C3 = static_cast<std::size_t>(3 * C);
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    const std::size_t hz = static_cast<std::size_t>(hs);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            for (int h = 0; h < NH; ++h) {
+                const float* q = inp + (static_cast<std::size_t>(b) * Tz + t) * C3 + h * hz;
+                float* preatt_row = preatt + ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
+                float* att_row = att + ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
+                for (int t2 = 0; t2 <= t; ++t2) {  // causal: only keys at t2 <= t
+                    const float* k = inp + (static_cast<std::size_t>(b) * Tz + t2) * C3 + Cz + h * hz;
+                    float s = 0.0f;
+                    for (std::size_t i = 0; i < hz; ++i) s += q[i] * k[i];
+                    preatt_row[t2] = s * scale;
+                }
+                softmax_forward_cpu(att_row, preatt_row, t + 1);
+                float* out_row = out + (static_cast<std::size_t>(b) * Tz + t) * Cz + h * hz;
+                for (std::size_t i = 0; i < hz; ++i) out_row[i] = 0.0f;
+                for (int t2 = 0; t2 <= t; ++t2) {
+                    const float* v =
+                        inp + (static_cast<std::size_t>(b) * Tz + t2) * C3 + 2 * Cz + h * hz;
+                    const float a = att_row[t2];
+                    for (std::size_t i = 0; i < hz; ++i) out_row[i] += a * v[i];
+                }
+            }
+        }
+    }
+}
+
+void attention_backward_cpu(float* dinp, float* datt, float* dpreatt, const float* dout,
+                            const float* inp, const float* att, int B, int T, int C,
+                            int NH) noexcept {
+    const int hs = C / NH;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(hs));
+    const std::size_t C3 = static_cast<std::size_t>(3 * C);
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    const std::size_t hz = static_cast<std::size_t>(hs);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            for (int h = 0; h < NH; ++h) {
+                const std::size_t row = ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
+                const float* att_row = att + row;
+                float* datt_row = datt + row;
+                float* dpreatt_row = dpreatt + row;
+                const float* dout_row = dout + (static_cast<std::size_t>(b) * Tz + t) * Cz + h * hz;
+                const float* q = inp + (static_cast<std::size_t>(b) * Tz + t) * C3 + h * hz;
+                float* dq = dinp + (static_cast<std::size_t>(b) * Tz + t) * C3 + h * hz;
+                // 1. datt[t2] = Σ_i v_{t2}[i]·dout[i];  dv_{t2} += att·dout
+                for (int t2 = 0; t2 <= t; ++t2) {
+                    const std::size_t base = (static_cast<std::size_t>(b) * Tz + t2) * C3 + h * hz;
+                    const float* v = inp + base + 2 * Cz;
+                    float* dv = dinp + base + 2 * Cz;
+                    const float a = att_row[t2];
+                    float d = 0.0f;
+                    for (std::size_t i = 0; i < hz; ++i) {
+                        d += v[i] * dout_row[i];
+                        dv[i] += a * dout_row[i];
+                    }
+                    datt_row[t2] = d;
+                }
+                // 2. softmax backward (zero the causal row, then accumulate the Jacobian).
+                for (int t2 = 0; t2 <= t; ++t2) dpreatt_row[t2] = 0.0f;
+                softmax_backward_cpu(dpreatt_row, datt_row, att_row, t + 1);
+                // 3. scores backward: preatt[t2] = (q·k_{t2})·scale.
+                for (int t2 = 0; t2 <= t; ++t2) {
+                    const std::size_t base = (static_cast<std::size_t>(b) * Tz + t2) * C3 + h * hz;
+                    const float* k = inp + base + Cz;
+                    float* dk = dinp + base + Cz;
+                    const float g = dpreatt_row[t2] * scale;
+                    for (std::size_t i = 0; i < hz; ++i) {
+                        dq[i] += g * k[i];
+                        dk[i] += g * q[i];
+                    }
+                }
+            }
+        }
+    }
+}
+
+void embedding_forward_cpu(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                           int T, int C, int V) noexcept {
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            const int token = tokens[static_cast<std::size_t>(b) * Tz + t];
+            ASSERT(token >= 0 && token < V);  // out-of-range token id -> fail fast
+            const float* tok_row = wte + static_cast<std::size_t>(token) * Cz;
+            const float* pos_row = wpe + static_cast<std::size_t>(t) * Cz;
+            float* out_bt = out + (static_cast<std::size_t>(b) * Tz + t) * Cz;
+            for (std::size_t c = 0; c < Cz; ++c) out_bt[c] = tok_row[c] + pos_row[c];
+        }
+    }
+}
+
+void embedding_backward_cpu(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                            int T, int C, int V) noexcept {
+    const std::size_t Cz = static_cast<std::size_t>(C);
+    const std::size_t Tz = static_cast<std::size_t>(T);
+    for (int b = 0; b < B; ++b) {
+        for (int t = 0; t < T; ++t) {
+            const int token = tokens[static_cast<std::size_t>(b) * Tz + t];
+            ASSERT(token >= 0 && token < V);
+            float* dtok_row = dwte + static_cast<std::size_t>(token) * Cz;
+            float* dpos_row = dwpe + static_cast<std::size_t>(t) * Cz;
+            const float* dout_bt = dout + (static_cast<std::size_t>(b) * Tz + t) * Cz;
+            for (std::size_t c = 0; c < Cz; ++c) {
+                dtok_row[c] += dout_bt[c];
+                dpos_row[c] += dout_bt[c];
+            }
+        }
+    }
+}
+
+void cross_entropy_forward_cpu(float* losses, const float* probs, const int* targets, int B, int T,
+                               int V) noexcept {
+    const std::size_t BT = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
+    const std::size_t Vz = static_cast<std::size_t>(V);
+    for (std::size_t bt = 0; bt < BT; ++bt) {
+        const int target = targets[bt];
+        ASSERT(target >= 0 && target < V);
+        losses[bt] = -std::log(probs[bt * Vz + static_cast<std::size_t>(target)]);
+    }
+}
+
+void cross_entropy_backward_cpu(float* dlogits, const float* probs, const int* targets, int B,
+                                int T, int V) noexcept {
+    const std::size_t BT = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
+    const std::size_t Vz = static_cast<std::size_t>(V);
+    const float scale = 1.0f / static_cast<float>(BT);  // mean reduction over positions
+    for (std::size_t bt = 0; bt < BT; ++bt) {
+        const int target = targets[bt];
+        ASSERT(target >= 0 && target < V);
+        float* dl = dlogits + bt * Vz;
+        const float* p = probs + bt * Vz;
+        for (std::size_t v = 0; v < Vz; ++v) {
+            const float indicator = (v == static_cast<std::size_t>(target)) ? 1.0f : 0.0f;
+            dl[v] += scale * (p[v] - indicator);
+        }
+    }
+}
+
+void adamw_update_cpu(float* param, const float* grad, float* m, float* v, int n, float lr,
+                      float beta1, float beta2, float eps, float weight_decay, int t) noexcept {
+    // Bias-correction scales, computed once per tensor per step.
+    const float bc1 = 1.0f / (1.0f - std::pow(beta1, static_cast<float>(t)));
+    const float bc2 = 1.0f / (1.0f - std::pow(beta2, static_cast<float>(t)));
+    for (int i = 0; i < n; ++i) {
+        const float g = grad[i];
+        const float mi = beta1 * m[i] + (1.0f - beta1) * g;
+        const float vi = beta2 * v[i] + (1.0f - beta2) * g * g;
+        m[i] = mi;
+        v[i] = vi;
+        const float mhat = mi * bc1;
+        const float vhat = vi * bc2;
+        param[i] -= lr * (mhat / (std::sqrt(vhat) + eps) + weight_decay * param[i]);
+    }
+}
+
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
@@ -165,6 +353,39 @@ void matmul_backward(float* dinp, float* dweight, float* dbias, const float* dou
            weight != nullptr);
     ASSERT(B >= 0 && T >= 0 && C >= 0 && OC >= 0);
     matmul_backward_cpu(dinp, dweight, dbias, dout, inp, weight, B, T, C, OC);
+}
+
+void softmax_forward(float* out, const float* inp, int N, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && inp != nullptr);
+    ASSERT(N > 0);
+    softmax_forward_cpu(out, inp, N);
+}
+
+void softmax_backward(float* dinp, const float* dout, const float* out, int N,
+                      Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dinp != nullptr && dout != nullptr && out != nullptr);
+    ASSERT(N > 0);
+    softmax_backward_cpu(dinp, dout, out, N);
+}
+
+void attention_forward(float* out, float* preatt, float* att, const float* inp, int B, int T,
+                       int C, int NH, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && preatt != nullptr && att != nullptr && inp != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && NH > 0 && C % NH == 0);
+    attention_forward_cpu(out, preatt, att, inp, B, T, C, NH);
+}
+
+void attention_backward(float* dinp, float* datt, float* dpreatt, const float* dout,
+                        const float* inp, const float* att, int B, int T, int C, int NH,
+                        Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dinp != nullptr && datt != nullptr && dpreatt != nullptr && dout != nullptr &&
+           inp != nullptr && att != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && NH > 0 && C % NH == 0);
+    attention_backward_cpu(dinp, datt, dpreatt, dout, inp, att, B, T, C, NH);
 }
 
 void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept {
@@ -213,6 +434,48 @@ void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* 
            inp != nullptr && weight != nullptr && mean != nullptr && rstd != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0);
     layernorm_backward_cpu(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
+}
+
+void embedding_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
+                       int T, int C, int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(out != nullptr && tokens != nullptr && wte != nullptr && wpe != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
+    embedding_forward_cpu(out, tokens, wte, wpe, B, T, C, V);
+}
+
+void embedding_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
+                        int T, int C, int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dwte != nullptr && dwpe != nullptr && tokens != nullptr && dout != nullptr);
+    ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
+    embedding_backward_cpu(dwte, dwpe, tokens, dout, B, T, C, V);
+}
+
+void cross_entropy_forward(float* losses, const float* probs, const int* targets, int B, int T,
+                           int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(losses != nullptr && probs != nullptr && targets != nullptr);
+    ASSERT(B >= 0 && T >= 0 && V > 0);
+    cross_entropy_forward_cpu(losses, probs, targets, B, T, V);
+}
+
+void cross_entropy_backward(float* dlogits, const float* probs, const int* targets, int B, int T,
+                            int V, Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(dlogits != nullptr && probs != nullptr && targets != nullptr);
+    ASSERT(B >= 0 && T >= 0 && V > 0);
+    cross_entropy_backward_cpu(dlogits, probs, targets, B, T, V);
+}
+
+void adamw_update(float* param, const float* grad, float* m, float* v, int n, float lr,
+                  float beta1, float beta2, float eps, float weight_decay, int t,
+                  Device dev) noexcept {
+    ASSERT(dev == Device::CPU);
+    ASSERT(param != nullptr && grad != nullptr && m != nullptr && v != nullptr);
+    ASSERT(n >= 0 && t >= 1);
+    ASSERT(beta1 >= 0.0f && beta1 < 1.0f && beta2 >= 0.0f && beta2 < 1.0f);
+    adamw_update_cpu(param, grad, m, v, n, lr, beta1, beta2, eps, weight_decay, t);
 }
 
 }  // namespace cppgpt

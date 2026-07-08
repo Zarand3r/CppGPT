@@ -3,9 +3,9 @@ load("@rules_cc//cc:defs.bzl", "cc_test")
 # Integration tests compose multiple ops and verify they wire together (forward
 # and backward) — distinct from the per-op unit tests under tests/unit.
 cc_test(
-    name = "mlp_block_test",
+    name = "transformer_block_test",
     size = "small",
-    srcs = ["mlp_block_test.cpp"],
+    srcs = ["transformer_block_test.cpp"],
     deps = [
         "//:cppgpt",
         "//tests:check",

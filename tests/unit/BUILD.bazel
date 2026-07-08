@@ -92,3 +92,78 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+cc_test(
+    name = "softmax_test",
+    size = "small",
+    srcs = ["softmax_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "attention_test",
+    size = "small",
+    srcs = ["attention_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "embedding_test",
+    size = "small",
+    srcs = ["embedding_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
+    name = "cross_entropy_test",
+    size = "small",
+    srcs = ["cross_entropy_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "model_test",
+    size = "small",
+    srcs = ["model_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "adamw_test",
+    size = "small",
+    srcs = ["adamw_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+        "//tests:numeric",
+    ],
+)
+
+cc_test(
+    name = "tokenizer_test",
+    size = "small",
+    srcs = ["tokenizer_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
