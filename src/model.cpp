@@ -180,7 +180,7 @@ void GPT2::forward(const int* tokens, const int* targets) {
     const ParamTensors& p = params_;
     const ActTensors& a = acts_;
 
-    embedding_forward(a.encoded, tokens, p.wte, p.wpe, B, T, C, V, Device::CPU);
+    embedding_forward(a.encoded, tokens, p.wte, p.wpe, B, T, C, V);
 
     for (int l = 0; l < L; ++l) {
         const auto ll = static_cast<std::size_t>(l);
@@ -217,25 +217,25 @@ void GPT2::forward(const int* tokens, const int* targets) {
         float* fcproj = a.fcproj + ll * BTC;
         float* residual3 = a.residual3 + ll * BTC;
 
-        layernorm_forward(ln1, ln1_mean, ln1_rstd, res, ln1w, ln1b, B, T, C, Device::CPU);
-        matmul_forward(qkv, ln1, qkvw, qkvb, B, T, C, 3 * C, Device::CPU);
-        attention_forward(atty, preatt, att, qkv, B, T, C, NH, Device::CPU);
-        matmul_forward(attproj, atty, aprojw, aprojb, B, T, C, C, Device::CPU);
-        residual_forward(residual2, res, attproj, static_cast<int>(BTC), Device::CPU);
-        layernorm_forward(ln2, ln2_mean, ln2_rstd, residual2, ln2w, ln2b, B, T, C, Device::CPU);
-        matmul_forward(fch, ln2, fcw, fcb, B, T, C, 4 * C, Device::CPU);
-        gelu_forward(fch_gelu, fch, static_cast<int>(BTC) * 4, Device::CPU);
-        matmul_forward(fcproj, fch_gelu, fcprojw, fcprojb, B, T, 4 * C, C, Device::CPU);
-        residual_forward(residual3, residual2, fcproj, static_cast<int>(BTC), Device::CPU);
+        layernorm_forward(ln1, ln1_mean, ln1_rstd, res, ln1w, ln1b, B, T, C);
+        matmul_forward(qkv, ln1, qkvw, qkvb, B, T, C, 3 * C);
+        attention_forward(atty, preatt, att, qkv, B, T, C, NH);
+        matmul_forward(attproj, atty, aprojw, aprojb, B, T, C, C);
+        residual_forward(residual2, res, attproj, static_cast<int>(BTC));
+        layernorm_forward(ln2, ln2_mean, ln2_rstd, residual2, ln2w, ln2b, B, T, C);
+        matmul_forward(fch, ln2, fcw, fcb, B, T, C, 4 * C);
+        gelu_forward(fch_gelu, fch, static_cast<int>(BTC) * 4);
+        matmul_forward(fcproj, fch_gelu, fcprojw, fcprojb, B, T, 4 * C, C);
+        residual_forward(residual3, residual2, fcproj, static_cast<int>(BTC));
     }
 
     const float* last = (L == 0) ? a.encoded : a.residual3 + static_cast<std::size_t>(L - 1) * BTC;
-    layernorm_forward(a.lnf, a.lnf_mean, a.lnf_rstd, last, p.lnfw, p.lnfb, B, T, C, Device::CPU);
-    matmul_forward(a.logits, a.lnf, p.wte, nullptr, B, T, C, V, Device::CPU);  // tied classifier
+    layernorm_forward(a.lnf, a.lnf_mean, a.lnf_rstd, last, p.lnfw, p.lnfb, B, T, C);
+    matmul_forward(a.logits, a.lnf, p.wte, nullptr, B, T, C, V);  // tied classifier
     for (std::size_t bt = 0; bt < BT; ++bt)
         softmax_forward(a.probs + bt * static_cast<std::size_t>(V),
-                        a.logits + bt * static_cast<std::size_t>(V), V, Device::CPU);
-    cross_entropy_forward(a.losses, a.probs, targets, B, T, V, Device::CPU);
+                        a.logits + bt * static_cast<std::size_t>(V), V);
+    cross_entropy_forward(a.losses, a.probs, targets, B, T, V);
 
     double sum = 0.0;
     for (std::size_t bt = 0; bt < BT; ++bt) sum += a.losses[bt];
@@ -255,14 +255,13 @@ void GPT2::backward(const int* tokens, const int* targets) {
     const ActTensors& d = act_grads_;  // gradient activations (zeroed by zero_grads)
 
     // Loss + classifier (tied head): dlogits = (probs − onehot)/(B·T); dwte += classifier path.
-    cross_entropy_backward(d.logits, a.probs, targets, B, T, V, Device::CPU);
-    matmul_backward(d.lnf, g.wte, nullptr, d.logits, a.lnf, p.wte, B, T, C, V, Device::CPU);
+    cross_entropy_backward(d.logits, a.probs, targets, B, T, V);
+    matmul_backward(d.lnf, g.wte, nullptr, d.logits, a.lnf, p.wte, B, T, C, V);
 
     // Final LayerNorm; its input gradient is the gradient of the last block output.
     const float* last = (L == 0) ? a.encoded : a.residual3 + static_cast<std::size_t>(L - 1) * BTC;
     float* d_last = (L == 0) ? d.encoded : d.residual3 + static_cast<std::size_t>(L - 1) * BTC;
-    layernorm_backward(d_last, g.lnfw, g.lnfb, d.lnf, last, p.lnfw, a.lnf_mean, a.lnf_rstd, B, T, C,
-                       Device::CPU);
+    layernorm_backward(d_last, g.lnfw, g.lnfb, d.lnf, last, p.lnfw, a.lnf_mean, a.lnf_rstd, B, T, C);
 
     // Transformer blocks in reverse.
     for (int l = L - 1; l >= 0; --l) {
@@ -315,25 +314,23 @@ void GPT2::backward(const int* tokens, const int* targets) {
         const int btc = static_cast<int>(BTC);
 
         // MLP sub-block (reverse): residual3 = residual2 + fcproj.
-        residual_backward(d_residual2, d_fcproj, d_res3, btc, Device::CPU);
-        matmul_backward(d_fch_gelu, g_fcprojw, g_fcprojb, d_fcproj, fch_gelu, fcprojw, B, T, 4 * C, C,
-                        Device::CPU);
-        gelu_backward(d_fch, fch, d_fch_gelu, btc * 4, Device::CPU);
-        matmul_backward(d_ln2, g_fcw, g_fcb, d_fch, ln2, fcw, B, T, C, 4 * C, Device::CPU);
+        residual_backward(d_residual2, d_fcproj, d_res3, btc);
+        matmul_backward(d_fch_gelu, g_fcprojw, g_fcprojb, d_fcproj, fch_gelu, fcprojw, B, T, 4 * C, C);
+        gelu_backward(d_fch, fch, d_fch_gelu, btc * 4);
+        matmul_backward(d_ln2, g_fcw, g_fcb, d_fch, ln2, fcw, B, T, C, 4 * C);
         layernorm_backward(d_residual2, g_ln2w, g_ln2b, d_ln2, residual2, ln2w, ln2_mean, ln2_rstd,
-                           B, T, C, Device::CPU);  // d_residual2 += (onto residual contribution)
+                           B, T, C);  // d_residual2 += (onto residual contribution)
 
         // Attention sub-block (reverse): residual2 = res + attproj.
-        residual_backward(d_res, d_attproj, d_residual2, btc, Device::CPU);
-        matmul_backward(d_atty, g_aprojw, g_aprojb, d_attproj, atty, aprojw, B, T, C, C, Device::CPU);
-        attention_backward(d_qkv, datt_, dpreatt_, d_atty, qkv, att, B, T, C, NH, Device::CPU);
-        matmul_backward(d_ln1, g_qkvw, g_qkvb, d_qkv, ln1, qkvw, B, T, C, 3 * C, Device::CPU);
-        layernorm_backward(d_res, g_ln1w, g_ln1b, d_ln1, res, ln1w, ln1_mean, ln1_rstd, B, T, C,
-                           Device::CPU);  // d_res += (onto residual contribution)
+        residual_backward(d_res, d_attproj, d_residual2, btc);
+        matmul_backward(d_atty, g_aprojw, g_aprojb, d_attproj, atty, aprojw, B, T, C, C);
+        attention_backward(d_qkv, datt_, dpreatt_, d_atty, qkv, att, B, T, C, NH);
+        matmul_backward(d_ln1, g_qkvw, g_qkvb, d_qkv, ln1, qkvw, B, T, C, 3 * C);
+        layernorm_backward(d_res, g_ln1w, g_ln1b, d_ln1, res, ln1w, ln1_mean, ln1_rstd, B, T, C);  // d_res += (onto residual contribution)
     }
 
     // Embedding: dwte += embedding path (so dwte = classifier + embedding — weight tying); dwpe +=.
-    embedding_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V, Device::CPU);
+    embedding_backward(g.wte, g.wpe, tokens, d.encoded, B, T, C, V);
 }
 
 void GPT2::update(const AdamW& opt) noexcept {

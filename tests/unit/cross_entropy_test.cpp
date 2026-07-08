@@ -27,7 +27,7 @@ int main() {
         std::vector<float> probs(static_cast<std::size_t>(V), 1.0f / static_cast<float>(V));
         std::vector<int> targets = {2};
         std::vector<float> losses(1);
-        cross_entropy_forward(losses.data(), probs.data(), targets.data(), B, T, V, Device::CPU);
+        cross_entropy_forward(losses.data(), probs.data(), targets.data(), B, T, V);
         CHECK(rel_close(losses[0], std::log(static_cast<double>(V)), 1e-5));
     }
 
@@ -37,7 +37,7 @@ int main() {
         std::vector<float> probs = {0.1f, 0.2f, 0.3f, 0.4f};
         std::vector<int> targets = {1};
         std::vector<float> dlogits(static_cast<std::size_t>(V), 0.0f);
-        cross_entropy_backward(dlogits.data(), probs.data(), targets.data(), B, T, V, Device::CPU);
+        cross_entropy_backward(dlogits.data(), probs.data(), targets.data(), B, T, V);
         CHECK(rel_close(dlogits[0], 0.1, 1e-5));
         CHECK(rel_close(dlogits[1], 0.2 - 1.0, 1e-5));  // the target channel
         CHECK(rel_close(dlogits[2], 0.3, 1e-5));
@@ -60,14 +60,13 @@ int main() {
         for (auto& t : targets) t = static_cast<int>(gen.uniform_int(0, V - 1));
 
         for (std::size_t bt = 0; bt < BT; ++bt)
-            softmax_forward(probs.data() + bt * vz, logits.data() + bt * vz, V, Device::CPU);
-        cross_entropy_backward(dlogits.data(), probs.data(), targets.data(), B, T, V, Device::CPU);
+            softmax_forward(probs.data() + bt * vz, logits.data() + bt * vz, V);
+        cross_entropy_backward(dlogits.data(), probs.data(), targets.data(), B, T, V);
 
         auto loss = [&]() {
             for (std::size_t bt = 0; bt < BT; ++bt)
-                softmax_forward(probs.data() + bt * vz, logits.data() + bt * vz, V, Device::CPU);
-            cross_entropy_forward(losses.data(), probs.data(), targets.data(), B, T, V,
-                                  Device::CPU);
+                softmax_forward(probs.data() + bt * vz, logits.data() + bt * vz, V);
+            cross_entropy_forward(losses.data(), probs.data(), targets.data(), B, T, V);
             double tot = 0.0;
             for (std::size_t bt = 0; bt < BT; ++bt) tot += losses[bt];
             return tot / static_cast<double>(BT);

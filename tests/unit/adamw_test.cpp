@@ -35,10 +35,8 @@ int main() {
         std::vector<float> mw(4, 0.0f), vw(4, 0.0f), mb(2, 0.0f), vb(2, 0.0f);
 
         for (int t = 1; t <= 5; ++t) {
-            adamw_update(w.data(), gw.data(), mw.data(), vw.data(), 4, lr, b1, b2, eps, 0.1f, t,
-                         Device::CPU);
-            adamw_update(b.data(), gb.data(), mb.data(), vb.data(), 2, lr, b1, b2, eps, 0.0f, t,
-                         Device::CPU);
+            adamw_update(w.data(), gw.data(), mw.data(), vw.data(), 4, lr, b1, b2, eps, 0.1f, t);
+            adamw_update(b.data(), gb.data(), mb.data(), vb.data(), 2, lr, b1, b2, eps, 0.0f, t);
         }
         // torch fp64 references (scripts: two-group AdamW, 5 fixed-gradient steps).
         const double w_ref[4] = {-0.014604427040054865, 0.20480246152502624, 0.6510886568998806,
@@ -57,7 +55,7 @@ int main() {
         const std::vector<float> g = {0.7f, -0.2f, 4.0f};  // magnitudes irrelevant to direction
         const std::vector<float> p0 = p;
         std::vector<float> m(3, 0.0f), v(3, 0.0f);
-        adamw_update(p.data(), g.data(), m.data(), v.data(), 3, lr, b1, b2, eps, wd, 1, Device::CPU);
+        adamw_update(p.data(), g.data(), m.data(), v.data(), 3, lr, b1, b2, eps, wd, 1);
         bool ok = true;
         for (int i = 0; i < 3; ++i) {
             const float sign = (g[i] > 0.0f) ? 1.0f : -1.0f;
@@ -75,10 +73,8 @@ int main() {
         const std::vector<float> g = {0.0f, 0.0f};
         std::vector<float> md(2, 0.0f), vd(2, 0.0f), mn(2, 0.0f), vn(2, 0.0f);
         const std::vector<float> p0 = pd;
-        adamw_update(pd.data(), g.data(), md.data(), vd.data(), 2, lr, b1, b2, eps, 0.2f, 1,
-                     Device::CPU);
-        adamw_update(pn.data(), g.data(), mn.data(), vn.data(), 2, lr, b1, b2, eps, 0.0f, 1,
-                     Device::CPU);
+        adamw_update(pd.data(), g.data(), md.data(), vd.data(), 2, lr, b1, b2, eps, 0.2f, 1);
+        adamw_update(pn.data(), g.data(), mn.data(), vn.data(), 2, lr, b1, b2, eps, 0.0f, 1);
         bool ok = true;
         for (int i = 0; i < 2; ++i) {
             ok = ok && rel_close(pd[i], p0[i] - lr * 0.2f * p0[i], 1e-6);  // pure decay
@@ -96,7 +92,7 @@ int main() {
         for (int t = 1; t <= 3000; ++t) {
             for (std::size_t i = 0; i < n; ++i) g[i] = x[i] - a[i];
             adamw_update(x.data(), g.data(), m.data(), v.data(), static_cast<int>(n), lr, b1, b2,
-                         eps, 0.0f, t, Device::CPU);
+                         eps, 0.0f, t);
         }
         bool ok = true;
         for (std::size_t i = 0; i < n; ++i) ok = ok && (std::fabs(x[i] - a[i]) < 1e-3);

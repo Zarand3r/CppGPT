@@ -27,8 +27,7 @@ int main() {
             att(static_cast<std::size_t>(B * NH * T * T));
         Generator gen(0x7A77ULL);
         for (auto& x : inp) x = gen.normal();
-        attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH,
-                          Device::CPU);
+        attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH);
         for (int i = 0; i < C; ++i)
             CHECK(out[static_cast<std::size_t>(i)] == inp[static_cast<std::size_t>(2 * C + i)]);
     }
@@ -42,14 +41,13 @@ int main() {
         Generator gen(0xCA05ULL);
         std::vector<float> inp(n_in), out(n_out), preatt(n_att), att(n_att);
         for (auto& x : inp) x = gen.normal();
-        attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH,
-                          Device::CPU);
+        attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH);
 
         // Perturb token 2's whole qkv; out at t=0,1 must be bitwise unchanged.
         std::vector<float> inp2 = inp;
         for (int j = 0; j < 3 * C; ++j) inp2[static_cast<std::size_t>(2 * 3 * C + j)] += 1.0f;
         std::vector<float> out2(n_out), pa(n_att), at(n_att);
-        attention_forward(out2.data(), pa.data(), at.data(), inp2.data(), B, T, C, NH, Device::CPU);
+        attention_forward(out2.data(), pa.data(), at.data(), inp2.data(), B, T, C, NH);
 
         bool causal = true;
         for (int t = 0; t < 2; ++t)
@@ -75,15 +73,13 @@ int main() {
         for (auto& x : inp) x = gen.normal();
         for (auto& x : dout) x = gen.normal();
 
-        attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH,
-                          Device::CPU);
+        attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH);
         std::vector<float> dinp(n_in, 0.0f), datt(n_att), dpreatt(n_att);
         attention_backward(dinp.data(), datt.data(), dpreatt.data(), dout.data(), inp.data(),
-                           att.data(), B, T, C, NH, Device::CPU);
+                           att.data(), B, T, C, NH);
 
         auto loss = [&]() {
-            attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH,
-                              Device::CPU);
+            attention_forward(out.data(), preatt.data(), att.data(), inp.data(), B, T, C, NH);
             return dot(dout.data(), out.data(), n_out);
         };
         CHECK(grad_check(loss, inp.data(), dinp.data(), n_in) < 2e-2);

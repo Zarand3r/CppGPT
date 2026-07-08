@@ -37,12 +37,12 @@ int main() {
         const float w[6] = {1, 0, 0, 0, 1, 0};
         const float b[2] = {10.0f, 20.0f};
         float out[2] = {0, 0};
-        matmul_forward(out, inp, w, b, 1, 1, 3, 2, Device::CPU);
+        matmul_forward(out, inp, w, b, 1, 1, 3, 2);
         CHECK(out[0] == 11.0f);
         CHECK(out[1] == 22.0f);
 
         float out_nb[2] = {0, 0};  // bias = null path
-        matmul_forward(out_nb, inp, w, nullptr, 1, 1, 3, 2, Device::CPU);
+        matmul_forward(out_nb, inp, w, nullptr, 1, 1, 3, 2);
         CHECK(out_nb[0] == 1.0f && out_nb[1] == 2.0f);
     }
     {
@@ -50,7 +50,7 @@ int main() {
         const float inp[2] = {1.5f, -2.0f};
         const float w[2] = {2.0f, 3.0f};
         float out[1] = {0};
-        matmul_forward(out, inp, w, nullptr, 1, 1, 2, 1, Device::CPU);
+        matmul_forward(out, inp, w, nullptr, 1, 1, 2, 1);
         CHECK(out[0] == -3.0f);
     }
     {
@@ -58,7 +58,7 @@ int main() {
         const float inp[4] = {1, 2, 3, 4};  // two rows of C=2
         const float w[2] = {1, 1};          // OC=1 -> row sum
         float out[2] = {0, 0};
-        matmul_forward(out, inp, w, nullptr, 2, 1, 2, 1, Device::CPU);
+        matmul_forward(out, inp, w, nullptr, 2, 1, 2, 1);
         CHECK(out[0] == 3.0f && out[1] == 7.0f);
     }
 
@@ -78,12 +78,12 @@ int main() {
 
         // Pure bilinear output (no bias) for the adjoint form.
         std::vector<float> out_nb(n_out);
-        matmul_forward(out_nb.data(), inp.data(), w.data(), nullptr, B, T, C, OC, Device::CPU);
+        matmul_forward(out_nb.data(), inp.data(), w.data(), nullptr, B, T, C, OC);
 
         std::vector<float> dinp(n_in, 0.0f), dweight(n_w, 0.0f),
             dbias(static_cast<std::size_t>(OC), 0.0f);
         matmul_backward(dinp.data(), dweight.data(), dbias.data(), dout.data(), inp.data(),
-                        w.data(), B, T, C, OC, Device::CPU);
+                        w.data(), B, T, C, OC);
 
         const double form = dot(dout.data(), out_nb.data(), n_out);  // <dout, inp@Wᵀ>
         CHECK(rel_close(form, dot(dinp.data(), inp.data(), n_in), 1e-4));    // == <dinp, inp>
@@ -109,7 +109,7 @@ int main() {
         // dbias = null path: skipping the bias gradient must not change dinp/dweight.
         std::vector<float> dinp2(n_in, 0.0f), dweight2(n_w, 0.0f);
         matmul_backward(dinp2.data(), dweight2.data(), nullptr, dout.data(), inp.data(), w.data(),
-                        B, T, C, OC, Device::CPU);
+                        B, T, C, OC);
         CHECK(dinp2 == dinp);
         CHECK(dweight2 == dweight);
     }
