@@ -34,29 +34,29 @@ int main() {
     for (auto& t : tokens) t = static_cast<int>(gen.uniform_int(0, V - 1));
     for (auto& t : targets) t = static_cast<int>(gen.uniform_int(0, V - 1));
 
-    model.forward(tokens.data(), targets.data(), B, T);
+    model.forward(tokens.data(), targets.data());
     const float loss1 = model.mean_loss();
     CHECK(std::isfinite(loss1));
     CHECK(std::fabs(loss1 - std::log(static_cast<float>(V))) < 0.5f);  // ≈ ln(V) at init
 
     // Determinism: re-running yields the identical loss.
-    model.forward(tokens.data(), targets.data(), B, T);
+    model.forward(tokens.data(), targets.data());
     CHECK(model.mean_loss() == loss1);
 
     // A fresh model with the same seed reproduces it bit-for-bit.
     Generator gen2(0x6072ULL);
     GPT2 model2(cfg, B, T);
     model2.init_weights(gen2);
-    model2.forward(tokens.data(), targets.data(), B, T);
+    model2.forward(tokens.data(), targets.data());
     CHECK(model2.mean_loss() == loss1);
 
     // ---- end-to-end gradient check ----
-    model.forward(tokens.data(), targets.data(), B, T);
+    model.forward(tokens.data(), targets.data());
     model.zero_grads();
-    model.backward(tokens.data(), targets.data(), B, T);
+    model.backward(tokens.data(), targets.data());
 
     auto loss = [&]() {
-        model.forward(tokens.data(), targets.data(), B, T);
+        model.forward(tokens.data(), targets.data());
         return static_cast<double>(model.mean_loss());
     };
     const int C = cfg.n_embd, L = cfg.n_layer, maxT = cfg.max_seq_len;
@@ -78,20 +78,20 @@ int main() {
         Generator gen3(0x6072ULL);
         GPT2 trainee(cfg, B, T);
         trainee.init_weights(gen3);
-        trainee.forward(tokens.data(), targets.data(), B, T);
+        trainee.forward(tokens.data(), targets.data());
         const float start = trainee.mean_loss();
         float prev = start;
         bool monotonic = true;
         for (int step = 0; step < 200; ++step) {
-            trainee.forward(tokens.data(), targets.data(), B, T);
+            trainee.forward(tokens.data(), targets.data());
             const float cur = trainee.mean_loss();
             monotonic = monotonic && (cur <= prev + 1e-4f);  // non-increasing (small slack)
             prev = cur;
             trainee.zero_grads();
-            trainee.backward(tokens.data(), targets.data(), B, T);
-            trainee.update(1e-2f, 0.9f, 0.95f, 1e-8f, 0.0f);
+            trainee.backward(tokens.data(), targets.data());
+            trainee.update(AdamW{.lr = 1e-2f});
         }
-        trainee.forward(tokens.data(), targets.data(), B, T);
+        trainee.forward(tokens.data(), targets.data());
         const float end = trainee.mean_loss();
         CHECK(std::isfinite(end));
         CHECK(monotonic);            // AdamW descends the fixed-batch loss
@@ -115,7 +115,7 @@ int main() {
 
         dm.zero_grads();  // grads = 0 ⇒ moments stay 0 ⇒ step = −lr·wd·param on the decay group
         const float lr = 0.1f, wd = 0.5f, scale = 1.0f - lr * wd;
-        dm.update(lr, 0.9f, 0.95f, 1e-8f, wd);
+        dm.update(AdamW{.lr = lr, .weight_decay = wd});
 
         bool decay_ok = true, nodecay_ok = true;
         for (std::size_t i = 0; i < nwte; ++i)

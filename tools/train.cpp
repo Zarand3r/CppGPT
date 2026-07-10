@@ -107,16 +107,16 @@ int main(int argc, char** argv) {
 
     std::vector<int> inputs(static_cast<std::size_t>(B) * T);
     std::vector<int> targets(static_cast<std::size_t>(B) * T);
-    const float lr = 1e-3f, beta1 = 0.9f, beta2 = 0.95f, eps = 1e-8f, weight_decay = 0.0f;
+    const AdamW opt{.lr = 1e-3f};  // canonical betas (0.9/0.95), eps (1e-8), no decay
 
     for (int step = 1; step <= steps; ++step) {
         sample_batch(data, B, T, gen, inputs, targets);
-        model.forward(inputs.data(), targets.data(), B, T);
+        model.forward(inputs.data(), targets.data());
         const float loss = model.mean_loss();
         std::printf("step %3d/%d  loss %.4f\n", step, steps, static_cast<double>(loss));
         model.zero_grads();
-        model.backward(inputs.data(), targets.data(), B, T);
-        model.update(lr, beta1, beta2, eps, weight_decay);
+        model.backward(inputs.data(), targets.data());
+        model.update(opt);
     }
 
     std::printf("train: done.\n");

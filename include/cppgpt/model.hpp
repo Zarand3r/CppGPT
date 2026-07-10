@@ -11,6 +11,7 @@
 
 #include <cstddef>
 
+#include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/storage.hpp"
 
@@ -84,9 +85,9 @@ public:
     // LayerNorm gains 1, shifts 0.
     void init_weights(Generator& gen);
 
-    // Run the forward pass for `tokens`/`targets` (each [B*T], ids in [0,V)),
-    // filling activations and `mean_loss`. B, T must match construction.
-    void forward(const int* tokens, const int* targets, int B, int T);
+    // Run the forward pass for `tokens`/`targets` (each [B*T] for the model's fixed
+    // B, T; ids in [0,V)), filling activations and `mean_loss`.
+    void forward(const int* tokens, const int* targets);
 
     // Zero the parameter-gradient and activation-gradient arenas. Call before
     // backward(), since every op's backward accumulates (+=).
@@ -95,7 +96,7 @@ public:
     // Backward pass for the same tokens/targets as the preceding forward(),
     // accumulating into the gradient arenas. `dwte` receives contributions from
     // both the classifier (tied head) and the embedding paths (weight tying).
-    void backward(const int* tokens, const int* targets, int B, int T);
+    void backward(const int* tokens, const int* targets);
 
     // AdamW step over all parameters using the current gradients (from backward).
     // Canonical GPT-2 2-group weight decay: only weight matrices and embeddings
@@ -103,7 +104,7 @@ public:
     // LayerNorm gains/shifts do not. The optimizer moments are allocated lazily on
     // the first call (inference-only use pays no moment memory). Advances the
     // internal step counter used for bias correction.
-    void update(float lr, float beta1, float beta2, float eps, float weight_decay) noexcept;
+    void update(const AdamW& opt) noexcept;
 
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }

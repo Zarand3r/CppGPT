@@ -33,7 +33,7 @@ int main() {
     {
         std::vector<float> w1(cz, 1.0f), b0(cz, 0.0f);
         layernorm_forward(out.data(), mean.data(), rstd.data(), inp.data(), w1.data(), b0.data(),
-                          B, T, C, Device::CPU);
+                          B, T, C);
         for (std::size_t r = 0; r < BT; ++r) {
             const float* o = out.data() + r * cz;
             double mu = 0.0;
@@ -51,7 +51,7 @@ int main() {
     for (auto& x : weight) x = gen.normal();
     for (auto& x : bias) x = gen.normal();
     layernorm_forward(out.data(), mean.data(), rstd.data(), inp.data(), weight.data(), bias.data(),
-                      B, T, C, Device::CPU);
+                      B, T, C);
     {
         bool fwd_ok = true;
         for (std::size_t r = 0; r < BT; ++r) {
@@ -78,12 +78,12 @@ int main() {
 
         // analytic grads use mean/rstd from the base forward above.
         layernorm_backward(dinp.data(), dweight.data(), dbias.data(), dout.data(), inp.data(),
-                           weight.data(), mean.data(), rstd.data(), B, T, C, Device::CPU);
+                           weight.data(), mean.data(), rstd.data(), B, T, C);
 
         // loss = <dout, forward(inp, weight, bias)>; recomputes mean/rstd each call.
         auto loss = [&]() {
             layernorm_forward(out.data(), mean.data(), rstd.data(), inp.data(), weight.data(),
-                              bias.data(), B, T, C, Device::CPU);
+                              bias.data(), B, T, C);
             return dot(dout.data(), out.data(), n);
         };
         CHECK(grad_check(loss, inp.data(), dinp.data(), n) < 5e-3);

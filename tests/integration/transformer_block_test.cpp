@@ -83,16 +83,16 @@ int main() {
     float* out = arena.alloc(n_x);
 
     auto forward = [&]() {
-        layernorm_forward(ln1, ln1_mean, ln1_rstd, x, ln1_w, ln1_b, B, T, C, Device::CPU);
-        matmul_forward(qkv, ln1, attn_w, attn_b, B, T, C, 3 * C, Device::CPU);
-        attention_forward(attn_out, preatt, att, qkv, B, T, C, NH, Device::CPU);
-        matmul_forward(aproj, attn_out, aproj_w, aproj_b, B, T, C, C, Device::CPU);
-        residual_forward(a, x, aproj, bt * C, Device::CPU);
-        layernorm_forward(ln2, ln2_mean, ln2_rstd, a, ln2_w, ln2_b, B, T, C, Device::CPU);
-        matmul_forward(fc, ln2, fc_w, fc_b, B, T, C, H, Device::CPU);
-        gelu_forward(g, fc, bt * H, Device::CPU);
-        matmul_forward(mproj, g, mproj_w, mproj_b, B, T, H, C, Device::CPU);
-        residual_forward(out, a, mproj, bt * C, Device::CPU);
+        layernorm_forward(ln1, ln1_mean, ln1_rstd, x, ln1_w, ln1_b, B, T, C);
+        matmul_forward(qkv, ln1, attn_w, attn_b, B, T, C, 3 * C);
+        attention_forward(attn_out, preatt, att, qkv, B, T, C, NH);
+        matmul_forward(aproj, attn_out, aproj_w, aproj_b, B, T, C, C);
+        residual_forward(a, x, aproj, bt * C);
+        layernorm_forward(ln2, ln2_mean, ln2_rstd, a, ln2_w, ln2_b, B, T, C);
+        matmul_forward(fc, ln2, fc_w, fc_b, B, T, C, H);
+        gelu_forward(g, fc, bt * H);
+        matmul_forward(mproj, g, mproj_w, mproj_b, B, T, H, C);
+        residual_forward(out, a, mproj, bt * C);
     };
 
     forward();
@@ -129,19 +129,18 @@ int main() {
     float* dpreatt = arena.alloc(n_att);
 
     // MLP sub-block backward (fills da from the residual + ln_2 paths).
-    residual_backward(da, dmproj, dout, bt * C, Device::CPU);
-    matmul_backward(dg, dmproj_w, dmproj_b, dmproj, g, mproj_w, B, T, H, C, Device::CPU);
-    gelu_backward(dfc, fc, dg, bt * H, Device::CPU);
-    matmul_backward(dln2, dfc_w, dfc_b, dfc, ln2, fc_w, B, T, C, H, Device::CPU);
-    layernorm_backward(da, dln2_w, dln2_b, dln2, a, ln2_w, ln2_mean, ln2_rstd, B, T, C, Device::CPU);
+    residual_backward(da, dmproj, dout, bt * C);
+    matmul_backward(dg, dmproj_w, dmproj_b, dmproj, g, mproj_w, B, T, H, C);
+    gelu_backward(dfc, fc, dg, bt * H);
+    matmul_backward(dln2, dfc_w, dfc_b, dfc, ln2, fc_w, B, T, C, H);
+    layernorm_backward(da, dln2_w, dln2_b, dln2, a, ln2_w, ln2_mean, ln2_rstd, B, T, C);
 
     // Attention sub-block backward (da is now the full gradient w.r.t. a).
-    residual_backward(dx, daproj, da, bt * C, Device::CPU);
-    matmul_backward(dattn_out, daproj_w, daproj_b, daproj, attn_out, aproj_w, B, T, C, C,
-                    Device::CPU);
-    attention_backward(dqkv, datt, dpreatt, dattn_out, qkv, att, B, T, C, NH, Device::CPU);
-    matmul_backward(dln1, dattn_w, dattn_b, dqkv, ln1, attn_w, B, T, C, 3 * C, Device::CPU);
-    layernorm_backward(dx, dln1_w, dln1_b, dln1, x, ln1_w, ln1_mean, ln1_rstd, B, T, C, Device::CPU);
+    residual_backward(dx, daproj, da, bt * C);
+    matmul_backward(dattn_out, daproj_w, daproj_b, daproj, attn_out, aproj_w, B, T, C, C);
+    attention_backward(dqkv, datt, dpreatt, dattn_out, qkv, att, B, T, C, NH);
+    matmul_backward(dln1, dattn_w, dattn_b, dqkv, ln1, attn_w, B, T, C, 3 * C);
+    layernorm_backward(dx, dln1_w, dln1_b, dln1, x, ln1_w, ln1_mean, ln1_rstd, B, T, C);
 
     // dx through the whole block; one weight gradient in each sub-block.
     CHECK(grad_check(loss, x, dx, n_x) < 3e-2);
