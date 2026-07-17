@@ -10,6 +10,12 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+py_binary(
+    name = "prepare_shakespeare",
+    srcs = ["prepare_shakespeare.py"],
+    visibility = ["//visibility:public"],
+)
+
 py_test(
     name = "env_test",
     size = "small",

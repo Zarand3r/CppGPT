@@ -5,9 +5,38 @@
 #include <sys/stat.h>  // fstat, struct stat
 #include <unistd.h>    // close
 
+#include <cstddef>
 #include <utility>  // swap, move
+#include <vector>
 
 namespace cppgpt {
+
+Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcept {
+    ASSERT(path != nullptr);
+    // Pack to little-endian uint16 in one buffer, then a single write.
+    std::vector<std::uint16_t> u16(ids.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const int v = ids[i];
+        if (v < 0 || v > 0xFFFF) return err(ErrorCode::OutOfRange);
+        u16[i] = static_cast<std::uint16_t>(v);
+    }
+    const int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return err(ErrorCode::IoError);
+    const std::byte* p = reinterpret_cast<const std::byte*>(u16.data());
+    std::size_t n = u16.size() * sizeof(std::uint16_t);
+    bool ok = true;
+    while (ok && n > 0) {
+        const ssize_t w = ::write(fd, p, n);
+        if (w < 0) {
+            ok = false;
+        } else {
+            p += w;
+            n -= static_cast<std::size_t>(w);
+        }
+    }
+    if (::close(fd) != 0) ok = false;
+    return ok ? Result<void>{} : err(ErrorCode::IoError);
+}
 
 Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_t seed) noexcept {
     ASSERT(path != nullptr && B >= 1 && T >= 1);
