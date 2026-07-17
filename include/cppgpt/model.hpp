@@ -114,6 +114,20 @@ public:
     // cppgpt::clip_grad_norm.
     [[nodiscard]] float clip_grad_norm(float max_norm) noexcept;
 
+    // Write a checkpoint to `path` (atomic tmp->rename): the weights, plus the
+    // AdamW moments and step counter when the optimizer has run (so training can
+    // resume trajectory-exact). See cppgpt/checkpoint.hpp for the format.
+    [[nodiscard]] Result<void> save_checkpoint(const char* path) const noexcept;
+
+    // Load a checkpoint written by save_checkpoint. Validates magic/version, that
+    // the file's Config and param_count match this model, and the payload
+    // checksum — returning VersionMismatch / ShapeMismatch / CorruptCheckpoint /
+    // ChecksumMismatch without touching the live arenas on failure. On success
+    // restores weights (and moments + step, if the file carries them). A
+    // moment-less file leaves the optimizer state at zero (a warned, bounded
+    // degradation on resume, not silent).
+    [[nodiscard]] Result<void> load_checkpoint(const char* path) noexcept;
+
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] int batch() const noexcept { return B_; }    // fixed batch size
     [[nodiscard]] int seq_len() const noexcept { return T_; }  // fixed context length
@@ -128,6 +142,10 @@ public:
     [[nodiscard]] std::size_t param_count() const noexcept { return param_count_; }
 
 private:
+    // Allocate + zero the AdamW moment arenas on first use (update() or a
+    // moment-carrying load). Idempotent.
+    void ensure_moment_arenas() noexcept;
+
     Config cfg_;
     int B_, T_;
     std::size_t param_count_ = 0;

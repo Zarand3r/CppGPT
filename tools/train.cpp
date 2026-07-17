@@ -1,15 +1,17 @@
 // train — the first end-to-end cppgpt training demo.
 //
-// Trains a baby GPT-2 (char-level) on a text corpus for a handful of steps,
-// printing the loss each step. This is the minimal runnable loop over the already
-// verified forward / backward / AdamW core: tokenize → sample random windows →
-// forward → backward → AdamW. The production data pipeline (mmap uint16, shuffled
-// epochs), LR schedule, gradient clipping, checkpointing, and sampling are M2 —
-// deliberately out of scope here.
+// Trains a baby GPT-2 (char-level) on a text corpus, printing loss/lr/grad-norm
+// each step. Runnable loop over the verified forward / backward / AdamW core:
+// tokenize → sample random windows → forward → backward → clip → AdamW, on a
+// cosine LR schedule. If a checkpoint path is given it resumes from it (when the
+// file exists) and saves periodically. The mmap uint16 dataloader is wired via
+// tools/prepare + a follow-up; here batches are sampled from the in-memory corpus.
 //
-// Usage: train [corpus.txt] [steps]
-//   corpus.txt  path to a UTF-8/ASCII text file (default: a small built-in corpus)
-//   steps       number of optimizer steps (default: 30)
+// Usage: train [corpus.txt] [steps] [checkpoint.ckpt]
+//   corpus.txt       path to a UTF-8/ASCII text file (default: a small built-in corpus)
+//   steps            number of optimizer steps (default: 30)
+//   checkpoint.ckpt  optional: resume from this file if it exists; save to it every
+//                    50 steps and at the end
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -75,8 +77,12 @@ void sample_batch(const std::vector<int>& data, int B, int T, Generator& gen,
 }  // namespace
 
 int main(int argc, char** argv) {
-    const std::string corpus = (argc > 1) ? read_file(argv[1]) : std::string(kDefaultCorpus);
+    // An empty first arg ("") selects the built-in corpus, so the later positional
+    // args (steps, checkpoint) stay reachable without a real corpus file.
+    const bool have_corpus = (argc > 1) && (argv[1][0] != '\0');
+    const std::string corpus = have_corpus ? read_file(argv[1]) : std::string(kDefaultCorpus);
     const int steps = (argc > 2) ? std::atoi(argv[2]) : 30;
+    const char* ckpt = (argc > 3) ? argv[3] : nullptr;
 
     if (corpus.empty()) {
         std::fprintf(stderr, "train: corpus is empty\n");
@@ -107,6 +113,22 @@ int main(int argc, char** argv) {
     GPT2 model(cfg, B, T);
     model.init_weights(gen);
 
+    // Resume from `ckpt` if it exists; a corrupt/mismatched file is fatal (we do
+    // not silently start fresh over a real but unusable checkpoint).
+    if (ckpt != nullptr) {
+        std::ifstream probe(ckpt, std::ios::binary);
+        if (probe.good()) {
+            probe.close();
+            const auto r = model.load_checkpoint(ckpt);
+            if (!r) {
+                std::fprintf(stderr, "train: cannot resume from '%s': %s\n", ckpt,
+                             describe(r.error()));
+                return 1;
+            }
+            std::printf("train: resumed from %s\n", ckpt);
+        }
+    }
+
     std::vector<int> inputs(static_cast<std::size_t>(B) * T);
     std::vector<int> targets(static_cast<std::size_t>(B) * T);
 
@@ -128,6 +150,14 @@ int main(int argc, char** argv) {
         std::printf("step %3d/%d  loss %.4f  lr %.2e  |g| %.3f\n", step, steps,
                     static_cast<double>(loss), static_cast<double>(opt.lr),
                     static_cast<double>(gnorm));
+
+        if (ckpt != nullptr && (step % 50 == 0 || step == steps)) {
+            const auto r = model.save_checkpoint(ckpt);
+            if (!r)
+                std::fprintf(stderr, "train: checkpoint save failed: %s\n", describe(r.error()));
+            else
+                std::printf("  [checkpoint saved: %s]\n", ckpt);
+        }
     }
 
     std::printf("train: done.\n");

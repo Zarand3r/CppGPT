@@ -2,8 +2,12 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <vector>
 
+#include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
+#include "cppgpt/log.hpp"
 #include "cppgpt/ops.hpp"
 
 namespace cppgpt {
@@ -340,15 +344,9 @@ void GPT2::backward(const int* tokens, const int* targets) {
 
 void GPT2::update(const AdamW& opt) noexcept {
     std::size_t ps[kNumParamTensors];
-    const std::size_t ptot = param_sizes(cfg_, ps);
+    param_sizes(cfg_, ps);  // per-tensor sizes; total tracked by param_count_
 
-    // Lazily allocate the AdamW moment arenas on the first step (zeroed: m=v=0).
-    if (m_ == nullptr) {
-        m_store_ = Storage(ptot);
-        v_store_ = Storage(ptot);
-        m_ = m_store_.alloc_zeroed(ptot);
-        v_ = v_store_.alloc_zeroed(ptot);
-    }
+    ensure_moment_arenas();  // lazily allocate m/v on the first step (zeroed)
     ++adam_step_;
 
     // Canonical GPT-2 2-group weight decay: only weight matrices and embeddings
@@ -388,6 +386,91 @@ float GPT2::clip_grad_norm(float max_norm) noexcept {
     // grads_.wte is the base of the contiguous [param_count_] gradient arena (.bin
     // order), the same flat block update() steps over.
     return cppgpt::clip_grad_norm(grads_.wte, static_cast<int>(param_count_), max_norm);
+}
+
+void GPT2::ensure_moment_arenas() noexcept {
+    if (m_ != nullptr) return;
+    m_store_ = Storage(param_count_);
+    v_store_ = Storage(param_count_);
+    m_ = m_store_.alloc_zeroed(param_count_);
+    v_ = v_store_.alloc_zeroed(param_count_);
+}
+
+Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
+    const bool has_m = (m_ != nullptr);
+    const std::size_t nbytes = param_count_ * sizeof(float);
+
+    // Checksum over the payload regions, in the order they are written.
+    std::uint64_t sum = fnv1a_64(kFnvOffset64, params_.wte, nbytes);
+    if (has_m) {
+        sum = fnv1a_64(sum, m_, nbytes);
+        sum = fnv1a_64(sum, v_, nbytes);
+    }
+
+    CheckpointHeader h{};
+    h.magic = kCheckpointMagic;
+    h.version = kCheckpointVersion;
+    h.max_seq_len = cfg_.max_seq_len;
+    h.vocab_size = cfg_.vocab_size;
+    h.n_layer = cfg_.n_layer;
+    h.n_head = cfg_.n_head;
+    h.n_embd = cfg_.n_embd;
+    h.adam_step = adam_step_;
+    h.flags = has_m ? kCkptHasMoments : 0u;
+    h.param_count = param_count_;
+    h.checksum = sum;
+
+    ByteSpan sections[3];
+    std::size_t n = 0;
+    sections[n++] = {params_.wte, nbytes};
+    if (has_m) {
+        sections[n++] = {m_, nbytes};
+        sections[n++] = {v_, nbytes};
+    }
+    return atomic_write(path, h, sections, n);
+}
+
+Result<void> GPT2::load_checkpoint(const char* path) noexcept {
+    // Read the whole file first, validate everything, and only then copy into the
+    // live arenas — a failed load never leaves the model half-overwritten.
+    ASSIGN_OR_RETURN(std::vector<std::byte> buf, read_file(path));
+    if (buf.size() < sizeof(CheckpointHeader)) return err(ErrorCode::CorruptCheckpoint);
+
+    CheckpointHeader h{};
+    std::memcpy(&h, buf.data(), sizeof(h));
+    if (h.magic != kCheckpointMagic) return err(ErrorCode::CorruptCheckpoint);
+    if (h.version != kCheckpointVersion) return err(ErrorCode::VersionMismatch);
+    if (h.max_seq_len != cfg_.max_seq_len || h.vocab_size != cfg_.vocab_size ||
+        h.n_layer != cfg_.n_layer || h.n_head != cfg_.n_head || h.n_embd != cfg_.n_embd ||
+        h.param_count != param_count_) {
+        return err(ErrorCode::ShapeMismatch);
+    }
+
+    const bool has_m = (h.flags & kCkptHasMoments) != 0;
+    const std::size_t nbytes = param_count_ * sizeof(float);
+    const std::size_t expected = sizeof(CheckpointHeader) + (has_m ? 3 : 1) * nbytes;
+    if (buf.size() != expected) return err(ErrorCode::CorruptCheckpoint);
+
+    const std::byte* payload = buf.data() + sizeof(CheckpointHeader);
+    std::uint64_t sum = fnv1a_64(kFnvOffset64, payload, nbytes);
+    if (has_m) {
+        sum = fnv1a_64(sum, payload + nbytes, nbytes);
+        sum = fnv1a_64(sum, payload + 2 * nbytes, nbytes);
+    }
+    if (sum != h.checksum) return err(ErrorCode::ChecksumMismatch);
+
+    // Validated — commit to the arenas.
+    std::memcpy(params_.wte, payload, nbytes);
+    if (has_m) {
+        ensure_moment_arenas();
+        std::memcpy(m_, payload + nbytes, nbytes);
+        std::memcpy(v_, payload + 2 * nbytes, nbytes);
+        adam_step_ = h.adam_step;
+    } else {
+        LOG_WARNING("checkpoint has no optimizer moments; resume starts Adam from zero");
+        adam_step_ = 0;
+    }
+    return {};
 }
 
 }  // namespace cppgpt

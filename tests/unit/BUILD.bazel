@@ -71,6 +71,16 @@ cc_test(
 )
 
 cc_test(
+    name = "checkpoint_test",
+    size = "small",
+    srcs = ["checkpoint_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
     name = "storage_test",
     size = "small",
     srcs = ["storage_test.cpp"],
