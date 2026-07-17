@@ -10,6 +10,7 @@
 // Usage: train [corpus.txt] [steps]
 //   corpus.txt  path to a UTF-8/ASCII text file (default: a small built-in corpus)
 //   steps       number of optimizer steps (default: 30)
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 
 #include "cppgpt/core.hpp"
 #include "cppgpt/model.hpp"
+#include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/tokenizer.hpp"
 
@@ -107,16 +109,25 @@ int main(int argc, char** argv) {
 
     std::vector<int> inputs(static_cast<std::size_t>(B) * T);
     std::vector<int> targets(static_cast<std::size_t>(B) * T);
-    const AdamW opt{.lr = 1e-3f};  // canonical betas (0.9/0.95), eps (1e-8), no decay
+
+    // Cosine LR with linear warmup + global grad-norm clipping (canonical betas
+    // 0.9/0.95, eps 1e-8). opt.lr is overwritten each step by the schedule.
+    AdamW opt{};
+    const float max_lr = 1e-3f, min_lr = 1e-4f, grad_clip = 1.0f;
+    const int warmup = std::max(0, std::min(steps / 10, steps - 1));
 
     for (int step = 1; step <= steps; ++step) {
         sample_batch(data, B, T, gen, inputs, targets);
         model.forward(inputs.data(), targets.data());
         const float loss = model.mean_loss();
-        std::printf("step %3d/%d  loss %.4f\n", step, steps, static_cast<double>(loss));
         model.zero_grads();
         model.backward(inputs.data(), targets.data());
+        const float gnorm = model.clip_grad_norm(grad_clip);
+        opt.lr = cosine_lr(step - 1, max_lr, min_lr, warmup, steps);  // 0-based step
         model.update(opt);
+        std::printf("step %3d/%d  loss %.4f  lr %.2e  |g| %.3f\n", step, steps,
+                    static_cast<double>(loss), static_cast<double>(opt.lr),
+                    static_cast<double>(gnorm));
     }
 
     std::printf("train: done.\n");

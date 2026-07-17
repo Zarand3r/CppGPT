@@ -36,4 +36,30 @@ void adamw_update(float* param, const float* grad, float* m, float* v, int n, fl
     adamw_update_cpu(param, grad, m, v, n, lr, beta1, beta2, eps, weight_decay, t);
 }
 
+float clip_grad_norm(float* grad, int n, float max_norm) noexcept {
+    ASSERT(grad != nullptr && n >= 0);
+    double sumsq = 0.0;  // double so the reduction is stable across millions of terms
+    for (int i = 0; i < n; ++i) {
+        const double g = static_cast<double>(grad[i]);
+        sumsq += g * g;
+    }
+    const float norm = static_cast<float>(std::sqrt(sumsq));
+    if (max_norm > 0.0f && norm > max_norm) {
+        const float scale = max_norm / (norm + 1e-6f);
+        for (int i = 0; i < n; ++i) grad[i] *= scale;
+    }
+    return norm;
+}
+
+float cosine_lr(int step, float max_lr, float min_lr, int warmup, int max_steps) noexcept {
+    ASSERT(warmup >= 0 && warmup < max_steps && min_lr <= max_lr);
+    if (step < warmup) {  // linear warmup (warmup > 0 here, so no division by zero)
+        return max_lr * static_cast<float>(step + 1) / static_cast<float>(warmup);
+    }
+    if (step >= max_steps) return min_lr;  // hold the floor after the schedule ends
+    const float decay = static_cast<float>(step - warmup) / static_cast<float>(max_steps - warmup);
+    const float coeff = 0.5f * (1.0f + std::cos(3.14159265358979323846f * decay));  // 1 -> 0
+    return min_lr + coeff * (max_lr - min_lr);
+}
+
 }  // namespace cppgpt

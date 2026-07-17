@@ -29,4 +29,21 @@ void adamw_update(float* param, const float* grad, float* m, float* v, int n, fl
                   float beta1, float beta2, float eps, float weight_decay, int t,
                   Device dev = Device::CPU) noexcept;
 
+// Global gradient-norm clipping. Computes the total L2 norm over `grad[0..n)`
+// (double accumulation, so it is stable across millions of parameters) and, if it
+// exceeds `max_norm`, scales every gradient in place by max_norm / (norm + 1e-6).
+// Returns the norm BEFORE clipping (the value to log/monitor). A non-positive
+// `max_norm` disables clipping (norm is still computed and returned).
+[[nodiscard]] float clip_grad_norm(float* grad, int n, float max_norm) noexcept;
+
+// Cosine learning-rate schedule with linear warmup (the GPT/nanoGPT default), as
+// a pure function of the 0-based `step`:
+//   step < warmup            : linear ramp 0 -> max_lr (reaches max_lr at warmup-1)
+//   warmup <= step < max_steps: cosine decay max_lr -> min_lr
+//   step >= max_steps        : hold min_lr
+// Requires 0 <= warmup < max_steps and min_lr <= max_lr. warmup == 0 skips the
+// ramp (no division). Deterministic; no state.
+[[nodiscard]] float cosine_lr(int step, float max_lr, float min_lr, int warmup,
+                              int max_steps) noexcept;
+
 }  // namespace cppgpt

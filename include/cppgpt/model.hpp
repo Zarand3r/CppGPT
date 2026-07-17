@@ -108,6 +108,12 @@ public:
     // internal step counter used for bias correction.
     void update(const AdamW& opt) noexcept;
 
+    // Clip the global gradient L2 norm to `max_norm` over the whole gradient
+    // arena, in place, and return the pre-clip norm (to log/monitor). Call between
+    // backward() and update(). max_norm <= 0 disables clipping. See
+    // cppgpt::clip_grad_norm.
+    [[nodiscard]] float clip_grad_norm(float max_norm) noexcept;
+
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] int batch() const noexcept { return B_; }    // fixed batch size
     [[nodiscard]] int seq_len() const noexcept { return T_; }  // fixed context length
