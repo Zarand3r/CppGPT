@@ -119,6 +119,7 @@ GPT2::GPT2(const Config& cfg, int B, int T) : cfg_(cfg), B_(B), T_(T) {
     // Parameters and their gradients share the same layout.
     std::size_t ps[kNumParamTensors];
     const std::size_t ptot = param_sizes(cfg, ps);
+    param_count_ = ptot;
     param_store_ = Storage(ptot);
     grad_store_ = Storage(ptot);
     point_params(params_, param_store_.alloc(ptot), ps);
