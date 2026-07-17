@@ -13,6 +13,16 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "generate_test",
+    size = "small",
+    srcs = ["generate_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
 # M1 gate: cppgpt vs canonical GPT-2 in PyTorch, via a committed reference fixture.
 cc_test(
     name = "parity_test",
