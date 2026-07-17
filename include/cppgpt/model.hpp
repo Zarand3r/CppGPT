@@ -113,9 +113,14 @@ public:
     [[nodiscard]] const ActTensors& acts() const noexcept { return acts_; }
     [[nodiscard]] float mean_loss() const noexcept { return mean_loss_; }
 
+    // Total float count of the parameter arena (params()/grads() are contiguous
+    // blocks of this many floats, in .bin order — for weight loading / fixtures).
+    [[nodiscard]] std::size_t param_count() const noexcept { return param_count_; }
+
 private:
     Config cfg_;
     int B_, T_;
+    std::size_t param_count_ = 0;
     Storage param_store_;
     Storage grad_store_;
     Storage act_store_;

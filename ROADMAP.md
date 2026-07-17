@@ -26,9 +26,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 - [x] Weight tying (`lm_head` aliases `wte`) — forward classifier uses `wte`; `dwte` accumulates from classifier + embedding paths in `gpt2_backward` (gradcheck-verified)
 - [x] **GPT-2 init + residual-proj scaling** (`init_weights`) + **AdamW** (`adamw_update` op + `GPT2::update`; 2-group decay: ≥2D weights decay, biases/LN don't; torch-parity fixture)
 - [x] `CharTokenizer` (deterministic byte-level vocab, exact round-trip; BPE is M3)
-- [~] `tools/train.cpp` (baby config, char-level, random-window batches — **trains end to end**, loss descends from ≈ln(V)); `tools/verify.cpp` (full fwd/bwd) next
+- [x] `tools/train.cpp` (baby config, char-level, random-window batches — **trains end to end**, loss descends from ≈ln(V)); full fwd/bwd verification done via the parity gate (`tests/integration/parity_test`, not a separate tool)
 - [x] Finite-difference gradient checker test (`model_test` end-to-end gradcheck + `tests/numeric.hpp`)
-- [ ] **Gate:** 10-step loss matches PyTorch ≤ 1e-3 (`scripts/gen_fixtures.py` vs `notebooks/train_gpt2.py`)
+- [x] **Gate MET:** cppgpt matches canonical GPT-2 in PyTorch — forward ≤ 1e-4, gradients ≤ 1e-3, 10-step AdamW loss ≤ 1e-3 (measured ~1e-6; `scripts/gen_fixtures.py` → committed `.bin` → `tests/integration/parity_test`). **M1 complete.**
 
 ## M2 — TinyShakespeare convergence + CPU perf
 - [ ] `dataloader` (mmap uint16, shuffled epochs) · `scripts/prepare_shakespeare.py`
