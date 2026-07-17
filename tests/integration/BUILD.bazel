@@ -12,3 +12,15 @@ cc_test(
         "//tests:numeric",
     ],
 )
+
+# M1 gate: cppgpt vs canonical GPT-2 in PyTorch, via a committed reference fixture.
+cc_test(
+    name = "parity_test",
+    size = "small",
+    srcs = ["parity_test.cpp"],
+    data = ["//tests/fixtures:gpt2_parity.bin"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
