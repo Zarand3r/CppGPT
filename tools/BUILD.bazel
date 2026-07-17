@@ -9,3 +9,9 @@ cc_binary(
     srcs = ["train.cpp"],
     deps = ["//:cppgpt"],
 )
+
+cc_binary(
+    name = "generate",
+    srcs = ["generate.cpp"],
+    deps = ["//:cppgpt"],
+)

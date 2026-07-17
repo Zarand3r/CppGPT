@@ -233,14 +233,18 @@ void GPT2::forward(const int* tokens, const int* targets) {
     const float* last = (L == 0) ? a.encoded : a.residual3 + static_cast<std::size_t>(L - 1) * BTC;
     layernorm_forward(a.lnf, a.lnf_mean, a.lnf_rstd, last, p.lnfw, p.lnfb, B, T, C);
     matmul_forward(a.logits, a.lnf, p.wte, nullptr, B, T, C, V);  // tied classifier
-    for (std::size_t bt = 0; bt < BT; ++bt)
-        softmax_forward(a.probs + bt * static_cast<std::size_t>(V),
-                        a.logits + bt * static_cast<std::size_t>(V), V);
-    cross_entropy_forward(a.losses, a.probs, targets, B, T, V);
 
-    double sum = 0.0;
-    for (std::size_t bt = 0; bt < BT; ++bt) sum += a.losses[bt];
-    mean_loss_ = static_cast<float>(sum / static_cast<double>(BT));
+    // Inference (targets == nullptr): stop at the logits; no probs/loss. Otherwise
+    // finish with softmax + cross-entropy and record mean_loss.
+    if (targets != nullptr) {
+        for (std::size_t bt = 0; bt < BT; ++bt)
+            softmax_forward(a.probs + bt * static_cast<std::size_t>(V),
+                            a.logits + bt * static_cast<std::size_t>(V), V);
+        cross_entropy_forward(a.losses, a.probs, targets, B, T, V);
+        double sum = 0.0;
+        for (std::size_t bt = 0; bt < BT; ++bt) sum += a.losses[bt];
+        mean_loss_ = static_cast<float>(sum / static_cast<double>(BT));
+    }
 }
 
 void GPT2::backward(const int* tokens, const int* targets) {

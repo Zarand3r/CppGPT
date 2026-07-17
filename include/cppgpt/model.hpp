@@ -85,8 +85,10 @@ public:
     // LayerNorm gains 1, shifts 0.
     void init_weights(Generator& gen);
 
-    // Run the forward pass for `tokens`/`targets` (each [B*T] for the model's fixed
-    // B, T; ids in [0,V)), filling activations and `mean_loss`.
+    // Run the forward pass for `tokens` (each [B*T] for the model's fixed B, T; ids
+    // in [0,V)), filling activations. If `targets` is non-null, also computes the
+    // softmax + cross-entropy and records `mean_loss`; pass nullptr for inference
+    // (logits only — read them from acts().logits).
     void forward(const int* tokens, const int* targets);
 
     // Zero the parameter-gradient and activation-gradient arenas. Call before
@@ -107,6 +109,8 @@ public:
     void update(const AdamW& opt) noexcept;
 
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
+    [[nodiscard]] int batch() const noexcept { return B_; }    // fixed batch size
+    [[nodiscard]] int seq_len() const noexcept { return T_; }  // fixed context length
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }
     [[nodiscard]] ParamTensors& params() noexcept { return params_; }  // mutable: optimizer / tests
     [[nodiscard]] const ParamTensors& grads() const noexcept { return grads_; }
