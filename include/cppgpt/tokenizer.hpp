@@ -28,6 +28,11 @@ public:
 
     [[nodiscard]] int vocab_size() const noexcept { return vocab_size_; }
 
+    // The vocabulary as the id->byte string (distinct corpus bytes, ascending).
+    // Round-trips: CharTokenizer(tok.vocab()) rebuilds the identical mapping, so
+    // this is what to persist to reload a tokenizer without the original corpus.
+    [[nodiscard]] std::string_view vocab() const noexcept { return itos_; }
+
 private:
     std::array<int, 256> stoi_{};  // byte -> id, or -1 if absent from the vocab
     std::string itos_;             // id -> byte (length vocab_size_)

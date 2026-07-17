@@ -15,3 +15,9 @@ cc_binary(
     srcs = ["generate.cpp"],
     deps = ["//:cppgpt"],
 )
+
+cc_binary(
+    name = "prepare",
+    srcs = ["prepare.cpp"],
+    deps = ["//:cppgpt"],
+)
