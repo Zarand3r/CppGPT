@@ -61,6 +61,16 @@ cc_test(
 )
 
 cc_test(
+    name = "optim_schedule_test",
+    size = "small",
+    srcs = ["optim_schedule_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
     name = "storage_test",
     size = "small",
     srcs = ["storage_test.cpp"],

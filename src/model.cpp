@@ -384,4 +384,10 @@ void GPT2::update(const AdamW& opt) noexcept {
     }
 }
 
+float GPT2::clip_grad_norm(float max_norm) noexcept {
+    // grads_.wte is the base of the contiguous [param_count_] gradient arena (.bin
+    // order), the same flat block update() steps over.
+    return cppgpt::clip_grad_norm(grads_.wte, static_cast<int>(param_count_), max_norm);
+}
+
 }  // namespace cppgpt
