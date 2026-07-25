@@ -2,8 +2,10 @@
 // known-norm gradient vectors and closed-form schedule values (warmup ramp,
 // peak, cosine midpoint, floor, and monotonicity).
 #include <cmath>
+#include <limits>
 #include <vector>
 
+#include "cppgpt/core.hpp"
 #include "cppgpt/optimizer.hpp"
 #include "tests/check.hpp"
 
@@ -74,6 +76,16 @@ int main() {
         for (int s = W + 1; s <= S; ++s)
             down = down && (cosine_lr(s, mx, mn, W, S) < cosine_lr(s - 1, mx, mn, W, S));
         CHECK(down);
+    }
+
+    // ---- clip_grad_norm: non-finite gradients fail fast ----
+    // `norm > max_norm` is false for NaN, so a silent no-clip would let diverged
+    // gradients reach the weights unreported.
+    {
+        std::vector<float> g{1.0f, std::nanf("")};
+        CHECK_DIES(IGNORE(clip_grad_norm(g.data(), 2, 1.0f)));
+        std::vector<float> gi{std::numeric_limits<float>::infinity(), 0.0f};
+        CHECK_DIES(IGNORE(clip_grad_norm(gi.data(), 2, 1.0f)));
     }
 
     // ---- cosine_lr: warmup == 0 goes straight to the cosine phase ----

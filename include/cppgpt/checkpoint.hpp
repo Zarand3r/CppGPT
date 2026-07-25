@@ -27,12 +27,15 @@
 namespace cppgpt {
 
 inline constexpr std::uint32_t kCheckpointMagic = 0x54504B43;  // 'CKPT' little-endian
-inline constexpr std::uint32_t kCheckpointVersion = 1;
+inline constexpr std::uint32_t kCheckpointVersion = 2;
 inline constexpr std::uint32_t kCkptHasMoments = 1u << 0;  // flags: m/v present in payload
+inline constexpr std::uint32_t kCkptKnownFlags = kCkptHasMoments;  // any other bit => corrupt
 
 // 64-byte fixed header. Standard-layout, no padding (static_assert below). The
-// checksum covers the PAYLOAD only; the header's own integrity is gated by the
-// magic/version/Config checks plus an exact-file-size check.
+// checksum covers the HEADER (with the checksum field itself zeroed) AND the
+// payload, so fields the loader trusts but cannot range-check on their own —
+// adam_step, flags — cannot be silently corrupted. (v1 checksummed only the
+// payload; v2 exists because widening that coverage changes the bytes.)
 struct CheckpointHeader {
     std::uint32_t magic;
     std::uint32_t version;
@@ -69,9 +72,47 @@ struct ByteSpan {
 [[nodiscard]] Result<void> atomic_write(const char* path, const CheckpointHeader& header,
                                         const ByteSpan* sections, std::size_t n_sections) noexcept;
 
-// Read the whole file into memory (checkpoints are read transactionally: the
-// caller validates header + checksum before touching any live arena). Returns
-// IoError on open/read failure.
-[[nodiscard]] Result<std::vector<std::byte>> read_file(const char* path) noexcept;
+// Compute the checksum a checkpoint must carry: the header with its `checksum`
+// field zeroed, then each payload section in order.
+[[nodiscard]] std::uint64_t checkpoint_checksum(const CheckpointHeader& header,
+                                                const ByteSpan* sections,
+                                                std::size_t n_sections) noexcept;
+
+// Streaming reader for a checkpoint file, so the header can be validated BEFORE
+// any payload-sized allocation. Reading the whole file up front would let a
+// bogus (or simply wrong) file dictate an unbounded allocation inside noexcept
+// code — i.e. std::terminate on bad_alloc. open() reads and checks only the
+// 64-byte header; the caller then checks the Config/param_count against its own
+// model, and only then calls read_payload() with a buffer it has sized itself.
+// Owns the fd (closed on destruction); move-only.
+class CheckpointFile {
+public:
+    // Opens `path` and reads the header. Fails with IoError (open/read/stat),
+    // CorruptCheckpoint (short file, bad magic, unknown flag bits, negative
+    // adam_step) or VersionMismatch.
+    [[nodiscard]] static Result<CheckpointFile> open(const char* path) noexcept;
+
+    [[nodiscard]] const CheckpointHeader& header() const noexcept { return header_; }
+
+    // Bytes after the 64-byte header, as reported by the filesystem.
+    [[nodiscard]] std::uint64_t payload_bytes() const noexcept { return payload_bytes_; }
+
+    // Read exactly `n` payload bytes into `dst`. CorruptCheckpoint on short read.
+    [[nodiscard]] Result<void> read_payload(void* dst, std::size_t n) noexcept;
+
+    ~CheckpointFile();
+    CheckpointFile(const CheckpointFile&) = delete;
+    CheckpointFile& operator=(const CheckpointFile&) = delete;
+    CheckpointFile(CheckpointFile&& o) noexcept;
+    CheckpointFile& operator=(CheckpointFile&& o) noexcept;
+
+private:
+    CheckpointFile() noexcept = default;
+    void close_fd() noexcept;
+
+    int fd_ = -1;
+    CheckpointHeader header_{};
+    std::uint64_t payload_bytes_ = 0;
+};
 
 }  // namespace cppgpt

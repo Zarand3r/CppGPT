@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "cppgpt/checkpoint.hpp"
@@ -123,6 +124,11 @@ GPT2::GPT2(const Config& cfg, int B, int T) : cfg_(cfg), B_(B), T_(T) {
     // Parameters and their gradients share the same layout.
     std::size_t ps[kNumParamTensors];
     const std::size_t ptot = param_sizes(cfg, ps);
+    // The per-tensor op signatures take `int` counts, so the whole arena must be
+    // addressable as one: past INT_MAX the casts would silently wrap and turn
+    // clip_grad_norm into a no-op. Fail fast at construction instead.
+    ASSERT_MSG(ptot <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+               "GPT2: parameter count exceeds INT_MAX");
     param_count_ = ptot;
     param_store_ = Storage(ptot);
     grad_store_ = Storage(ptot);
@@ -240,6 +246,7 @@ void GPT2::forward(const int* tokens, const int* targets) {
 
     // Inference (targets == nullptr): stop at the logits; no probs/loss. Otherwise
     // finish with softmax + cross-entropy and record mean_loss.
+    has_loss_ = (targets != nullptr);
     if (targets != nullptr) {
         for (std::size_t bt = 0; bt < BT; ++bt)
             softmax_forward(a.probs + bt * static_cast<std::size_t>(V),
@@ -252,6 +259,10 @@ void GPT2::forward(const int* tokens, const int* targets) {
 }
 
 void GPT2::backward(const int* tokens, const int* targets) {
+    // backward reads acts().probs, which only a loss-computing forward fills. An
+    // inference forward (targets == nullptr) leaves them stale or uninitialized,
+    // so running backward after one would yield plausible but wrong gradients.
+    ASSERT_MSG(has_loss_, "backward() requires a preceding forward() with targets");
     const int B = B_, T = T_;
     const int C = cfg_.n_embd, L = cfg_.n_layer, NH = cfg_.n_head, V = cfg_.vocab_size;
     const auto BTC = static_cast<std::size_t>(B) * T * C;
@@ -400,13 +411,6 @@ Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
     const bool has_m = (m_ != nullptr);
     const std::size_t nbytes = param_count_ * sizeof(float);
 
-    // Checksum over the payload regions, in the order they are written.
-    std::uint64_t sum = fnv1a_64(kFnvOffset64, params_.wte, nbytes);
-    if (has_m) {
-        sum = fnv1a_64(sum, m_, nbytes);
-        sum = fnv1a_64(sum, v_, nbytes);
-    }
-
     CheckpointHeader h{};
     h.magic = kCheckpointMagic;
     h.version = kCheckpointVersion;
@@ -418,7 +422,6 @@ Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
     h.adam_step = adam_step_;
     h.flags = has_m ? kCkptHasMoments : 0u;
     h.param_count = param_count_;
-    h.checksum = sum;
 
     ByteSpan sections[3];
     std::size_t n = 0;
@@ -427,19 +430,16 @@ Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
         sections[n++] = {m_, nbytes};
         sections[n++] = {v_, nbytes};
     }
+    h.checksum = checkpoint_checksum(h, sections, n);  // covers the header too
     return atomic_write(path, h, sections, n);
 }
 
 Result<void> GPT2::load_checkpoint(const char* path) noexcept {
-    // Read the whole file first, validate everything, and only then copy into the
-    // live arenas — a failed load never leaves the model half-overwritten.
-    ASSIGN_OR_RETURN(std::vector<std::byte> buf, read_file(path));
-    if (buf.size() < sizeof(CheckpointHeader)) return err(ErrorCode::CorruptCheckpoint);
+    // Header first, then OUR OWN size arithmetic, then the payload — so a bogus
+    // or mismatched file can never dictate the size of an allocation here.
+    ASSIGN_OR_RETURN(CheckpointFile f, CheckpointFile::open(path));
+    const CheckpointHeader& h = f.header();
 
-    CheckpointHeader h{};
-    std::memcpy(&h, buf.data(), sizeof(h));
-    if (h.magic != kCheckpointMagic) return err(ErrorCode::CorruptCheckpoint);
-    if (h.version != kCheckpointVersion) return err(ErrorCode::VersionMismatch);
     if (h.max_seq_len != cfg_.max_seq_len || h.vocab_size != cfg_.vocab_size ||
         h.n_layer != cfg_.n_layer || h.n_head != cfg_.n_head || h.n_embd != cfg_.n_embd ||
         h.param_count != param_count_) {
@@ -447,27 +447,37 @@ Result<void> GPT2::load_checkpoint(const char* path) noexcept {
     }
 
     const bool has_m = (h.flags & kCkptHasMoments) != 0;
-    const std::size_t nbytes = param_count_ * sizeof(float);
-    const std::size_t expected = sizeof(CheckpointHeader) + (has_m ? 3 : 1) * nbytes;
-    if (buf.size() != expected) return err(ErrorCode::CorruptCheckpoint);
+    const std::size_t nbytes = param_count_ * sizeof(float);  // bounded by OUR model
+    const std::size_t n_sections = has_m ? 3 : 1;
+    if (f.payload_bytes() != static_cast<std::uint64_t>(n_sections) * nbytes)
+        return err(ErrorCode::CorruptCheckpoint);
 
-    const std::byte* payload = buf.data() + sizeof(CheckpointHeader);
-    std::uint64_t sum = fnv1a_64(kFnvOffset64, payload, nbytes);
-    if (has_m) {
-        sum = fnv1a_64(sum, payload + nbytes, nbytes);
-        sum = fnv1a_64(sum, payload + 2 * nbytes, nbytes);
-    }
-    if (sum != h.checksum) return err(ErrorCode::ChecksumMismatch);
+    // Stage into a scratch buffer and verify the checksum before touching a live
+    // arena: a corrupt file must never leave the model half-overwritten.
+    std::vector<std::byte> payload(n_sections * nbytes);
+    RETURN_IF_ERROR(f.read_payload(payload.data(), payload.size()));
 
-    // Validated — commit to the arenas.
-    std::memcpy(params_.wte, payload, nbytes);
+    ByteSpan sections[3];
+    for (std::size_t i = 0; i < n_sections; ++i) sections[i] = {payload.data() + i * nbytes, nbytes};
+    if (checkpoint_checksum(h, sections, n_sections) != h.checksum)
+        return err(ErrorCode::ChecksumMismatch);
+
+    // Validated — commit.
+    std::memcpy(params_.wte, payload.data(), nbytes);
     if (has_m) {
         ensure_moment_arenas();
-        std::memcpy(m_, payload + nbytes, nbytes);
-        std::memcpy(v_, payload + 2 * nbytes, nbytes);
+        std::memcpy(m_, payload.data() + nbytes, nbytes);
+        std::memcpy(v_, payload.data() + 2 * nbytes, nbytes);
         adam_step_ = h.adam_step;
     } else {
-        LOG_WARNING("checkpoint has no optimizer moments; resume starts Adam from zero");
+        // Weights-only file. The moments must be reset to match, or a model that
+        // has already trained would carry STALE m/v into the next step — and the
+        // step-1 bias correction (1/(1-beta1) = 10x) would amplify them into a
+        // large, arbitrary kick. Zero them so the state matches what we log.
+        LOG_WARNING("checkpoint has no optimizer moments; resetting Adam state to zero");
+        ensure_moment_arenas();
+        std::memset(m_, 0, nbytes);
+        std::memset(v_, 0, nbytes);
         adam_step_ = 0;
     }
     return {};

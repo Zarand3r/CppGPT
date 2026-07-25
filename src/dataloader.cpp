@@ -6,6 +6,7 @@
 #include <unistd.h>    // close
 
 #include <cstddef>
+#include <string>
 #include <utility>  // swap, move
 #include <vector>
 
@@ -20,7 +21,12 @@ Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcep
         if (v < 0 || v > 0xFFFF) return err(ErrorCode::OutOfRange);
         u16[i] = static_cast<std::uint16_t>(v);
     }
-    const int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // Write to a temp file and rename, like the checkpoint writer: writing the
+    // destination in place would leave a TRUNCATED .bin behind on a partial
+    // write, and a short token file is silently loadable (no length, no
+    // checksum) — the trainer would just train on less data than intended.
+    const std::string tmp = std::string(path) + ".tmp";
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return err(ErrorCode::IoError);
     const std::byte* p = reinterpret_cast<const std::byte*>(u16.data());
     std::size_t n = u16.size() * sizeof(std::uint16_t);
@@ -35,7 +41,11 @@ Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcep
         }
     }
     if (::close(fd) != 0) ok = false;
-    return ok ? Result<void>{} : err(ErrorCode::IoError);
+    if (!ok || ::rename(tmp.c_str(), path) != 0) {
+        ::unlink(tmp.c_str());
+        return err(ErrorCode::IoError);
+    }
+    return {};
 }
 
 Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_t seed) noexcept {
@@ -136,9 +146,16 @@ DataLoader::DataLoader(DataLoader&& o) noexcept
       inputs_(std::move(o.inputs_)),
       targets_(std::move(o.targets_)),
       gen_(o.gen_) {
+    // Clear ALL state, not just the mapping: leaving B_/T_/n_tokens_ intact
+    // would make the moved-from loader's accessors report a live-looking config
+    // while order_/inputs_ are empty.
     o.map_base_ = nullptr;  // the moved-from loader must not munmap our mapping
     o.tokens_ = nullptr;
     o.map_size_ = 0;
+    o.n_tokens_ = 0;
+    o.B_ = 0;
+    o.T_ = 0;
+    o.cursor_ = 0;
 }
 
 DataLoader& DataLoader::operator=(DataLoader&& o) noexcept {
@@ -158,6 +175,10 @@ DataLoader& DataLoader::operator=(DataLoader&& o) noexcept {
         o.map_base_ = nullptr;
         o.tokens_ = nullptr;
         o.map_size_ = 0;
+        o.n_tokens_ = 0;
+        o.B_ = 0;
+        o.T_ = 0;
+        o.cursor_ = 0;
     }
     return *this;
 }

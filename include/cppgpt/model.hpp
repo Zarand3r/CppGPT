@@ -166,6 +166,11 @@ private:
     float* v_ = nullptr;
     int adam_step_ = 0;  // 1-based step counter for bias correction
     float mean_loss_ = 0.0f;
+    // Whether the last forward() computed probs/mean_loss (i.e. had targets).
+    // backward() consumes acts().probs, so running it after an inference-only
+    // forward would silently produce gradients from another batch's (or
+    // uninitialized) probabilities.
+    bool has_loss_ = false;
 };
 
 }  // namespace cppgpt

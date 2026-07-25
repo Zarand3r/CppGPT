@@ -22,6 +22,12 @@ int sample(const float* logits, int V, float temperature, int top_k, Generator& 
     ASSERT(logits != nullptr && V > 0 && temperature > 0.0f);
     constexpr float kNegInf = -std::numeric_limits<float>::infinity();
 
+    // top_k == 1 is greedy decoding. It cannot go through the threshold path
+    // below: that keeps every logit >= the k-th largest, so a TIED maximum would
+    // leave several tokens eligible and softmax would spread over them. argmax
+    // breaks ties by lowest index, which is what greedy decoding must mean.
+    if (top_k == 1) return argmax(logits, V);
+
     // top-k threshold: only logits >= the k-th largest are eligible.
     float thresh = kNegInf;
     if (top_k > 0 && top_k < V) {
@@ -44,6 +50,12 @@ int sample(const float* logits, int V, float temperature, int top_k, Generator& 
             sum += e;
         }
     }
+
+    // A non-finite or empty distribution means the numerics upstream already
+    // broke (diverged LR, corrupt weights): every NaN comparison above is false,
+    // so nothing would be eligible and the walk below would silently return
+    // token 0 forever. That is semantic corruption — fail fast, never paper over it.
+    ASSERT_MSG(sum > 0.0 && std::isfinite(sum), "sample: logits are not a finite distribution");
 
     // Draw u in [0, sum); walk the cumulative distribution over eligible tokens.
     const double u = static_cast<double>(gen.uniform()) * sum;
