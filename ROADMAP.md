@@ -4,7 +4,12 @@ The running answer to "what do we build next." Flat list of core features, in bu
 
 **Locked decisions:** CPU-first v1, feature-complete **canonical GPT-2** (tanh GELU, bias=True, vocab 50257, fp32). Hand-written backward over the fixed GPT-2 graph (no tape). Std-only C++, single Bazel module (hermetic LLVM/Clang + Python). GPU = from-scratch CUDA, designed-in future phase (device seam now, kernels later).
 
-Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unchecked box.**
+Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unchecked box** within the
+current milestone.
+
+**Current focus (M2):** cache-blocked + vectorized matmul (line under "M2"), to close the measured
+~10× gap to the 30 GFLOP/s gate; then gradient accumulation. The one open M0 box (CI) is real but
+not on the M2 critical path.
 
 ---
 
@@ -14,9 +19,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 - [x] `core.hpp` errors: `Result<T,E> = std::expected` (enregisterable, C++23) · `ErrorCode` + `describe()` · `ASSERT`/`DCHECK`/`MUST`/`UNREACHABLE` · `TRY`/`ASSIGN_OR_RETURN`/`RETURN_IF_ERROR`/`TRY_OR`/`TRY_OR_CONTINUE`
 - [x] `log.hpp`: leveled Logger — `LOG_INFO`/`WARNING`/`ERROR`/`FATAL` + `LOG_EVERY_N`; level threshold; swappable sink; `std::format`
 - [x] `random.hpp`: explicit `Generator` (`mt19937_64`; no global, no default ctor) — `uniform`/`uniform_int`/`normal`
-- [~] `Storage` (aligned, `Device`-tagged, arena/bump) **done** (`storage.hpp` + `device.hpp`); `TensorView`/`Config`/`DType` deferred (no consumer until the first multi-op/model code — ops take raw `float*`)
+- [x] `Storage` (aligned, `Device`-tagged, arena/bump) **done** (`storage.hpp` + `device.hpp`); `Config` landed with the model (`model.hpp`); `TensorView`/`DType` deliberately not built — ops take raw `float*`, and `DType` waits for a second dtype (GPU / quantization phase)
 - [x] `matmul_forward` / `matmul_backward` (CPU, device-dispatched) — `ops.hpp` + `src/ops.cpp`
-- [ ] `scripts/gen_fixtures.py` (canonical-GPT-2 PyTorch oracle, tanh GELU) · `verify.hpp` — **deferred**: no PyTorch in this env; needed for the first GPT-2-specific op (gelu-tanh/layernorm), not for matmul
+- [x] `scripts/gen_fixtures.py` (canonical-GPT-2 PyTorch oracle, tanh GELU) · `verify.hpp` — run in the torch venv; the fixture is committed as `tests/fixtures/gpt2_parity.bin` so the C++ gate (`tests/integration/parity_test`) needs no torch
 - [x] `tests/unit/matmul_test.cpp` — fwd exact fixtures + bwd **adjoint identity** + finite-difference (independent of PyTorch); `storage_test.cpp` covers the arena
 - [ ] CI: one Linux build + `ldd` allow-list + ASan/UBSan
 
@@ -31,13 +36,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unche
 - [x] **Gate MET:** cppgpt matches canonical GPT-2 in PyTorch — forward ≤ 1e-4, gradients ≤ 1e-3, 10-step AdamW loss ≤ 1e-3 (measured ~1e-6; `scripts/gen_fixtures.py` → committed `.bin` → `tests/integration/parity_test`). **M1 complete.**
 
 ## M2 — TinyShakespeare convergence + CPU perf
-- [ ] `dataloader` (mmap uint16, shuffled epochs) · `scripts/prepare_shakespeare.py`
-- [ ] `checkpoint` (versioned header + raw fp32, atomic tmp→rename) + periodic save/resume
-- [ ] Gradient accumulation · cosine+warmup LR schedule · `clip_grad_norm`
+- [x] `dataloader` (mmap uint16, shuffled epochs, trailing partial batch dropped) · `tools/prepare.cpp` (text → uint16 `.bin` + `.vocab` sidecar) · `scripts/prepare_shakespeare.py` (corpus download only — tokenization stays in the C++ `CharTokenizer`, so there is no second tokenizer to drift)
+- [x] `checkpoint` (64-byte versioned header + raw fp32, FNV-1a-64 checksum over header+payload, atomic tmp→fsync→rename) + AdamW moment/step resume + periodic save in `tools/train`
+- [~] cosine+warmup LR schedule (`cosine_lr`) · `clip_grad_norm` (+ `GPT2::clip_grad_norm`) **done**, both wired into `tools/train`; **gradient accumulation still to do** (op backwards already `+=`; needs the micro-batch loop + 1/K loss scaling)
 - [ ] Cache-blocked matmul · `std::thread` work pool (deterministic row partition)
-- [ ] Sampling: argmax / temperature / top-k
-- [ ] `tools/generate.cpp` · `tools/bench.cpp`
-- [ ] **Gate:** val loss ≤ 1.6 overnight; matmul ≥ 30 GFLOP/s single-thread
+- [x] Sampling: argmax / temperature / top-k (`sample.hpp`; `top_k = 1` dispatches to argmax so greedy decoding is tie-stable)
+- [x] `tools/generate.cpp` (+ `generate.hpp` sliding-window decode; `forward(tokens, nullptr)` = logits-only inference) · `tools/bench.cpp` (matmul GFLOP/s)
+- [ ] **Gate:** val loss ≤ 1.6 overnight; matmul ≥ 30 GFLOP/s single-thread (**measured baseline ≈ 3.0 GFLOP/s** on the naive triple loop via `tools/bench`, Ryzen 9 9950X3D — a ~10× gap; the scalar `acc +=` reduction is one serial FMA chain, so blocking + vectorization is the whole remaining M2 delta)
 
 ## M3 — BPE + pretrained GPT-2 124M inference
 - [ ] BPE: byte-level encoder, merges parser, hand-rolled regex pre-tokenizer

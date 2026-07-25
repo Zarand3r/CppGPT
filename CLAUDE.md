@@ -53,8 +53,8 @@ For architecturally significant work, run the `strategic-engineering-planner` pl
 
 Unattended/overnight development runs on **`elves`** (batched plan execution with test + PR-based review) or **`auto-research`** (metric-optimization loop). The frozen seam the human locks before walking away is `PLAN.md`/the design plus **`docs/constitution.md`** — the ungameable, human-authored deal-breakers the elves Judge checks every batch (numerical parity, determinism, no-runtime-deps, canonical-GPT-2 semantics, fail-fast). Before launching elves, these must hold:
 
-- **Verification gate** — `bazel test //...` must exit 0 on a clean checkout. Satisfied today (the `tests/unit` suite passes). The canonical-GPT-2 PyTorch fixture harness — the oracle the constitution's parity promises depend on — is the next thing each numerics batch must extend.
-- **git + `gh`** — elves' review loop runs on GitHub pull requests, so a pushable remote and an authenticated `gh` are required. **Not yet configured.**
+- **Verification gate** — `bazel test //...` must exit 0 on a clean checkout. Satisfied today (`tests/unit` + `tests/integration`, including the canonical-GPT-2 parity gate). The fixture harness the constitution's parity promises depend on (`scripts/gen_fixtures.py` → committed `tests/fixtures/gpt2_parity.bin` → `//tests/integration:parity_test`) exists and passes; each numerics batch must extend it, never loosen it.
+- **git + `gh`** — configured: `origin` → `github.com/Zarand3r/CppGPT`, `gh` authenticated. The PR review loop is already in use.
 - **Run mode** — finite (default, build the plan then stop) vs open-ended (keep going until told to stop); chosen at planning time.
 
 The skills repo's `docs/AGENT_HARNESS.md` describes a future hook-enforced harness intended to replace elves; it is design-only and not implemented — use `elves` today.
