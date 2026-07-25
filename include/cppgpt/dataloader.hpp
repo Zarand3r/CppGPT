@@ -25,12 +25,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "cppgpt/core.hpp"
 #include "cppgpt/random.hpp"
 
 namespace cppgpt {
+
+// Write token ids as the flat little-endian uint16 .bin that DataLoader reads
+// (the inverse of its read path). Every id must be in [0, 65536); an id outside
+// that range is OutOfRange. Returns IoError on write failure. Used by
+// tools/prepare to serialize a tokenized corpus.
+[[nodiscard]] Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcept;
 
 class DataLoader {
 public:

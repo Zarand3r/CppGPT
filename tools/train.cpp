@@ -1,27 +1,31 @@
 // train — the first end-to-end cppgpt training demo.
 //
-// Trains a baby GPT-2 (char-level) on a text corpus, printing loss/lr/grad-norm
-// each step. Runnable loop over the verified forward / backward / AdamW core:
-// tokenize → sample random windows → forward → backward → clip → AdamW, on a
-// cosine LR schedule. If a checkpoint path is given it resumes from it (when the
-// file exists) and saves periodically. The mmap uint16 dataloader is wired via
-// tools/prepare + a follow-up; here batches are sampled from the in-memory corpus.
+// Trains a baby GPT-2 (char-level), printing loss/lr/grad-norm each step: forward
+// → backward → clip → AdamW on a cosine LR schedule. Two data sources, selected by
+// the first arg's extension: a prepared *.bin token file streamed via the mmap
+// DataLoader (its .vocab sidecar gives vocab_size), or a text corpus tokenized in
+// memory. If a checkpoint path is given it resumes from it (when present) and
+// saves periodically.
 //
-// Usage: train [corpus.txt] [steps] [checkpoint.ckpt]
-//   corpus.txt       path to a UTF-8/ASCII text file (default: a small built-in corpus)
+// Usage: train [corpus.txt | tokens.bin] [steps] [checkpoint.ckpt]
+//   1st arg          *.bin -> mmap DataLoader (needs <arg>.vocab from tools/prepare);
+//                    otherwise a text file ("" / omitted uses a small built-in corpus)
 //   steps            number of optimizer steps (default: 30)
-//   checkpoint.ckpt  optional: resume from this file if it exists; save to it every
-//                    50 steps and at the end
+//   checkpoint.ckpt  optional: resume from this file if it exists; save every 50
+//                    steps and at the end
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cppgpt/core.hpp"
+#include "cppgpt/dataloader.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
@@ -77,39 +81,75 @@ void sample_batch(const std::vector<int>& data, int B, int T, Generator& gen,
 }  // namespace
 
 int main(int argc, char** argv) {
-    // An empty first arg ("") selects the built-in corpus, so the later positional
-    // args (steps, checkpoint) stay reachable without a real corpus file.
-    const bool have_corpus = (argc > 1) && (argv[1][0] != '\0');
-    const std::string corpus = have_corpus ? read_file(argv[1]) : std::string(kDefaultCorpus);
+    // First arg: a prepared token file (*.bin, streamed via the mmap DataLoader)
+    // or a text corpus (tokenized in memory). "" / omitted selects the built-in
+    // corpus so the later positional args (steps, checkpoint) stay reachable.
+    const char* data_arg = (argc > 1 && argv[1][0] != '\0') ? argv[1] : nullptr;
     const int steps = (argc > 2) ? std::atoi(argv[2]) : 30;
     const char* ckpt = (argc > 3) ? argv[3] : nullptr;
-
-    if (corpus.empty()) {
-        std::fprintf(stderr, "train: corpus is empty\n");
-        return 1;
-    }
-    CharTokenizer tok(corpus);
-    const std::vector<int> data = tok.encode(corpus);
+    const bool from_bin = data_arg != nullptr && std::string_view(data_arg).ends_with(".bin");
 
     // Baby config (tanh GELU, bias, fp32 — canonical GPT-2, just small).
     Config cfg{};
     cfg.max_seq_len = 64;
-    cfg.vocab_size = tok.vocab_size();
     cfg.n_layer = 3;
     cfg.n_head = 4;
     cfg.n_embd = 64;
     const int B = 4, T = 32;
 
-    if (data.size() <= static_cast<std::size_t>(T) + 1) {
-        std::fprintf(stderr, "train: corpus too short (%zu tokens) for context T=%d\n", data.size(),
-                     T);
-        return 1;
+    // Data source: prepared .bin (mmap) fills `loader`; a text corpus fills `data`
+    // and the reusable `inputs`/`targets` scratch. Exactly one is used below.
+    Generator gen(1337ULL);
+    std::optional<DataLoader> loader;
+    std::vector<int> data, inputs, targets;
+
+    if (from_bin) {
+        // Vocab from the .vocab sidecar (tools/prepare wrote it): reconstruct the
+        // tokenizer to recover vocab_size — never inferred by scanning the tokens.
+        const std::string vpath = std::string(data_arg) + ".vocab";
+        std::ifstream vf(vpath, std::ios::binary);
+        if (!vf) {
+            std::fprintf(stderr, "train: cannot open vocab '%s' (run tools/prepare first)\n",
+                         vpath.c_str());
+            return 1;
+        }
+        std::ostringstream vss;
+        vss << vf.rdbuf();
+        const std::string vocab = vss.str();
+        if (vocab.empty()) {
+            std::fprintf(stderr, "train: vocab '%s' is empty\n", vpath.c_str());
+            return 1;
+        }
+        cfg.vocab_size = CharTokenizer(vocab).vocab_size();
+        auto r = DataLoader::open(data_arg, B, T, 1337ULL);
+        if (!r) {
+            std::fprintf(stderr, "train: cannot open '%s': %s\n", data_arg, describe(r.error()));
+            return 1;
+        }
+        loader.emplace(std::move(*r));
+        std::printf("train: %zu tokens (mmap), vocab %d, model L%d H%d C%d, B%d T%d, %d steps\n",
+                    loader->num_tokens(), cfg.vocab_size, cfg.n_layer, cfg.n_head, cfg.n_embd, B, T,
+                    steps);
+    } else {
+        const std::string corpus = data_arg ? read_file(data_arg) : std::string(kDefaultCorpus);
+        if (corpus.empty()) {
+            std::fprintf(stderr, "train: corpus is empty\n");
+            return 1;
+        }
+        CharTokenizer tok(corpus);
+        data = tok.encode(corpus);
+        cfg.vocab_size = tok.vocab_size();
+        if (data.size() <= static_cast<std::size_t>(T) + 1) {
+            std::fprintf(stderr, "train: corpus too short (%zu tokens) for context T=%d\n",
+                         data.size(), T);
+            return 1;
+        }
+        inputs.assign(static_cast<std::size_t>(B) * T, 0);
+        targets.assign(static_cast<std::size_t>(B) * T, 0);
+        std::printf("train: %zu chars, vocab %d, model L%d H%d C%d, B%d T%d, %d steps\n",
+                    corpus.size(), cfg.vocab_size, cfg.n_layer, cfg.n_head, cfg.n_embd, B, T, steps);
     }
 
-    std::printf("train: %zu chars, vocab %d, model L%d H%d C%d, B%d T%d, %d steps\n", corpus.size(),
-                cfg.vocab_size, cfg.n_layer, cfg.n_head, cfg.n_embd, B, T, steps);
-
-    Generator gen(1337ULL);
     GPT2 model(cfg, B, T);
     model.init_weights(gen);
 
@@ -129,9 +169,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::vector<int> inputs(static_cast<std::size_t>(B) * T);
-    std::vector<int> targets(static_cast<std::size_t>(B) * T);
-
     // Cosine LR with linear warmup + global grad-norm clipping (canonical betas
     // 0.9/0.95, eps 1e-8). opt.lr is overwritten each step by the schedule.
     AdamW opt{};
@@ -139,11 +176,22 @@ int main(int argc, char** argv) {
     const int warmup = std::max(0, std::min(steps / 10, steps - 1));
 
     for (int step = 1; step <= steps; ++step) {
-        sample_batch(data, B, T, gen, inputs, targets);
-        model.forward(inputs.data(), targets.data());
+        // Next batch from whichever source is active.
+        const int* in;
+        const int* tgt;
+        if (from_bin) {
+            loader->next_batch();
+            in = loader->inputs();
+            tgt = loader->targets();
+        } else {
+            sample_batch(data, B, T, gen, inputs, targets);
+            in = inputs.data();
+            tgt = targets.data();
+        }
+        model.forward(in, tgt);
         const float loss = model.mean_loss();
         model.zero_grads();
-        model.backward(inputs.data(), targets.data());
+        model.backward(in, tgt);
         const float gnorm = model.clip_grad_norm(grad_clip);
         opt.lr = cosine_lr(step - 1, max_lr, min_lr, warmup, steps);  // 0-based step
         model.update(opt);
