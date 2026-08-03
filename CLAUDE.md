@@ -31,6 +31,24 @@ These skills are provided by the **`eng-skills`** plugin (marketplace `Zarand3r/
 
 Skip the heavy workflow for small mechanical edits, but preserve the non-negotiable rules below.
 
+## Standing obligation — review→codify loop
+
+This repo maintains **[`docs/engineering-lessons.md`](docs/engineering-lessons.md)**: rules distilled
+from real defects observed here, each citing the incident that motivated it. **Read it before
+non-trivial work** — it encodes failure modes this codebase has actually hit (comments that contradict
+the code, NaN-blind float guards, allocations sized from untrusted files, untested degenerate cases,
+non-atomic file writes, unverified magic constants, self-referential acceptance gates, unverified
+independence claims, plans depending on absent primitives, recalled-not-executed API contracts, and
+wildcard tests that need uncommittable artifacts).
+
+**Run the `review-codify-loop` skill** at these trigger points: every phase/milestone boundary
+(closing a milestone *requires* one run as part of its acceptance gate), after any post-merge defect
+the existing rules should have caught, and after any review that yields ≥3 findings. The loop fixes in
+gate-verified batches, triages every finding (fix / defer-with-a-note-at-the-point-of-use /
+reject-with-reason — **never a silent drop**), distills repeatable failure modes into the lessons
+file, sweeps the tree for mechanical defect signatures (recorded in
+[`docs/review-audit.md`](docs/review-audit.md)), and ships the lessons in the same PR as the fixes.
+
 ## Non-negotiable engineering rules
 
 - Prefer simple, direct code; flat, explicit control flow.

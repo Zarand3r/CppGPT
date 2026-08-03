@@ -33,7 +33,7 @@ struct ParityFixture {
 // Load a fixture; aborts (fail-fast) on a missing file, bad magic/version, or a
 // truncated read.
 [[nodiscard]] inline ParityFixture load_parity_fixture(const std::string& path) {
-    constexpr std::uint32_t kMagic = 0x43475446u;  // "CGTF"
+    constexpr std::uint32_t kMagic = 0x43475446u;  // little-endian bytes spell "FTGC"
     std::FILE* f = std::fopen(path.c_str(), "rb");
     ASSERT_MSG(f != nullptr, "parity fixture: cannot open file");
     const auto rd = [&](void* p, std::size_t n) {

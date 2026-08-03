@@ -7,6 +7,10 @@ The running answer to "what do we build next." Flat list of core features, in bu
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unchecked box** within the
 current milestone.
 
+**Every milestone's acceptance gate includes one `review-codify-loop` run** — adversarial review,
+triage with no silent drops, and lessons codified into `docs/engineering-lessons.md`. A milestone
+whose functional gate passes but which left no review cycle behind is not closed.
+
 **Current focus (M2):** cache-blocked + vectorized matmul (line under "M2"), to close the measured
 ~10× gap to the 30 GFLOP/s gate; then gradient accumulation. The one open M0 box (CI) is real but
 not on the M2 critical path.

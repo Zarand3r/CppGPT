@@ -1,8 +1,8 @@
 # M3 — Feature-Complete GPT-2 + Pretrained Inference
 
 **Status:** planned, not started. Supersedes the three-line M3 sketch in `ROADMAP.md`.
-**Prerequisite:** M1 complete (parity gate met, ~1e-6). M2 perf work is *independent* of this
-milestone and can proceed in parallel.
+**Prerequisite:** M1 complete (parity gate met, ~1e-6). **M2's matmul work is NOT independent of
+this milestone** — see §7 R10; sequence it deliberately.
 
 ---
 
@@ -19,9 +19,14 @@ tests the whole stack against an external ground truth. **It is the definition o
 Binary acceptance:
 
 ```sh
-bazel run //tools:infer -- --weights data/gpt2_124M.ckpt --prompt "def fibonacci(n):" --n 50 --greedy
+bazel run //tools:infer -- --weights "$PWD/data/gpt2_124M.ckpt" --prompt "def fibonacci(n):" --n 50 --greedy
 # stdout token ids == tests/fixtures/gpt2_hf_greedy.bin, all 50, exactly
 ```
+
+> **Paths under `bazel run` are not workspace-relative** — cwd is the runfiles dir. Verified:
+> `bazel run //tools:prepare -- README.md /tmp/o.bin` -> `cannot open 'README.md'`. `tools/infer`
+> must resolve relative paths against `$BUILD_WORKING_DIRECTORY` (set by `bazel run`) and fail fast
+> naming the resolved path when it is unset. The gate itself runs as a test target, not via `bazel run`.
 
 Everything below exists to make that command trustworthy rather than coincidentally correct.
 
@@ -66,8 +71,9 @@ Left-padding a short prompt makes it worse: cppgpt has no attention mask, so pad
 attended.
 
 **Fix (verified equivalent): right-pad-and-read.** Allocate at `T = prompt_len + n_new`, place the
-prompt at `[0, len)`, fill the tail with anything, forward the whole buffer, read logits at position
-`len − 1`. Causality makes the tail inert — `attention_forward_cpu` only visits `t2 <= t`, and every
+prompt at `[0, len)`, **fill the tail with token id 0**, forward the whole buffer, read logits at
+position `len − 1`. (Not "anything": `embedding_forward_cpu` asserts `0 <= token < V` at *every*
+position including the inert tail, so a `-1` sentinel aborts.) Causality makes the tail inert — `attention_forward_cpu` only visits `t2 <= t`, and every
 other op is per-position.
 
 ```
@@ -91,7 +97,12 @@ unbounded generation past the context limit. Add `generate_absolute()` alongside
 3. **`decode()` returns raw bytes.** Never validates, never substitutes `U+FFFD`. 344 of 50,256
    tokens decode to individually-invalid UTF-8 fragments; that is correct and must survive.
 4. **One vocabulary source.** The C++ tokenizer, the fixture generator, and the converter all derive
-   from the same pinned `vocab.bpe` (sha256 recorded). No second table.
+   from the same pinned `vocab.bpe`. No second table. **Two distinct checks, two mechanisms:**
+   *provenance* ("is this the right file from OpenAI") is a sha256 computed in Python at
+   asset-vendoring time — dev-time only; *runtime integrity* ("did the committed file get mangled")
+   uses `fnv1a_64`, which already exists. There is **no SHA-256 in this codebase** and the standard
+   library has none, so a runtime sha256 check would be ~200 lines of unlisted crypto — and
+   `PLAN.md` already defers SHA-256 to "a concrete need".
 5. **Unicode tables are pinned, not derived.** `\p{L}`/`\p{N}`/`\s` tables are extracted from the
    pinned oracle and committed; a test asserts the C++ tables equal the fixture tables.
 6. **Weights are never committed.** The 497.8 MB payload is a locally generated artifact.
@@ -102,10 +113,10 @@ unbounded generation past the context limit. Add `generate_absolute()` alongside
 | Condition | Response |
 |---|---|
 | Missing/short/corrupt weight file | `Result` error at load — reuse `load_checkpoint`'s existing `ShapeMismatch`/`ChecksumMismatch`/`CorruptCheckpoint` |
-| `vocab.bpe` missing or wrong sha256 | fail fast at tokenizer construction — a wrong vocab is silent gibberish, not a degraded mode |
+| `vocab.bpe` missing, or wrong `fnv1a_64` | fail fast at tokenizer construction — a wrong vocab is silent gibberish, not a degraded mode. (`fnv1a_64`, not sha256 — see invariant 4.) |
 | Token id ≥ vocab_size on decode | fail fast (`ASSERT`) — matches `CharTokenizer` |
 | Byte sequence that no alternative matches | **impossible by construction** (alternation is total — verified over 3,000 random strings, 0 gaps); assert it anyway, since a table bug would manifest here |
-| Heavy test run without the weight file present | **fail loudly, never skip silently** — a skipped parity test that reports green is the worst outcome |
+| Heavy test run without the weight file present | **fail loudly, never skip silently** — a skipped parity test reporting green is the worst outcome. Mechanism: the weight-dependent gate is a **separate target tagged `manual`**, excluded from the `//...` wildcard, so `bazel test //...` stays green on a clean checkout (a hard requirement — `CLAUDE.md` makes it the harness prerequisite). Run it explicitly: `bazel test --config=release //tests/integration:infer_gate_test`. Excluded-by-tag is not skipped-at-runtime: once invoked it fails loudly if the weights are absent. |
 
 ---
 
@@ -128,10 +139,13 @@ S4 (KV cache) ──► S5'   S6 (inference memory) ──► M4
 - `ASSERT(prompt_len + n_new <= model.seq_len())` — fail fast rather than silently sliding.
 - Keep `generate()` unchanged; document when each applies.
 
-**Gate:** with a randomly-initialized model, `generate_absolute` with `n_new=1` equals a plain
-`forward` + `argmax` at position `len−1`; and for a model whose context never overflows,
-generating `k` tokens one-at-a-time (re-forwarding a growing prefix) equals one `generate_absolute`
-call of `k`. Both bit-exact.
+**Gate:** *(the obvious gate is circular — `generate_absolute(n_new=1)` **is** a forward plus a
+sample at `len−1`, so asserting they agree tests nothing, and a left-padding implementation would
+pass it.)* Test the **invariant** instead: build two models with the same `max_seq_len` but
+`T = p+1` and `T = p+1+pad`, load identical weights, and assert `logits[p]` is **bit-identical**.
+That is exactly the padding-inertness + absolute-position claim, and it fails loudly for any
+protocol bug. Additionally commit a ~5 KB HF fixture of `logits[p]` at 3 positions so S1 has an
+**external** oracle before S2/S3 land.
 
 ### S2 — HF weight converter + forward parity at real scale
 *Highest silent-wrongness risk (a square `attn.c_proj` hides a missing transpose). Needs no tokenizer.*
@@ -142,9 +156,12 @@ call of `k`. Both bit-exact.
   after `.T`), exact allow-list of the 16 source groups, assert leftover keys `== {"lm_head.weight"}`,
   `flat.size == 124_439_808`, all-finite, memmap re-read equality.
 - `tools/import_hf.cpp` — reads the raw payload into the parameter arena and calls the **existing**
-  `GPT2::save_checkpoint`. This is why Python does not write the container: it would duplicate the
-  header + checksum format, and `kFnvOffset64` is deliberately **not** the textbook FNV-1a-64 basis,
-  so a Python reimplementation reaching for the standard constant silently produces an unloadable file.
+  `GPT2::save_checkpoint`. Python does not write the container because the header + checksum format
+  must have exactly one implementation; a second one in Python drifts at the next version bump.
+  **Separately — a bug to file, not to enshrine:** `kFnvOffset64 = 1469598103934665603` is the
+  textbook FNV-1a-64 basis (`14695981039346656037`) *with the last digit dropped*. It still functions
+  as a hash, so nothing is broken, but the header comment calling it "FNV-1a-64" is inaccurate. Fix it
+  with a `kCheckpointVersion` bump, or document the deviation — do not let this plan freeze a typo.
 - Fixtures (generated with `attn_implementation="eager"` — the 5.12 default is `sdpa`, which differs
   by 6.9e-05 — and an explicit `model.eval()`, or dropout randomizes every reference logit).
 
@@ -153,9 +170,11 @@ call of `k`. Both bit-exact.
   `max|logit| ≈ 130`; cppgpt's naive sequential accumulator over C=768/3072 has worse error growth
   than torch's blocked reduction — budget 2–5×. An absolute tolerance alone is not a correctness
   statement; the argmax check is what protects S5.)
-- Layer-bisect: relative agreement `max|a−b| / max(1, max|b|) ≤ 1e-5` after the embedding and after
-  each of the 12 blocks. **Never use an absolute tolerance on hidden states** — the residual stream
-  reaches `max|.| ≈ 3013` by layer 11 (GPT-2's outlier channel).
+- Layer-bisect: relative agreement `max|a−b| / max(1, max|b|) ≤ 1e-5` at each of the 13 probe points,
+  using the verified mapping in §6 (entry 12 is post-`ln_f`, not block 11 — getting this wrong
+  misaligns the final comparison by an entire LayerNorm, on the very fixture meant to localize bugs).
+  **Never use an absolute tolerance on hidden states** — the residual stream reaches `max|.| ≈ 3013`
+  by layer 11 (GPT-2's outlier channel).
 
 ### S3 — Byte-level BPE tokenizer
 *Largest slice by code volume, but failures are loud.*
@@ -178,6 +197,10 @@ call of `k`. Both bit-exact.
   ids throughout (every merged symbol is itself a vocab entry) keyed on a packed `u64` — no string
   allocation. Per-pre-token cache: a pre-token is unbounded (` ?\p{L}+` matches a 1 MB letter run)
   and the naive loop is O(n²).
+- **Coexistence decision:** `BpeTokenizer` is a **second independent concrete class**. No shared
+  `Tokenizer` interface — there is exactly one call site per tokenizer, and a virtual base with one
+  implementation each is precisely the speculative abstraction the repo's rules forbid.
+  `tools/prepare` and `tools/train` stay char-level and are **not modified** in M3.
 - **Scope decision:** implement `encode_ordinary` semantics only. `<|endoftext|>` in input text
   tokenizes as ordinary bytes; `eot_id() == 50256` is a separate constant the generation loop appends
   explicitly. This matches `tiktoken.encode_ordinary`, avoids a prompt-injection surface, and dodges
@@ -209,13 +232,33 @@ letter in one version and unassigned in another moves between alternatives and c
 ### S4 — KV cache
 - `Storage` of `[n_layer, 2, max_seq, n_head, head_dim]`; write the new k/v slice, read the full
   prefix; crop the classifier to the last position.
+- **Requires a new op, not just a buffer.** Today `attention_forward` takes one fused `inp` of
+  `[B,T,3C]` and derives q/k/v by column offset; there is no signature accepting a query at a single
+  position plus k/v from a separate cache. Name it, give it a PyTorch fixture (the constitution:
+  *any change touching an op runs that op's fixture comparison*), and give `generate_absolute` a
+  cache-aware variant — right-pad-and-read is meaningless once tokens are fed one at a time.
 
-**Gate:** KV-cache-on and KV-cache-off produce **identical** token ids (the ROADMAP's stated M3
-criterion), and cache-on generation is measurably faster.
+**Gate:** KV-cache-on and KV-cache-off produce **identical** token ids (the ROADMAP's criterion) —
+**plus bit-identity on the attention output tensor**, since a numerically different cached path can
+still round to the same token and hide a real bug. And cache-on generation is measurably faster.
 
 ### S5 — The ultimate integration test + `tools/infer`
 - Wire BPE + weights + `generate_absolute` into a CLI.
-- The committed gate fixture is ~220 bytes (prompt ids + 50 expected ids).
+- The committed gate fixture is ~220 bytes (prompt ids + 50 expected ids + the min margin).
+- **EOT is never appended to the prompt.** HF's greedy reference tokenizes the prompt and appends
+  nothing; prepending/appending 50256 fails the gate at token 1. `eot_id()` exists for callers that
+  want a stop condition, nothing more.
+- **CLI surface** (state it, or the tool ships awkward): `--weights` (required), `--prompt`,
+  `--n` (default 50), `--greedy` (⇒ `top_k=1`, which `sample()` already routes to tie-stable
+  `argmax` — *not* `temperature→0`), `--temperature`, `--top-k`, `--seed`, `--vocab` (override),
+  `--stop-at-eot` (**default on** for interactive use, **off** for the gate so the 50-token
+  comparison is unconditional). Output buffers and flushes only complete UTF-8 sequences.
+- **Runtime + build config.** One right-pad forward at `T≈55` is ≈1.4e10 FLOP, so 50 tokens ≈6.8e11
+  FLOP; against the measured **≈3.0 GFLOP/s** naive matmul that is **≈230 s in `--config=release`**,
+  and `bazel test` defaults to `fastbuild` (no `-O3`, no `-march=native`) — many minutes worse.
+  The gate target therefore **mandates `--config=release`**, sets an explicit `timeout`, and is
+  `tags = ["manual"]`. This is also the strongest argument for reordering S4 before S5 (§8.4): with
+  a KV cache each step is ≈2.5e8 FLOP and the same gate runs in seconds.
 
 **Gate:** token-exact for 50 greedy tokens vs HF.
 
@@ -224,8 +267,10 @@ criterion), and cache-on generation is measurably faster.
 > median 2.81 — against an fp32 logit error of ~1e-4…1e-3, that is only **7–70× headroom at the worst
 > step**. 50-token exactness is achievable but **not robust for an arbitrary prompt**. Choose a prompt
 > whose measured min margin > 0.05 (`"def fibonacci(n):"` measured **0.105**), and **store that margin
-> in the fixture** so the test asserts `min_margin > 20 × observed_max_logit_error`. That turns a
-> flaky discrete gate into a quantified one.
+> in the fixture**. Assert `min_margin > 20 × 2e-3`, i.e. against the **constant** error budget S2
+> already gates on — *not* a live `observed_max_logit_error`, which the C++ test cannot compute (the
+> only committed HF logits belong to S2's different 5-token prompt). That turns a flaky discrete
+> gate into a quantified one.
 
 ### S6 — Inference-only arenas *(not required for the gate; required for real use and M4)*
 The ctor allocates `grad_store_` + `act_grad_store_` unconditionally:
@@ -235,8 +280,15 @@ The ctor allocates `grad_store_` + `act_grad_store_` unconditionally:
 | 124M, B=1, T=1024 | **5.32 GB** | **2.61 GB** |
 | 350M, B=1, T=1024 | **12.93 GB** | **6.40 GB** |
 
-At the gate's `T ≈ 55` this is ~1.05 GB and irrelevant; at full context it is the difference between
-comfortable and not. Logit cropping (S4) also removes `logits+probs` at `[B,T,V]` = 412 MB.
+At the gate's `T ≈ 55` this is ~1.05 GB and irrelevant. **This host has 120 GB RAM (101 GB
+available), so every figure above is comfortably feasible — S6 is a cleanliness/scaling slice, not a
+blocker.** Logit cropping (S4) also removes `logits+probs` at `[B,T,V]` ≈ 412 MB.
+
+Note the table **understates the achievable win**: dropping the two gradient arenas still leaves a
+*training-shaped* activation arena — every per-layer tensor is `[L, ...]`, but inference needs two
+rolling buffers, not 12 copies, and `preatt` (0.5625 GiB at T=1024) is never read at all while
+`probs` is allocated and never filled when `targets == nullptr`. A real inference arena is
+≈0.7 GiB, not 2.61. (Units above are GiB; the 412 MB figure is decimal.)
 
 ---
 
@@ -248,8 +300,8 @@ comfortable and not. Logit cropping (S4) also removes `logits+probs` at `[B,T,V]
 | `gpt2_tokenizer.bin` (1,200 cases, raw UTF-8 + ids) | **272 KB** | byte-exactness gate |
 | unicode range tables | ~7 KB | drift guard |
 | `gpt2_hf_logits.bin` (5-token prompt, all positions) | **982 KB** | forward parity |
-| `gpt2_hf_hidden.bin` (13 × 768, last position) | **39 KB** | layer-bisect — *this is what saves a day of debugging* |
-| `gpt2_124M.manifest.txt` (16 × name/offset/count/fnv) | ~1 KB | convert-time structural check |
+| `gpt2_hf_hidden.bin` (13 × 768, last position) | **39 KB** | layer-bisect — *this is what saves a day of debugging*. **Mapping (verified):** HF returns `L+1 = 13` entries; entry 0 = embedding output, entries 1..11 = blocks 0..10, entry 12 is **post-`ln_f`**, *not* block 11's raw output (HF never exposes it). Compare entry 12 against `acts().lnf`. |
+| `gpt2_124M.manifest.txt` (16 × name/offset/count/fnv) | ~1 KB | convert-time structural check. **Must be committed and pinned** — generated once from the pinned HF release, human-reviewed; `convert_hf_gpt2.py` *verifies against* it, never rewrites it. If regenerated each run it proves only "not truncated in transit" and catches none of R2 — in which case delete it: the S2 logit/hidden gates are the real check, and a self-generated manifest is dead weight that *looks* like a gate. |
 | `gpt2_hf_greedy.bin` (prompt + 50 ids + min margin) | **~220 B** | the M3 gate |
 | **weights** | 497.8 MB | **NOT committed** — locally generated |
 
@@ -272,14 +324,20 @@ exercise NUL, control chars, and lone `\r`. Exclude lone surrogates from the gen
 | R7 | `lm_head.weight` double-counted (163,037,184 vs 124,439,808) | drop it (tied storage, `data_ptr` equal); `param_count` check fails loudly anyway |
 | R8 | Heavy tests silently skipped when weights absent | fail loudly by policy |
 | R9 | Streaming output splits multibyte codepoints | `tools/infer` buffers and flushes only complete UTF-8 sequences |
+| R10 | **M2's matmul work silently breaks the M3 gate** | *Not independent.* §2's bit-identity claim holds only because `matmul_forward_cpu` uses a fresh serial accumulator per output row (so row `t` is independent of `T`) — a cache-blocked kernel tiling over `B*T`, or a threaded partition whose reduction order depends on `T`, destroys it. S2's tolerance is budgeted off that same accumulator, and S5's greedy gate has only 7–70× headroom at ~1e-4. **Mitigation:** add to M2's acceptance criteria "reduction order is deterministic and independent of `T`" (also required by the constitution's determinism invariant — a dynamic thread partition violates it) and "the M3 gate still passes"; land the matmul change *before* S2's fixtures are generated, or re-measure the margin after. |
 
 ---
 
 ## 8. Decisions needed before S1
 
-1. **`tiktoken` in the venv** — installed cleanly during research and is the oracle named in
-   `PLAN.md`. Confirm we add it to `notebooks/requirements.txt` (dev-only; no runtime dep).
-2. **Weight artifact location** — `data/` (gitignored) vs a documented cache path.
+1. **Pin the Python oracle.** `notebooks/requirements.txt` currently lists six **unpinned** names,
+   and `tiktoken` (0.13.0) + `regex` (2026.5.9) are already installed but absent from it — the drift
+   R4/R6 warn about has *already happened*. Pin `transformers==5.12.1`, `tiktoken==0.13.0`,
+   `regex==2026.5.9`, `torch==2.12.1`, and write the generating versions into the fixture headers so
+   the C++ test asserts on them. (Without this, R4's drift guard compares two artifacts produced by
+   the same interpreter and moves in lockstep — it catches hand-edits, not regeneration drift.)
+2. **Weight artifact location** — `data/`, which is **not currently in `.gitignore`**, so invariant 6
+   is unenforced today. Land `/data/` in `.gitignore` as part of S2, not as a follow-up.
 3. **Slice granularity for S3** — one PR, or split (byte map + tables) / (pre-tokenizer) /
    (merges + decode)? Recommend **split**: the pre-tokenizer is the risky half and deserves its own
    review.
@@ -292,5 +350,4 @@ exercise NUL, control chars, and lone `\r`. Exclude lone surrogates from the gen
 ## 9. Out of scope
 
 Top-p / repetition penalty, batched inference, GPT-2 medium/large/XL (M4), quantization (E2/E3),
-flash attention (E1), and the M2 matmul/threading work — which is independent and can proceed
-in parallel.
+flash attention (E1). The M2 matmul/threading work is out of *scope* but **not** independent — R10.
