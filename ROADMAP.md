@@ -45,10 +45,28 @@ not on the M2 critical path.
 - [ ] **Gate:** val loss ≤ 1.6 overnight; matmul ≥ 30 GFLOP/s single-thread (**measured baseline ≈ 3.0 GFLOP/s** on the naive triple loop via `tools/bench`, Ryzen 9 9950X3D — a ~10× gap; the scalar `acc +=` reduction is one serial FMA chain, so blocking + vectorization is the whole remaining M2 delta)
 
 ## M3 — BPE + pretrained GPT-2 124M inference
-- [ ] BPE: byte-level encoder, merges parser, hand-rolled regex pre-tokenizer
-- [ ] `scripts/convert_gpt2.py` (HF → `.bin`)
-- [ ] KV cache (fp32; the `Storage` that later becomes the E2/E3 quantization seam) · prefix + autoregressive decode · logit cropping (last position)
-- [ ] **Gate:** tokenizer byte-exact vs tiktoken (1000+ strings); generation token-exact vs HF for ≥ 50 tokens; KV-cache on/off identical
+
+**Full executable plan: [`docs/M3_INFERENCE_PLAN.md`](docs/M3_INFERENCE_PLAN.md)** — slices, binary
+gates, fixture inventory and risk register, grounded in measured values. Summary below.
+
+- [ ] **S1** Absolute-position generation (`generate_absolute`, right-pad-and-read). **Blocking:** today's
+      sliding-window `generate()` shifts every token's `wpe` row each step, so it diverges from HF at
+      the *first* token — verified. The existing sliding-window mode stays, unchanged.
+- [ ] **S2** `scripts/convert_hf_gpt2.py` (HF → raw fp32) + `tools/import_hf` (writes the checkpoint
+      container in C++, so the header/checksum format is never duplicated). Transpose all 4 Conv1D
+      weight matrices; drop the tied `lm_head`; QKV is Q‖K‖V and needs no reordering (all verified).
+- [ ] **S3** BPE: byte-level encoder + merges + **hand-rolled** pre-tokenizer (`std::regex` supports
+      none of `\p{L}`/`\p{N}`/UTF-8/lookahead). Ship `vocab.bpe` only — the whole 50,257 vocab is
+      reconstructible from it, so no JSON parser.
+- [ ] **S4** KV cache (fp32; the `Storage` that later becomes the E2/E3 quantization seam) · prefix +
+      autoregressive decode · logit cropping (last position)
+- [ ] **S5** `tools/infer` — **the ultimate integration test**: real GPT-2 124M weights + our BPE +
+      greedy decode, token-exact vs HF.
+- [ ] **S6** Inference-only arenas (skip grad/act-grad): 124M at T=1024 costs 5.32 GB today vs 2.61 GB.
+- [ ] **Gate:** tokenizer byte-exact vs tiktoken (1000+ strings); generation token-exact vs HF for ≥ 50
+      tokens; KV-cache on/off identical. Pick the greedy prompt by *measured* top1−top2 margin (worst
+      observed over 250 steps: 0.0072 vs ~1e-4 fp32 error — only 7–70× headroom, so an arbitrary
+      prompt is not safe).
 
 ## M4 — Polish + GPT-2 medium inference + GPU-seam readiness
 - [ ] Structured logging everywhere · `Result`+`[[nodiscard]]` at all loader/parser/checkpoint boundaries
@@ -71,7 +89,7 @@ not on the M2 critical path.
 
 **Efficiency & Research Track** — ordered least→most numerical perturbation. Each is opt-in and validated against the fp32 CPU path within a *documented* tolerance; **none relax the canonical parity gates** (fp32 CPU stays the oracle — see PLAN invariant 11). Do not start.
 - [ ] **E1 · Flash attention (exact).** Online-softmax tiled attention behind the existing `attention_forward/backward` signature; O(T) score memory vs O(T²). Numerically equivalent to fp32 vanilla attention → **preserves parity**. Mainly a GPU / long-context-inference win. (Not needed to retire R5 — big models are inference-only in v1.)
-- [ ] **E2 · Post-training quantization (inference).** int8/int4 weights + KV-cache quant, opt-in inference mode via the reserved `DType` seam. Validated within documented tolerance vs fp32 — **not** token-exact; lives behind a flag.
+- [ ] **E2 · Post-training quantization (inference).** int8/int4 weights + KV-cache quant, opt-in inference mode; introduces its own quantized `Storage` (no `DType` exists yet to reuse). Validated within documented tolerance vs fp32 — **not** token-exact; lives behind a flag.
 - [ ] **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious online vector quant (random-rotate → per-coordinate optimal scalar quantizers; 2-stage MSE + 1-bit QJL for unbiased inner products). ~2.5–3.5 bits/channel KV cache near quality-neutral. Plugs into the E2 KV-cache seam. (arXiv 2504.19874)
 - [ ] **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Approximates attention → **breaks canonical GPT-2 parity by construction**; lives on a separate architecture path (also the trigger to reconsider a tape). Hybrid (linear backbone + interleaved full/sparse) is the current sweet spot; watch for "component collapse." Validated on task metrics, not token-exact. (surveys arXiv 2507.19595, 2504.17768)
 
