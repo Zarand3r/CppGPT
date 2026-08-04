@@ -95,7 +95,7 @@ docs drifted before (see `docs/review-audit.md`).
 | Document | Owns — and only this |
 |---|---|
 | [`docs/constitution.md`](docs/constitution.md) | Frozen human-authored deal-breakers. **Never edited by an agent.** |
-| [`ROADMAP.md`](ROADMAP.md) | **The only status surface** — milestone checkboxes, current focus, one `Gate:` line per milestone. The only file allowed to contain `[x]`/`[ ]`. |
+| [`ROADMAP.md`](ROADMAP.md) | **The single source of truth for what has to be done** — milestones, the MVP gate, deferred scope, and all outstanding debt. The only file allowed to contain `[x]`/`[ ]`, and the only one that holds work items. |
 | [`PLAN.md`](PLAN.md) | Design rationale, options, tradeoffs, deferred-complexity triggers. Risk IDs are `DR-n`. No status, no measurements. |
 | [`docs/measurements.md`](docs/measurements.md) | **Every measured number**, each with the command that reproduces it. No other doc states a measurement. |
 | [`docs/M3_INFERENCE_PLAN.md`](docs/M3_INFERENCE_PLAN.md) | Execution detail for the active milestone (slices, gates, fixtures). IDs are `M3-*`. |

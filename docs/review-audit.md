@@ -55,6 +55,6 @@ figure it produced copied into five sites across four documents.
 | Documented commands actually run | executed each `bazel run` in `README.md` | ❌ every one used a workspace-relative path, which `bazel run` resolves into the runfiles dir. Fixed to `"$PWD"/…`. |
 | Constitution clauses with an enforcing test | manual audit | ❌ 5 clauses unenforced: per-op PyTorch fixtures, every-intermediate-activation parity, alloc-counter hook, NaN/Inf-loss abort, `ldd` allow-list. **Deferred** — tracked below. |
 
-**Deferred (needs a decision, not just a fix):** the five unenforced constitution clauses. Each is
-either "write the test" or "reword the clause"; the constitution is human-frozen, so the rewording
-option is **not mine to take**. Raised for the owner.
+**Deferred items from this sweep are tracked in `ROADMAP.md` → "Debt & deferred fixes",** which is the
+single source of truth for outstanding work. This file records what was swept and what was found; it
+does not hold the to-do.

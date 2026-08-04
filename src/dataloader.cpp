@@ -40,10 +40,24 @@ Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcep
             n -= static_cast<std::size_t>(w);
         }
     }
+    // fsync before rename, and fsync the directory after: without the first the
+    // bytes may not be on disk, without the second the rename itself is not
+    // durable. docs/engineering-lessons.md L5 mandates both -- and its incident
+    // IS this function, so omitting them here was the rule unimplemented at its
+    // own incident site.
+    if (ok) ok = (::fsync(fd) == 0);
     if (::close(fd) != 0) ok = false;
     if (!ok || ::rename(tmp.c_str(), path) != 0) {
         ::unlink(tmp.c_str());
         return err(ErrorCode::IoError);
+    }
+    const std::string ps(path);
+    const std::size_t slash = ps.find_last_of('/');
+    const std::string dir = (slash == std::string::npos) ? std::string(".") : ps.substr(0, slash);
+    const int dfd = ::open(dir.empty() ? "/" : dir.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+        (void)::fsync(dfd);
+        ::close(dfd);
     }
     return {};
 }

@@ -115,6 +115,24 @@ The three verbs. Each box is wiring over code that already exists and is tested.
 
 ---
 
+## Debt & deferred fixes
+
+**Every outstanding item in the repo is listed here.** Other documents record *why* (`PLAN.md`),
+*what was measured* (`docs/measurements.md`), *what was swept* (`docs/review-audit.md`) and *what we
+learned* (`docs/engineering-lessons.md`) — but none of them hold work. If it needs doing, it is a box
+on this page.
+
+| Item | Source | Disposition |
+|---|---|---|
+| **5 constitution clauses have no enforcing test** — per-op PyTorch fixtures, every-intermediate-activation parity, the alloc-counter hook, NaN/Inf-loss abort, the `ldd` allow-list | `docs/review-audit.md` 2026-08-03 | ⬜ **Needs your decision.** Each is either "write the test" or "reword the clause", and `docs/constitution.md` is human-frozen — rewording is not an agent's call. The cheapest two are genuinely small: a one-line `ASSERT(std::isfinite(mean_loss_))` in `GPT2::forward`, and an `ldd` check in CI. |
+| `kFnvOffset64` is the textbook FNV-1a-64 basis with a digit dropped | `docs/engineering-lessons.md` L6 | ⬜ **Deferred by design** — it still functions as a hash, and fixing it invalidates every existing checkpoint's checksum. Bundle with the next `kCheckpointVersion` bump. Tracked at the point of use in `checkpoint.hpp`. |
+| `docs/M3_INFERENCE_PLAN.md` risk/invariant/slice IDs are unprefixed (`R1`, `S1`) and collide with `PLAN.md`'s `DR-n` | `docs/review-audit.md` 2026-08-03 | ⬜ Rename to `M3-Rn` / `M3-In` / `M3-Sn`. Cosmetic while the doc is shelved; do it if M3 is ever revived. |
+| `write_token_bin` did tmp+rename but **no `fsync`** — the rule from the lesson whose incident is that very function | `docs/engineering-lessons.md` L5 | ✅ **Fixed** — fsync of file and containing directory. |
+| `tools/bench` is written but lives on unmerged branch `m2-bench` (PR #20) | 3-axis review, 2026-08-03 | ⬜ Merge it — listed under MVP → performance above. |
+| Open PRs: #20 bench · #21 review fixes + docs · #22 this planning work | — | ⬜ Merge order: #20, then #21, then #22. |
+
+---
+
 ## Deferred — GPT-2 scale (out of MVP scope; nothing here is deleted)
 
 Everything below was planned in detail and is **shelved, not cancelled**. The design work stands if
