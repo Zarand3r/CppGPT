@@ -422,68 +422,22 @@ The first end-to-end slice proves the hardest thing — matching PyTorch numeric
 
 This exercises tensor/storage, arena allocator, all forward ops, all backward ops, AdamW, save/load round-trip, the fixture harness, and the CLI. If it passes, the math is right and we scale model dimensions with confidence. If it fails, every later milestone is blocked.
 
-## Milestone Roadmap
+## Milestone → risk mapping
 
-Each milestone: goal, deliverable, scope/non-scope, risks retired, definition-of-done. (`ROADMAP.md` is the flat checklist version of this.)
+**`ROADMAP.md` is the single roadmap** — milestones, checkboxes and the binary `Gate:` for each
+live there and only there. This section keeps just the design-level fact that belongs here:
+which risk each milestone retires. (A duplicate milestone list with its own DoDs used to live
+here and had diverged from ROADMAP on M0, M1 and M2 — see `docs/review-audit.md`.)
 
-### M0 — Skeleton + fixture harness *(retires DR-1, DR-7, DR-8)*
-**Goal:** Buildable repo; a working canonical-GPT-2 PyTorch-fixture harness; matmul forward+backward (hand-written, device-dispatched) verified vs PyTorch; "no external deps" check.
-**Deliverable:** Bazel module + directory skeleton; `scripts/gen_fixtures.py` (dumps matmul fwd/bwd reference, tanh-GELU-configured for later ops); `core.hpp` (Result=std::expected, ErrorCode, ASSERT/TRY/MUST macros), `log.hpp` (Logger), `random.hpp` (Generator); `Storage{Device}`, `TensorView`, `Config`; `matmul_forward/backward` with `Device` dispatch (CPU); `tests/unit/matmul_test.cpp`; `tools/verify.cpp` (stub for full forward); one CI build with `ldd` allow-list.
-**Out of scope:** other ops, attention, training loop, BPE, GPU.
-**DoD:** `bazel test //...` shows "matmul forward/backward match PyTorch"; ASan+UBSan clean (`--config=dev`); a contributor reads the whole harness in < 30 min.
-**Effort:** 3–5 days.
+| Milestone | Retires |
+|---|---|
+| **M0** — Skeleton + fixture harness | DR-1, DR-7, DR-8 |
+| **M1** — Full forward + backward on a baby model | DR-2 |
+| **M2** — TinyShakespeare convergence + CPU performance | DR-3, DR-5 |
+| **M3** — BPE tokenizer + pretrained GPT-2 124M inference | DR-4 |
+| **M4** — Polish + GPT-2 medium (350M) inference + GPU-seam readiness | DR-6 |
 
-### M1 — Full forward + backward on a baby model *(retires DR-2)*
-**Goal:** Execute Slice 0.
-**Deliverable:** all ops (`layernorm`, `attention`, `softmax`, `gelu`-tanh, `residual`, `encoder`, `classifier`, `cross_entropy`) forward+backward, each fixture-tested; `GPT2` + `gpt2_forward/backward/update`; AdamW (2-group decay); weight tying; char tokenizer; `tools/train.cpp` (hardcoded baby config, 10 steps, prints loss); `tools/verify.cpp` (full fwd/bwd compare); finite-difference gradient checker test.
-**Out of scope:** parallelism, real datasets, BPE, GPU, perf.
-**DoD:** `tools/train` prints the same 10-step loss sequence as the PyTorch reference, within 1e-3; every op has fwd+bwd fixture tests; gradcheck passes.
-**Effort:** 2–3 weeks.
-
-### M2 — TinyShakespeare convergence + CPU performance *(retires DR-3, DR-5)*
-**Goal:** Train 6L/384H/6-heads/256-ctx (~10M params) to val loss ≤ 1.6 on TinyShakespeare in an overnight CPU run.
-**Deliverable:** `dataloader` (mmap uint16, shuffled epochs); `scripts/prepare_shakespeare.py`; `checkpoint` (versioned, atomic) + periodic save; `tools/generate.cpp` (temperature + top-k); cache-blocked matmul; `std::thread` work pool (deterministic row partition); gradient accumulation; cosine+warmup schedule; grad clip; `tools/bench.cpp` (GFLOP/s, step time, tokens/sec).
-**Out of scope:** BPE, pretrained weights, GPU.
-**DoD:** an overnight run produces a sampleable checkpoint; bench reports ≥ 30 GFLOP/s single-thread matmul; measured peak memory recorded.
-**Effort:** 2 weeks.
-
-### M3 — BPE tokenizer + pretrained GPT-2 124M inference *(retires DR-4)*
-**Goal:** Load HF GPT-2 124M and reproduce identical generation vs `transformers` for ≥ 50 tokens at a fixed seed.
-**Deliverable:** GPT-2 BPE (byte-level encoder, merges parser, hand-rolled regex pre-tokenizer); `scripts/convert_hf_gpt2.py` (HF -> raw fp32) + `tools/import_hf` (writes the container); KV cache; prefix + autoregressive decode with logit cropping; side-by-side test vs `transformers.generate` (greedy + temperature).
-**Out of scope:** GPT-2-scale training; GPU.
-**DoD:** superseded by **`docs/M3_INFERENCE_PLAN.md`** — the DoD there names `tools/infer`, the `.ckpt` container (not a raw `.bin`), and a prompt chosen by *measured* top1-top2 margin. The old wording pointed at the sliding-window `tools/generate`, which M3-§2 identifies as the blocking bug; tokenizer byte-exact on 1000+ strings; KV-cache on/off identical.
-**Effort:** 2 weeks (BPE is fiddly).
-
-### M4 — Polish + GPT-2 medium (350M) inference + GPU-seam readiness *(retires DR-6)*
-**Goal:** "Correct" → "clean," scale to GPT-2 medium inference on a workstation CPU, and verify the GPU seam is real.
-**Deliverable:** leveled structured logging replaces ad-hoc `cerr`; `Result<T,E>` + `[[nodiscard]]` at every loader/parser/checkpoint boundary; a small observability set logged to CSV (tokens/sec, grad norm, peak memory, step time); GPT-2 medium inference tested for HF parity; a **GPU-seam audit** (every op carries `Device`; no host-pointer leakage — retires DR-7 fully); `docs/ARCHITECTURE.md` + `docs/CONTRIBUTING.md` (incl. "how to add a CUDA backend behind the seam").
-**Out of scope:** the CUDA backend itself; SIMD intrinsics (measured-need only); macOS/Windows; the deferred scaffolding (fuzz/CI-matrix/SHA/multi-stream RNG).
-**DoD:** a fresh engineer can clone, build, train baby Shakespeare, generate from GPT-2 124M, run GPT-2 medium inference, and read the architecture doc in under an hour.
-**Effort:** 1–2 weeks.
-
-### Beyond v1 (each its own future plan)
-
-**GPU phase (headline).** From-scratch CUDA backend behind the device seam: hand-written kernels, host↔device transfers + streams, mixed precision (bf16/tf32), GPU memory budgeting, relaxed determinism contract; targets a single workstation GPU (e.g. NVIDIA RTX 6000 Ada/Pro) for real GPT-2-scale training. CPU stays the numerical oracle.
-
-Other GPU-adjacent items: **SIMD intrinsics (AVX2/NEON)** for the CPU path (measured-need only); **tape autograd** (only if we start varying architectures); **top-p / repetition penalty; GGUF; macOS/Windows**.
-
-**Efficiency & Research Track.** Ordered least→most numerical perturbation. Governed by invariant 11: each is opt-in and validated against the fp32 CPU oracle within a documented tolerance; none relax the canonical parity gates. The v1 seams they reuse — the device-dispatched op signatures and the KV-cache `Storage` — already exist. There is **no** reserved `DType` (it was not built), so quantization (E2/E3) must *introduce* dtype support itself (a parallel quantized `Storage` / dequant-in-matmul); that is the one piece these phases add rather than reuse (see "Deferred Complexity").
-
-- **E1 · Flash attention (exact, parity-preserving).** Online-softmax tiled attention behind the existing `attention_forward/backward` call site — additive, exactly like the GPU seam. O(T) score memory instead of O(L·B·NH·T²); this is the general fix for DR-5, though DR-5 is already handled in v1 by scoping big models to inference-only. Same softmax → meets the standard fp32 tolerance, not a looser one. Primary payoff: GPU training and long-context inference. Validated against fp32 vanilla attention.
-- **E2 · Post-training quantization (inference).** int8/int4 weight quantization + KV-cache quantization as an opt-in inference mode. Since no `DType` exists yet, this phase introduces the quantized representation itself — a parallel quantized `Storage` with dequant-on-the-fly in the matmul. Not token-exact — lives behind a flag, validated within a committed tolerance vs the fp32 path. The KV-cache `Storage` (already shaped `[n_layer,2,max_seq,n_head,head_dim]` in v1) is the quantization insertion point.
-- **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious *online* vector quantization suited to KV cache: randomly rotate vectors (inducing a concentrated Beta distribution per coordinate), then apply per-coordinate optimal scalar quantizers; a two-stage MSE quantizer + 1-bit Quantized-JL residual yields an *unbiased inner-product* estimator (the quantity attention actually needs). Reported ≈ quality-neutral at 3.5 bits/channel and marginal at 2.5, within a small constant of the information-theoretic distortion bound. Plugs into the E2 KV-cache seam; accelerator-friendly and online, so it also fits the GPU phase. Reference: TurboQuant, arXiv 2504.19874.
-- **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Sub-quadratic attention: linear (kernel/recurrent, O(N) but a known reasoning / long-retrieval penalty and non-injective attention), sparse (block/pattern/routed token subsets), or **hybrid** (linear backbone with interleaved full or sparse-softmax layers) — the current consensus sweet spot, with "component collapse" (the model ignoring the linear branch) as the documented failure mode. These change the computation, so they break canonical GPT-2 token-exact parity by construction and live on a separate architecture path — the same trigger that would justify reconsidering a tape/autograd. Validated on task metrics (perplexity, long-context retrieval), not token-exact parity. References: surveys arXiv 2507.19595, 2504.17768.
-
-**Ambition ceiling (noted, not planned).** TurboQuant-style near-optimal KV-cache quantization (E3) composed with a hybrid sparse/linear backbone (E4) is roughly the frontier a from-scratch, dependency-free GPT-2 could chase for long-context, low-memory inference. Recorded as direction only; every item above is behind invariant 11 and the "do not start" gate.
-
-**Alignment & Post-Training Track (RLHF).** A separate capability axis from the Efficiency Track and the GPU phase: it changes what the model *does* (instruction-following, preference alignment), not how fast or cheap it runs. The core ops (forward/backward/AdamW), tokenizer, and dataloader are reused unchanged, so ops-level parity is untouched — but this is the one track whose *success* is metric-based rather than token-exact-parity-based: there is no canonical "GPT-2 RLHF" reference to match, because outcomes depend on the preference data. New losses are still gradient-checked against a PyTorch reference; invariant 11's canonical gates are added to, never relaxed. Two new pieces of long-lived state appear: a frozen **reference model** (a second param `Storage`, for the A3/A4 KL term) and a **scalar reward head** (for A2/A4).
-
-- **A1 · SFT (supervised fine-tuning).** Fine-tune the pretrained LM on demonstration / chat data, with the loss masked to completion tokens (prompt tokens contribute no gradient). Reuses forward/backward/AdamW + tokenizer verbatim; the only new surface is an instruction-format dataloader and the loss mask. Cheapest step; the base every later step builds on.
-- **A2 · Reward model.** A pairwise-preference dataset (chosen vs rejected) and a reward model = the LM backbone + a scalar head, trained with a Bradley–Terry / pairwise ranking loss. New surface: the scalar head and the ranking loss (forward + hand-derived backward, gradient-checked).
-- **A3 · DPO — the recommended alignment step.** Direct Preference Optimization replaces the reward model + RL loop with a single offline classification-style loss over preference pairs, scored against a frozen reference model (the A1 SFT weights) with an implicit KL regularizer. No reward model, no in-loop sampling, no value network — dramatically more tractable for a std-only CPU implementation than PPO. Reuses the SFT model as a second frozen `Storage`; the only new op is the DPO loss (gradient-checked).
-- **A4 · PPO — research / ambitious ceiling.** Full online RLHF: generate rollouts inside the training loop (the sampler moves onto the hot path), score them with the A2 reward model, and optimize a clipped policy objective with a value head + GAE and a KL-to-reference penalty. Needs 2–3 resident model copies (policy, frozen reference, reward) and generation on the training path — the most complex extension in this document. GRPO and other critic-free RL variants are noted as simpler alternatives if A4 is ever attempted.
-
-DPO-first is deliberate: it delivers most of RLHF's alignment benefit while reusing the existing training machinery almost entirely, whereas PPO drags in generation-in-the-loop, a value network, and multi-model memory pressure. PPO/GRPO stay recorded as the ambitious frontier, gated "do not start" like everything in this section.
+Execution detail for the active milestone: `docs/M3_INFERENCE_PLAN.md`.
 
 ## Verification Strategy
 
