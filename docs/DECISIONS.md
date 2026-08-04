@@ -109,3 +109,46 @@ honest trade — the alternative is a model quietly trained on the wrong bytes.
 `prepare` now takes an output **stem** rather than a filename, emitting `<stem>.train.bin`,
 `<stem>.val.bin` and `<stem>.vocab`. `train` finds the sidecar by stripping the data suffix, and
 accepts an explicit `--vocab` override.
+
+---
+
+## D3 — `--init-from` loads weights only; `--ckpt` resume restores the optimizer
+
+**Date:** 2026-08-04 · **Status:** adopted
+
+### Decision
+`GPT2::load_checkpoint` takes a `LoadMode`. `Full` (default) restores weights, AdamW moments and the
+step counter. `WeightsOnly` restores weights and **resets** moments and step to zero. `train
+--init-from` uses `WeightsOnly`; `train --ckpt <existing>` uses `Full`. They are mutually exclusive:
+`--init-from` starts a new run, so it does not also resume from `--ckpt`.
+
+### Why two modes rather than one
+They answer different questions.
+- **Resume** continues an interrupted run: the moments and the step index belong to *that* run's
+  schedule, and dropping them would restart bias correction at `t=1`, where the correction factor is
+  `1/(1-β₁) = 10×` — a large, arbitrary kick. This is the failure mode already recorded as a real
+  incident in `docs/engineering-lessons.md` L1.
+- **Fine-tune** starts a *new* run, usually at a lower LR on different data. The base run's moments
+  are second-moment estimates of gradients on the *old* corpus, scaled for the *old* learning rate.
+  Carrying them in applies stale, differently-scaled updates on the first steps — exactly the same
+  kick, just harder to notice because the loss is expected to move anyway.
+
+### Why not the alternatives
+- **One mode, always full.** Fine-tuning inherits the base schedule's optimizer state; the first
+  steps are governed by the old run's LR, not the one the user passed.
+- **One mode, always weights-only.** Breaks resume — the case L1 was written about.
+- **Strip the moments from the file instead** (save a weights-only checkpoint for fine-tuning). Makes
+  the *producer* decide how the consumer will use it, and a base checkpoint is legitimately both a
+  thing to resume and a thing to fine-tune from.
+
+### What this costs
+One more concept in the API, and a caller who picks the wrong mode gets a subtly worse first few
+steps rather than an error. Mitigated by making `Full` the default (resume is the more common and
+more dangerous-to-get-wrong case) and by logging which one happened.
+
+### Evidence
+`checkpoint_test` verifies both: a `Full` load reproduces the base trajectory step-for-step, while
+after a `WeightsOnly` load an AdamW step with **zero gradients** leaves the weights bit-identical —
+the same probe that caught the original stale-moment bug.
+End to end: fine-tuning a base checkpoint onto a different corpus moved val loss on that corpus from
+**2.3775 → 0.5398** in 150 steps.

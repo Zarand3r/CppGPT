@@ -263,5 +263,41 @@ int main() {
     }
 
     (void)V;
+    // ---- LoadMode::WeightsOnly restores weights but resets the optimizer.
+    // Fine-tuning needs this: the saved moments belong to the base run's schedule,
+    // and carrying them into a new run at a different LR applies stale updates.
+    // Verified the same way as the stale-moment bug: with ZERO gradients a correct
+    // AdamW step must not move the weights. ----
+    {
+        Generator g0(4242ULL);
+        GPT2 base(cfg, B, T);
+        base.init_weights(g0);
+        for (int i = 0; i < 5; ++i) step(base, in, tg);  // build real moments
+        const std::string p = tmp_path("finetune_base.ckpt");
+        CHECK(base.save_checkpoint(p.c_str()).has_value());  // full: weights + m/v
+
+        // Full load reproduces the base trajectory ...
+        GPT2 full(cfg, B, T);
+        Generator gf(1ULL);
+        full.init_weights(gf);
+        CHECK(full.load_checkpoint(p.c_str()).has_value());
+        step(base, in, tg);
+        step(full, in, tg);
+        CHECK(params_equal(base, full));
+
+        // ... while WeightsOnly starts the optimizer clean.
+        GPT2 wo(cfg, B, T);
+        Generator gw(2ULL);
+        wo.init_weights(gw);
+        CHECK(wo.load_checkpoint(p.c_str(), GPT2::LoadMode::WeightsOnly).has_value());
+        const std::vector<float> before(wo.params().wte, wo.params().wte + wo.param_count());
+        wo.zero_grads();
+        wo.update(AdamW{.lr = 1e-2f});  // zero grads + zero moments => no movement
+        bool unmoved = true;
+        for (std::size_t i = 0; i < wo.param_count(); ++i)
+            unmoved = unmoved && (wo.params().wte[i] == before[i]);
+        CHECK(unmoved);
+    }
+
     return cppgpt::test::summary();
 }

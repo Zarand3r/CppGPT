@@ -434,7 +434,7 @@ Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
     return atomic_write(path, h, sections, n);
 }
 
-Result<void> GPT2::load_checkpoint(const char* path) noexcept {
+Result<void> GPT2::load_checkpoint(const char* path, LoadMode mode) noexcept {
     // Header first, then OUR OWN size arithmetic, then the payload — so a bogus
     // or mismatched file can never dictate the size of an allocation here.
     ASSIGN_OR_RETURN(CheckpointFile f, CheckpointFile::open(path));
@@ -446,7 +446,11 @@ Result<void> GPT2::load_checkpoint(const char* path) noexcept {
         return err(ErrorCode::ShapeMismatch);
     }
 
-    const bool has_m = (h.flags & kCkptHasMoments) != 0;
+    const bool file_has_m = (h.flags & kCkptHasMoments) != 0;
+    // WeightsOnly still reads the moments off disk (they are part of the payload
+    // and the checksum covers them) but does not install them.
+    const bool has_m = file_has_m;
+    const bool install_moments = file_has_m && mode == LoadMode::Full;
     const std::size_t nbytes = param_count_ * sizeof(float);  // bounded by OUR model
     const std::size_t n_sections = has_m ? 3 : 1;
     if (f.payload_bytes() != static_cast<std::uint64_t>(n_sections) * nbytes)
@@ -464,7 +468,7 @@ Result<void> GPT2::load_checkpoint(const char* path) noexcept {
 
     // Validated — commit.
     std::memcpy(params_.wte, payload.data(), nbytes);
-    if (has_m) {
+    if (install_moments) {
         ensure_moment_arenas();
         std::memcpy(m_, payload.data() + nbytes, nbytes);
         std::memcpy(v_, payload.data() + 2 * nbytes, nbytes);
@@ -474,7 +478,10 @@ Result<void> GPT2::load_checkpoint(const char* path) noexcept {
         // has already trained would carry STALE m/v into the next step — and the
         // step-1 bias correction (1/(1-beta1) = 10x) would amplify them into a
         // large, arbitrary kick. Zero them so the state matches what we log.
-        LOG_WARNING("checkpoint has no optimizer moments; resetting Adam state to zero");
+        if (file_has_m)
+            LOG_INFO("loading weights only; Adam moments and step reset to zero");
+        else
+            LOG_WARNING("checkpoint has no optimizer moments; resetting Adam state to zero");
         ensure_moment_arenas();
         std::memset(m_, 0, nbytes);
         std::memset(v_, 0, nbytes);

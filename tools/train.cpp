@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     const cli::Args args(argc, argv,
                          {"data", "val", "vocab", "ckpt", "layers", "heads", "embd", "ctx", "batch",
                           "steps", "lr", "min-lr", "warmup", "clip", "seed", "eval-interval",
-                          "eval-batches"});
+                          "eval-batches", "init-from"});
 
     const std::string data_path(args.str("data", ""));
     if (data_path.empty()) {
@@ -166,10 +166,26 @@ int main(int argc, char** argv) {
     GPT2 model(cfg, B, T);
     model.init_weights(gen);
 
+    // --init-from starts a NEW run from a base model's weights: moments and step
+    // reset, schedule restarts. Distinct from --ckpt resume below, which continues
+    // an interrupted run and deliberately restores the optimizer state.
+    const std::string init_from(args.str("init-from", ""));
+    if (!init_from.empty()) {
+        if (const auto r =
+                model.load_checkpoint(init_from.c_str(), GPT2::LoadMode::WeightsOnly);
+            !r) {
+            std::fprintf(stderr, "train: cannot init from '%s': %s\n", init_from.c_str(),
+                         describe(r.error()));
+            return 1;
+        }
+        std::printf("train: initialized from %s (weights only; fresh optimizer)\n",
+                    init_from.c_str());
+    }
+
     // Resume if the checkpoint already exists. A corrupt or mismatched file is
     // fatal: silently starting fresh over a real but unusable checkpoint would
     // discard a run the user believes is continuing.
-    if (!ckpt.empty()) {
+    if (!ckpt.empty() && init_from.empty()) {
         std::ifstream probe(ckpt, std::ios::binary);
         if (probe.good()) {
             probe.close();
