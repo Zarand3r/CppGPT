@@ -5,14 +5,24 @@ text — using a *canonical GPT-2 architecture*, not GPT-2's scale. **No pretrai
 124M/350M, no BPE.** The value kept from "canonical" is that the architecture and training step are
 numerically verified against PyTorch (M1, met at ~1e-6) — it is a real GPT-2, just small.
 
-**MVP gate (the whole product, one loop):**
+**MVP gate (the whole product, one loop).** `prepare` takes an output *stem* and emits
+`<stem>.train.bin`, `<stem>.val.bin`, `<stem>.vocab`:
 ```sh
-prepare  corpus.txt  base.bin --val-frac 0.1        # tokenize + hold out a val split
-train    base.bin --steps N --val base.val.bin --ckpt base.ckpt
-generate --checkpoint base.ckpt --prompt "..." --n 200
-prepare  target.txt target.bin --vocab base.bin.vocab   # SAME vocab
-train    target.bin --init-from base.ckpt --lr 3e-4 --ckpt tuned.ckpt
-generate --checkpoint tuned.ckpt --prompt "..." --n 200
+# 1. tokenize your corpus, holding out a validation split
+prepare  corpus.txt base --val-frac 0.1
+
+# 2. train
+train    --data base.train.bin --val base.val.bin --vocab base.vocab \
+         --layers 4 --heads 4 --embd 128 --ctx 128 --steps 5000 --ckpt base.ckpt
+
+# 3. sample from the model you just trained
+generate --checkpoint base.ckpt --vocab base.vocab --prompt "..." --n 200
+
+# 4. fine-tune on a second corpus, REUSING the first vocabulary
+prepare  target.txt target --vocab base.vocab --val-frac 0.1
+train    --data target.train.bin --val target.val.bin --vocab base.vocab \
+         --init-from base.ckpt --lr 3e-4 --steps 500 --ckpt tuned.ckpt
+generate --checkpoint tuned.ckpt --vocab base.vocab --prompt "..." --n 200
 ```
 Binary: val loss descends on both runs; fine-tuning lowers val loss **on the target corpus** versus
 the base checkpoint; both runs reproduce exactly from their seed.
@@ -56,7 +66,10 @@ no new subsystems.
 The three verbs. Each box is wiring over code that already exists and is tested.
 
 ### Train — make it usable and knowable
-- [ ] `prepare --val-frac F` → `<out>.train.bin` + `<out>.val.bin` (contiguous tail split)
+- [ ] `prepare <corpus> <stem> [--val-frac F] [--vocab <existing>]` → `<stem>.train.bin`,
+      `<stem>.val.bin`, `<stem>.vocab` (contiguous tail split). Today `prepare` takes an output
+      *filename* and emits one `.bin` + a `.bin.vocab` sidecar — moving to a stem is what makes the
+      train/val pair and the fine-tune vocab-reuse name cleanly.
 - [ ] `train` CLI flags: `--layers --heads --embd --ctx --batch --lr --steps --seed --ckpt`
       (`tools/train.cpp` currently hardcodes L3/H4/C64/T32; only steps and the ckpt path are arguments)
 - [ ] Eval loop: `--val <bin> --eval-interval N` logging **val loss**, tokens/s, elapsed, peak RSS.
@@ -66,6 +79,11 @@ The three verbs. Each box is wiring over code that already exists and is tested.
 
 ### Infer — generate from a checkpoint you trained
 - [ ] `generate --checkpoint <ckpt> --vocab <vocab> --prompt "..." --n K [--temperature --top-k --seed]`
+- [ ] **Build the model from the checkpoint header.** `GPT2`'s ctor needs a `Config` *before*
+      `load_checkpoint` can validate one against it — so `generate` must first peek the header
+      (`CheckpointFile::open`, already public, returns it), construct from that `Config`, and only
+      then load. Without this step `--checkpoint` cannot work at all: you would have to retype the
+      exact architecture on the command line and a mismatch is `ShapeMismatch`.
       (today `tools/generate` calls `init_weights` and trains in-process — it can *never* read a `.ckpt`)
 - [ ] **Short prompts.** `generate()` copies exactly `seq_len` tokens, so a 5-token prompt is impossible.
       Place the prompt at `[0, len)`, forward, read logits at `len-1` (causality makes the padded tail
