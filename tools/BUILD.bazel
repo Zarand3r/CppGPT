@@ -21,3 +21,9 @@ cc_binary(
     srcs = ["prepare.cpp"],
     deps = ["//:cppgpt"],
 )
+
+cc_binary(
+    name = "bench",
+    srcs = ["bench.cpp"],
+    deps = ["//:cppgpt"],
+)
