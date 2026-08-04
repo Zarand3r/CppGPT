@@ -13,9 +13,9 @@
 // mmap-able, byte-comparable against a PyTorch dump. Little-endian x86 only
 // (hermetic toolchain), matching the parity fixture and token .bin files.
 //
-// This header owns only the format + non-I/O helpers (checksum) and two I/O
-// primitives (atomic write, whole-file read). GPT2::save_checkpoint /
-// load_checkpoint orchestrate them over the model's arenas.
+// This header owns only the format + non-I/O helpers (checksum) and the I/O
+// primitives (atomic write; CheckpointFile, a header-first streaming reader).
+// GPT2::save_checkpoint / load_checkpoint orchestrate them over the arenas.
 #pragma once
 
 #include <cstddef>
@@ -48,11 +48,16 @@ struct CheckpointHeader {
     std::uint32_t flags;     // kCkptHasMoments, ...
     std::uint32_t reserved0;
     std::uint64_t param_count;  // must equal the model's param_count()
-    std::uint64_t checksum;     // FNV-1a-64 over the payload
+    std::uint64_t checksum;     // over the header (this field zeroed) AND the payload
     std::uint64_t reserved1;
 };
 static_assert(sizeof(CheckpointHeader) == 64, "checkpoint header must be exactly 64 bytes");
 
+// NOTE: this is the textbook FNV-1a-64 offset basis (14695981039346656037) with the
+// last digit dropped — a typo, not a design choice. It still works as a hash (the
+// prime below is correct and corruption is detected), so fixing it is deferred until
+// the next kCheckpointVersion bump, since every existing checksum changes with it.
+// See docs/review-audit.md (2026-08-03 sweep) and docs/engineering-lessons.md L6.
 inline constexpr std::uint64_t kFnvOffset64 = 1469598103934665603ULL;
 
 // FNV-1a-64, chainable across regions: seed with kFnvOffset64, then fold each

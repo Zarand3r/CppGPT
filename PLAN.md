@@ -48,7 +48,7 @@ Non-numeric: the code reads cleanly, ownership is obvious, hot paths perform no 
 - **Both training and inference.** Inference may share or specialize the forward pass; backward is training-only.
 - **Tiny scale first, then scale.** v1 works on a laptop CPU in fp32 on a tiny model in minutes; feature-complete for 124M/350M *inference*. Big-model *training* is the GPU phase's job.
 - **fp32 in v1.** Mixed precision (bf16/tf32) is a GPU-phase concern. *(As built: no `DType` type was created — v1 is fp32 throughout, so the enum was deferred until a second dtype actually exists. The device seam is the `Device` tag + per-op dispatch.)*
-- **Right-sized abstractions.** Every abstraction must encode an invariant, hide real complexity, or localize a known axis of change. No speculative abstraction for capabilities we won't ship in v1. The one forward-looking exception is the **device seam** (`Storage` device tag + op dispatch + real `DType`), justified because it makes the planned GPU phase additive instead of a rewrite.
+- **Right-sized abstractions.** Every abstraction must encode an invariant, hide real complexity, or localize a known axis of change. No speculative abstraction for capabilities we won't ship in v1. The one forward-looking exception is the **device seam** (`Storage` device tag + per-op dispatch; `DType` was *not* built — a second dtype arrives only with the GPU/quantization phase), justified because it makes the planned GPU phase additive instead of a rewrite.
 
 ## Non-Goals (v1)
 
@@ -57,7 +57,7 @@ Non-numeric: the code reads cleanly, ownership is obvious, hot paths perform no 
 - **ZeRO / FSDP / pipeline / tensor parallelism; gradient checkpointing for VRAM relief.**
 - **Mixed precision (bf16/fp16) and quantization (int8/int4)** — fp32 only in v1; mixed precision is a GPU-phase item, and int8/int4 post-training quantization is the Efficiency Track's E2/E3 (opt-in, tolerance-validated, never a parity gate).
 - **Training models > ~350M from scratch** — needs the GPU phase.
-- **Mixture-of-Experts, RoPE, GQA, sliding-window / sparse / linear attention** — vanilla causal MHA only. These *change the model* (approximation or new params) and so break canonical parity by construction; they are Efficiency-Track E4, on a separate architecture path. `Config::n_kv_head` exists (defaults to `n_head`) so GQA is a future config flip, but no implementation in v1. **Flash attention is not in this list** — it is numerically *exact* (same softmax, tiled) and parity-preserving, filed as E1; still out of v1 scope, but for a different reason (not needed until GPU / long-context).
+- **Mixture-of-Experts, RoPE, GQA, sliding-window / sparse / linear attention** — vanilla causal MHA only. These *change the model* (approximation or new params) and so break canonical parity by construction; they are Efficiency-Track E4, on a separate architecture path. *(As built: `Config` has no `n_kv_head` — it carries architecture only. GQA would add the field when it is actually implemented.)* **Flash attention is not in this list** — it is numerically *exact* (same softmax, tiled) and parity-preserving, filed as E1; still out of v1 scope, but for a different reason (not needed until GPU / long-context).
 - Beam search, speculative decoding, grammars, structured output.
 - Multimodal anything; web server, HTTP API, gRPC, Python bindings.
 - Windows/macOS before Linux works.
@@ -84,14 +84,14 @@ Non-numeric: the code reads cleanly, ownership is obvious, hot paths perform no 
 | KV cache | Inference throughput | M3 | O(n²) re-forward per generated token. |
 | Checkpoint save/load (simple, versioned) | Resume training; ship models | **Yes** | Lose training progress. |
 | Sampling: argmax + temperature + top-k | Minimal text generation | **Yes** | Useless inference. |
-| Device seam (`Storage` device tag, op dispatch, `DType`) | Make the GPU phase additive | **Yes** (cheap) | GPU phase becomes a rewrite. |
+| Device seam (`Storage` device tag + per-op dispatch; `DType` deferred until a 2nd dtype exists) | Make the GPU phase additive | **Yes** (cheap) | GPU phase becomes a rewrite. |
 | CUDA backend (from-scratch kernels) | Real training scale | **GPU phase** | CPU-only stays feature-complete but slow at scale. |
 | Top-p / repetition penalty | Nicety | Deferred | Quality degrades modestly. |
 | Dropout | Regularization | v1, default 0.0 | Tiny models overfit slightly. |
 
 ## Existing System Understanding
 
-Repo state (updated): **M0 and M1 are complete** — the parity gate is met (~1e-6 measured). **M2 is in progress**: dataloader (mmap uint16) + `tools/prepare`, checkpoint save/resume, sampling + generation, cosine LR schedule + grad clipping, and `tools/bench` have all landed; the cache-blocked/threaded matmul and gradient accumulation remain. `ROADMAP.md` is the live checklist and takes precedence over this document where they disagree; the design sections below are kept for rationale, with **as-built** notes where the implementation diverged.
+Repo state (updated): **M0 and M1 are complete** — the parity gate is met (~1e-6 measured). **M2 is in progress**: dataloader (mmap uint16) + `tools/prepare`, checkpoint save/resume, sampling + generation, cosine LR schedule + grad clipping have all landed (`tools/bench` is written but still on branch `m2-bench`, unmerged). Remaining: the cache-blocked/threaded matmul, gradient accumulation, and the val-split/eval path M2's convergence gate depends on. `ROADMAP.md` is the live checklist and takes precedence over this document where they disagree; the design sections below are kept for rationale, with **as-built** notes where the implementation diverged.
 
 The GPT-2 math is public and well-trodden; the verification oracle is a ~100-line PyTorch script. The hard part is not "what to compute" — it is laying out the C++ so the math stays obvious, the data stays dense, the hot path stays allocation-free, and the device seam stays clean enough that a CUDA backend drops in later.
 
@@ -279,7 +279,7 @@ prefix tokens ─► forward(B=1, T=prefix_len) ─► save K,V into cache
 new token     ─► forward_step(B=1, T=1, uses kv_cache) ─► logits ─► sample ─► append
 ```
 
-KV cache is a separate `Storage` of shape `[n_layer, 2, max_seq, n_head, head_dim]`. Forward-step writes the new k/v slice and reads the full prefix. Logit cropping: when generating, run the classifier head on the last position only. This `Storage` is also the insertion point for the Efficiency Track's KV-cache quantization (E2/E3) — its element type moves from fp32 to a quantized `DType` behind the reserved seam, with the fp32 cache staying the tolerance oracle (invariant 11).
+KV cache is a separate `Storage` of shape `[n_layer, 2, max_seq, n_head, head_dim]`. Forward-step writes the new k/v slice and reads the full prefix. Logit cropping: when generating, run the classifier head on the last position only. This `Storage` is also the insertion point for the Efficiency Track's KV-cache quantization (E2/E3) — quantization there introduces a quantized element type (a parallel quantized `Storage` / dequant-in-matmul; there is no reserved `DType` today), with the fp32 cache staying the tolerance oracle (invariant 11).
 
 ## State Machines / Lifecycles
 
@@ -327,7 +327,7 @@ What the GPU phase *adds* (out of v1 scope, listed so it is not forgotten): hand
 ### B. Tensor representation
 | Option | Pros | Cons | Decision |
 |---|---|---|---|
-| **Dense `float*` + shape/stride view, owning `Storage` tagged with `Device`** | Dense; trivial to reason about; SIMD/GPU-friendly; carries device for dispatch | Manual stride math; no rank type-safety | **Chosen.** `TensorView` for clarity; `Storage{Device}` is the GPU seam; `DType` reserved for mixed precision. |
+| **Dense `float*` + shape/stride view, owning `Storage` tagged with `Device`** | Dense; trivial to reason about; SIMD/GPU-friendly; carries device for dispatch | Manual stride math; no rank type-safety | **Chosen.** `Storage{Device}` is the GPU seam. (As built: `TensorView` and `DType` weren't needed — ops take raw `float*`+dims and v1 is fp32 throughout; both wait for a real consumer.) |
 | Single `Tensor` class with dtype enum + graph fields (GGML/PyTorch) | Future-proofs quantization, carries grad/grad_fn | Branches on dtype in hot path; needs a tape to use grad_fn | Deferred — only earns its keep with a tape or quantization, neither in v1. |
 | Templated `Tensor<float, Rank>` | Compile-time rank checks | Compile blowup; hard cross-TU; over-engineered | Rejected. |
 
@@ -368,7 +368,7 @@ What the GPU phase *adds* (out of v1 scope, listed so it is not forgotten): hand
 
 ## Tradeoff Analysis
 
-**Backend / scale (resolved).** CPU-first, feature-complete v1; a from-scratch CUDA backend is a planned future phase behind the device seam. CPU-vs-GPU is performance, not features — so nothing about GPT-2 is omitted by shipping CPU-only first. The seam (device-tagged `Storage`, op dispatch, real `DType`) is the only forward-looking abstraction we pay for now; it is cheap and prevents a future rewrite.
+**Backend / scale (resolved).** CPU-first, feature-complete v1; a from-scratch CUDA backend is a planned future phase behind the device seam. CPU-vs-GPU is performance, not features — so nothing about GPT-2 is omitted by shipping CPU-only first. The seam (device-tagged `Storage` + per-op dispatch; `DType` was not built — it waits for a second dtype) is the only forward-looking abstraction we pay for now; it is cheap and prevents a future rewrite.
 
 **Backward (resolved).** Hand-written per-op backward over the fixed GPT-2 graph. For a fixed architecture this is the minimal, most directly verifiable, and most GPU-portable choice (llm.c → llm.cu). A tape would be ~500+ LOC of machinery to support architecture variation we have declared a non-goal.
 
@@ -382,14 +382,14 @@ What the GPU phase *adds* (out of v1 scope, listed so it is not forgotten): hand
 
 | # | Risk | Cheapest experiment | Success criterion | Fallback |
 |---|---|---|---|---|
-| R1 | **Numerical drift hidden until late.** A subtle indexing bug in attention/layernorm diverges silently from the reference. | Build the fixture harness *first* (M0): PyTorch (tanh GELU) dumps inputs, weights, every activation; cppgpt loads and asserts. | Per-tensor max-abs-error ≤ 1e-4. | Bisect by tensor name → offending op → focused unit test. |
-| R2 | **Backward derivation errors.** Hand-derived gradients are error-prone (attention, layernorm). | Per-op finite-difference Jacobian on tiny tensors + fixture compare. | Relative error ≤ 1e-3. | Re-derive on paper; cross-check vs `torch.autograd.grad`. |
-| R3 | **CPU matmul is a brick.** Naive triple-loop on 124M is unusable. | **FIRED.** `tools/bench` measures **≈3.0 GFLOP/s** single-thread (Ryzen 9 9950X3D, `--config=release`) — below the 5 GFLOP/s trigger. | ≥ 30 GFLOP/s single-thread fp32 on a modern x86 core. | Now the mandated path, not a contingency: break the serial FMA chain with multiple accumulators, register-block over BT rows, then thread. Note `-march=native` is already on, so this is a code-shape fix, not a flag. |
-| R4 | **BPE/tokenizer parity.** Unicode, byte fallbacks, regex pre-tokenization; `std::regex` lacks `\p{L}`/`\p{N}`. | Hand-roll the pre-tokenizer; test vs tiktoken on 1000 strings before integrating. | 100% token-stream match. | Pre-tokenize in Python for training-only paths (delays standalone inference). |
-| R5 | **Activation memory.** Attention score buffers (`preatt`+`att`, each `L·B·NH·T·T` fp32) dominate: for 124M at B=8/T=1024 that pair alone is ~9.6 GB — past a laptop. **v1 trains only the ~10M baby model; 124M/350M are inference-only**, where no saved-activation graph exists. | Measure baby-model peak at M2; measure inference peak at M3/M4. | Baby training peak ≤ 2 GB; GPT-2 medium inference peak ≤ 4 GB. | Reduce B/T; recompute attention in backward; activation checkpointing → GPU phase. |
-| R6 | **Abstraction creep under "production-grade".** | Allow-list of pluggable interfaces fixed up front (`Tokenizer`, `Sampler`); anything else concrete until a 2nd impl exists. | Review rejects new interfaces without ≥2 impls. | Delete the interface; inline the impl. |
-| R7 | **Device seam rots / leaks CPU assumptions.** Host pointers baked in where a device tag belongs. | Every op takes `Device`; `Storage` owns the tag; a lint/grep check at M0. | No raw host-pointer arithmetic outside CPU op bodies. | Re-thread `Device` through the offending call sites. |
-| R8 | **OS/build portability.** | Linux-only for v1. | `bazel build //...` green on one distro. | macOS/Windows are their own later milestones. |
+| DR-1 | **Numerical drift hidden until late.** A subtle indexing bug in attention/layernorm diverges silently from the reference. | Build the fixture harness *first* (M0): PyTorch (tanh GELU) dumps inputs, weights, every activation; cppgpt loads and asserts. | Per-tensor max-abs-error ≤ 1e-4. | Bisect by tensor name → offending op → focused unit test. |
+| DR-2 | **Backward derivation errors.** Hand-derived gradients are error-prone (attention, layernorm). | Per-op finite-difference Jacobian on tiny tensors + fixture compare. | Relative error ≤ 1e-3. | Re-derive on paper; cross-check vs `torch.autograd.grad`. |
+| DR-3 | **CPU matmul is a brick.** Naive triple-loop on 124M is unusable. | **FIRED.** Naive matmul forward measures well below the 5 GFLOP/s trigger. Numbers, host and reproduce command: `docs/measurements.md` M-1. (`tools/bench` itself is still on branch `m2-bench`, unmerged.) | ≥ 30 GFLOP/s single-thread fp32 on a modern x86 core. | Now the mandated path: break the serial FMA chain with multiple accumulators, register-block over BT rows, then thread. **Also investigate the flag** — `-march=native` measures ~1.9x SLOWER than plain `-O3` on this kernel (`docs/measurements.md` M-1), so ~1.9x is available before any code change. |
+| DR-4 | **BPE/tokenizer parity.** Unicode, byte fallbacks, regex pre-tokenization; `std::regex` lacks `\p{L}`/`\p{N}`. | Hand-roll the pre-tokenizer; test vs tiktoken on 1000 strings before integrating. | 100% token-stream match. | Pre-tokenize in Python for training-only paths (delays standalone inference). |
+| DR-5 | **Activation memory.** Attention score buffers (`preatt`+`att`, each `L·B·NH·T·T` fp32) dominate: for 124M at B=8/T=1024 that pair alone is ~9.6 GB — past a laptop. **v1 trains only the ~10M baby model; 124M/350M are inference-only**, where no saved-activation graph exists. | Measure baby-model peak at M2; measure inference peak at M3/M4. | Baby training peak ≤ 2 GB; GPT-2 medium inference peak ≤ 4 GB. | Reduce B/T; recompute attention in backward; activation checkpointing → GPU phase. |
+| DR-6 | **Abstraction creep under "production-grade".** | Allow-list of pluggable interfaces fixed up front (`Tokenizer`, `Sampler`); anything else concrete until a 2nd impl exists. | Review rejects new interfaces without ≥2 impls. | Delete the interface; inline the impl. |
+| DR-7 | **Device seam rots / leaks CPU assumptions.** Host pointers baked in where a device tag belongs. | Every op takes `Device`; `Storage` owns the tag; a lint/grep check at M0. | No raw host-pointer arithmetic outside CPU op bodies. | Re-thread `Device` through the offending call sites. |
+| DR-8 | **OS/build portability.** | Linux-only for v1. | `bazel build //...` green on one distro. | macOS/Windows are their own later milestones. |
 
 ## Invariants
 
@@ -401,8 +401,8 @@ Each maps to a test, assertion, or check.
 4. **Params and grads are the same size and order;** the `lm_head` region *is* the `wte` region (tying). *(Test offsets + `params.size()==grads.size()`.)*
 5. **RNG is explicit** — every stochastic op takes a `Generator&`; no global default. Same seed → bit-identical logits at step 0. *(Two-run determinism test.)*
 6. **Failures fail fast, never silent** — out-of-range token IDs, NaN loss, mis-shaped checkpoint → abort with a precise error. *(Assertions; `[[nodiscard]]` on loaders.)*
-7. **Ownership is unambiguous** — `Storage` owns; `TensorView` borrows. No `shared_ptr<float>`. *(Review gate.)*
-8. **Every op carries its `Device`; v1 asserts `CPU`.** The seam never silently assumes host memory. *(Op-entry assertion + R7 lint.)*
+7. **Ownership is unambiguous** — owning storage owns its buffer; views borrow and never free. No `shared_ptr<float>`. *(The `TensorView` type was never built; the rule is stated durably in `docs/constitution.md`, which is the authoritative copy.)* *(Review gate.)*
+8. **Every op carries its `Device`; v1 asserts `CPU`.** The seam never silently assumes host memory. *(Op-entry assertion + DR-7 lint.)*
 9. **Verification is run, not promised** — every commit touching an op runs the fixture vs PyTorch. *(CI gate.)*
 10. **No third-party runtime deps** — `ldd` allow-list (libc/libm/libpthread + the dynamic loader; **not** libstdc++ — libc++ is statically linked by the hermetic toolchain). *(CI gate — not yet built.)*
 11. **Efficiency/approximation modes never relax the canonical gates.** Any quantized, sparse, linear, or otherwise-approximate path is opt-in and validated against the fp32 CPU path within a *documented, committed* tolerance; the fp32 CPU path remains the parity oracle. A mode that loosens, skips, or replaces a canonical parity check to "pass" is out of scope by construction. *(Applies to the whole Efficiency & Research Track; exact modes like E1 flash attention still meet the standard fp32 tolerance.)*
@@ -422,68 +422,22 @@ The first end-to-end slice proves the hardest thing — matching PyTorch numeric
 
 This exercises tensor/storage, arena allocator, all forward ops, all backward ops, AdamW, save/load round-trip, the fixture harness, and the CLI. If it passes, the math is right and we scale model dimensions with confidence. If it fails, every later milestone is blocked.
 
-## Milestone Roadmap
+## Milestone → risk mapping
 
-Each milestone: goal, deliverable, scope/non-scope, risks retired, definition-of-done. (`ROADMAP.md` is the flat checklist version of this.)
+**`ROADMAP.md` is the single roadmap** — milestones, checkboxes and the binary `Gate:` for each
+live there and only there. This section keeps just the design-level fact that belongs here:
+which risk each milestone retires. (A duplicate milestone list with its own DoDs used to live
+here and had diverged from ROADMAP on M0, M1 and M2 — see `docs/review-audit.md`.)
 
-### M0 — Skeleton + fixture harness *(retires R1, R7, R8)*
-**Goal:** Buildable repo; a working canonical-GPT-2 PyTorch-fixture harness; matmul forward+backward (hand-written, device-dispatched) verified vs PyTorch; "no external deps" check.
-**Deliverable:** Bazel module + directory skeleton; `scripts/gen_fixtures.py` (dumps matmul fwd/bwd reference, tanh-GELU-configured for later ops); `core.hpp` (Result=std::expected, ErrorCode, ASSERT/TRY/MUST macros), `log.hpp` (Logger), `random.hpp` (Generator); `Storage{Device}`, `TensorView`, `Config`; `matmul_forward/backward` with `Device` dispatch (CPU); `tests/unit/matmul_test.cpp`; `tools/verify.cpp` (stub for full forward); one CI build with `ldd` allow-list.
-**Out of scope:** other ops, attention, training loop, BPE, GPU.
-**DoD:** `bazel test //...` shows "matmul forward/backward match PyTorch"; ASan+UBSan clean (`--config=dev`); a contributor reads the whole harness in < 30 min.
-**Effort:** 3–5 days.
+| Milestone | Retires |
+|---|---|
+| **M0** — Skeleton + fixture harness | DR-1, DR-7, DR-8 |
+| **M1** — Full forward + backward on a baby model | DR-2 |
+| **M2** — TinyShakespeare convergence + CPU performance | DR-3, DR-5 |
+| **M3** — BPE tokenizer + pretrained GPT-2 124M inference | DR-4 |
+| **M4** — Polish + GPT-2 medium (350M) inference + GPU-seam readiness | DR-6 |
 
-### M1 — Full forward + backward on a baby model *(retires R2)*
-**Goal:** Execute Slice 0.
-**Deliverable:** all ops (`layernorm`, `attention`, `softmax`, `gelu`-tanh, `residual`, `encoder`, `classifier`, `cross_entropy`) forward+backward, each fixture-tested; `GPT2` + `gpt2_forward/backward/update`; AdamW (2-group decay); weight tying; char tokenizer; `tools/train.cpp` (hardcoded baby config, 10 steps, prints loss); `tools/verify.cpp` (full fwd/bwd compare); finite-difference gradient checker test.
-**Out of scope:** parallelism, real datasets, BPE, GPU, perf.
-**DoD:** `tools/train` prints the same 10-step loss sequence as the PyTorch reference, within 1e-3; every op has fwd+bwd fixture tests; gradcheck passes.
-**Effort:** 2–3 weeks.
-
-### M2 — TinyShakespeare convergence + CPU performance *(retires R3, R5)*
-**Goal:** Train 6L/384H/6-heads/256-ctx (~10M params) to val loss ≤ 1.6 on TinyShakespeare in an overnight CPU run.
-**Deliverable:** `dataloader` (mmap uint16, shuffled epochs); `scripts/prepare_shakespeare.py`; `checkpoint` (versioned, atomic) + periodic save; `tools/generate.cpp` (temperature + top-k); cache-blocked matmul; `std::thread` work pool (deterministic row partition); gradient accumulation; cosine+warmup schedule; grad clip; `tools/bench.cpp` (GFLOP/s, step time, tokens/sec).
-**Out of scope:** BPE, pretrained weights, GPU.
-**DoD:** an overnight run produces a sampleable checkpoint; bench reports ≥ 30 GFLOP/s single-thread matmul; measured peak memory recorded.
-**Effort:** 2 weeks.
-
-### M3 — BPE tokenizer + pretrained GPT-2 124M inference *(retires R4)*
-**Goal:** Load HF GPT-2 124M and reproduce identical generation vs `transformers` for ≥ 50 tokens at a fixed seed.
-**Deliverable:** GPT-2 BPE (byte-level encoder, merges parser, hand-rolled regex pre-tokenizer); `scripts/convert_gpt2.py` (HF → `.bin`); KV cache; prefix + autoregressive decode with logit cropping; side-by-side test vs `transformers.generate` (greedy + temperature).
-**Out of scope:** GPT-2-scale training; GPU.
-**DoD:** `tools/generate --weights gpt2-124M.bin --prompt "Once upon a time"` matches HF transformers token-for-token; tokenizer byte-exact on 1000+ strings; KV-cache on/off identical.
-**Effort:** 2 weeks (BPE is fiddly).
-
-### M4 — Polish + GPT-2 medium (350M) inference + GPU-seam readiness *(retires R6)*
-**Goal:** "Correct" → "clean," scale to GPT-2 medium inference on a workstation CPU, and verify the GPU seam is real.
-**Deliverable:** leveled structured logging replaces ad-hoc `cerr`; `Result<T,E>` + `[[nodiscard]]` at every loader/parser/checkpoint boundary; a small observability set logged to CSV (tokens/sec, grad norm, peak memory, step time); GPT-2 medium inference tested for HF parity; a **GPU-seam audit** (every op carries `Device`; no host-pointer leakage — retires R7 fully); `docs/ARCHITECTURE.md` + `docs/CONTRIBUTING.md` (incl. "how to add a CUDA backend behind the seam").
-**Out of scope:** the CUDA backend itself; SIMD intrinsics (measured-need only); macOS/Windows; the deferred scaffolding (fuzz/CI-matrix/SHA/multi-stream RNG).
-**DoD:** a fresh engineer can clone, build, train baby Shakespeare, generate from GPT-2 124M, run GPT-2 medium inference, and read the architecture doc in under an hour.
-**Effort:** 1–2 weeks.
-
-### Beyond v1 (each its own future plan)
-
-**GPU phase (headline).** From-scratch CUDA backend behind the device seam: hand-written kernels, host↔device transfers + streams, mixed precision (bf16/tf32), GPU memory budgeting, relaxed determinism contract; targets a single workstation GPU (e.g. NVIDIA RTX 6000 Ada/Pro) for real GPT-2-scale training. CPU stays the numerical oracle.
-
-Other GPU-adjacent items: **SIMD intrinsics (AVX2/NEON)** for the CPU path (measured-need only); **tape autograd** (only if we start varying architectures); **top-p / repetition penalty; GGUF; macOS/Windows**.
-
-**Efficiency & Research Track.** Ordered least→most numerical perturbation. Governed by invariant 11: each is opt-in and validated against the fp32 CPU oracle within a documented tolerance; none relax the canonical parity gates. The v1 seams they reuse (the reserved `DType` field, the device-dispatched op signatures, the KV-cache `Storage`) already exist — no new abstraction is paid for now (see "Deferred Complexity").
-
-- **E1 · Flash attention (exact, parity-preserving).** Online-softmax tiled attention behind the existing `attention_forward/backward` call site — additive, exactly like the GPU seam. O(T) score memory instead of O(L·B·NH·T²); this is the general fix for R5, though R5 is already handled in v1 by scoping big models to inference-only. Same softmax → meets the standard fp32 tolerance, not a looser one. Primary payoff: GPU training and long-context inference. Validated against fp32 vanilla attention.
-- **E2 · Post-training quantization (inference).** int8/int4 weight quantization + KV-cache quantization as an opt-in inference mode, via the reserved `DType` seam (or a parallel quantized `Storage` with dequant-on-the-fly in the matmul). Not token-exact — lives behind a flag, validated within a committed tolerance vs the fp32 path. The KV-cache `Storage` (already shaped `[n_layer,2,max_seq,n_head,head_dim]` in v1) is the quantization insertion point.
-- **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious *online* vector quantization suited to KV cache: randomly rotate vectors (inducing a concentrated Beta distribution per coordinate), then apply per-coordinate optimal scalar quantizers; a two-stage MSE quantizer + 1-bit Quantized-JL residual yields an *unbiased inner-product* estimator (the quantity attention actually needs). Reported ≈ quality-neutral at 3.5 bits/channel and marginal at 2.5, within a small constant of the information-theoretic distortion bound. Plugs into the E2 KV-cache seam; accelerator-friendly and online, so it also fits the GPU phase. Reference: TurboQuant, arXiv 2504.19874.
-- **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Sub-quadratic attention: linear (kernel/recurrent, O(N) but a known reasoning / long-retrieval penalty and non-injective attention), sparse (block/pattern/routed token subsets), or **hybrid** (linear backbone with interleaved full or sparse-softmax layers) — the current consensus sweet spot, with "component collapse" (the model ignoring the linear branch) as the documented failure mode. These change the computation, so they break canonical GPT-2 token-exact parity by construction and live on a separate architecture path — the same trigger that would justify reconsidering a tape/autograd. Validated on task metrics (perplexity, long-context retrieval), not token-exact parity. References: surveys arXiv 2507.19595, 2504.17768.
-
-**Ambition ceiling (noted, not planned).** TurboQuant-style near-optimal KV-cache quantization (E3) composed with a hybrid sparse/linear backbone (E4) is roughly the frontier a from-scratch, dependency-free GPT-2 could chase for long-context, low-memory inference. Recorded as direction only; every item above is behind invariant 11 and the "do not start" gate.
-
-**Alignment & Post-Training Track (RLHF).** A separate capability axis from the Efficiency Track and the GPU phase: it changes what the model *does* (instruction-following, preference alignment), not how fast or cheap it runs. The core ops (forward/backward/AdamW), tokenizer, and dataloader are reused unchanged, so ops-level parity is untouched — but this is the one track whose *success* is metric-based rather than token-exact-parity-based: there is no canonical "GPT-2 RLHF" reference to match, because outcomes depend on the preference data. New losses are still gradient-checked against a PyTorch reference; invariant 11's canonical gates are added to, never relaxed. Two new pieces of long-lived state appear: a frozen **reference model** (a second param `Storage`, for the A3/A4 KL term) and a **scalar reward head** (for A2/A4).
-
-- **A1 · SFT (supervised fine-tuning).** Fine-tune the pretrained LM on demonstration / chat data, with the loss masked to completion tokens (prompt tokens contribute no gradient). Reuses forward/backward/AdamW + tokenizer verbatim; the only new surface is an instruction-format dataloader and the loss mask. Cheapest step; the base every later step builds on.
-- **A2 · Reward model.** A pairwise-preference dataset (chosen vs rejected) and a reward model = the LM backbone + a scalar head, trained with a Bradley–Terry / pairwise ranking loss. New surface: the scalar head and the ranking loss (forward + hand-derived backward, gradient-checked).
-- **A3 · DPO — the recommended alignment step.** Direct Preference Optimization replaces the reward model + RL loop with a single offline classification-style loss over preference pairs, scored against a frozen reference model (the A1 SFT weights) with an implicit KL regularizer. No reward model, no in-loop sampling, no value network — dramatically more tractable for a std-only CPU implementation than PPO. Reuses the SFT model as a second frozen `Storage`; the only new op is the DPO loss (gradient-checked).
-- **A4 · PPO — research / ambitious ceiling.** Full online RLHF: generate rollouts inside the training loop (the sampler moves onto the hot path), score them with the A2 reward model, and optimize a clipped policy objective with a value head + GAE and a KL-to-reference penalty. Needs 2–3 resident model copies (policy, frozen reference, reward) and generation on the training path — the most complex extension in this document. GRPO and other critic-free RL variants are noted as simpler alternatives if A4 is ever attempted.
-
-DPO-first is deliberate: it delivers most of RLHF's alignment benefit while reusing the existing training machinery almost entirely, whereas PPO drags in generation-in-the-loop, a value network, and multi-model memory pressure. PPO/GRPO stay recorded as the ambitious frontier, gated "do not start" like everything in this section.
+Execution detail for the active milestone: `docs/M3_INFERENCE_PLAN.md`.
 
 ## Verification Strategy
 
@@ -528,7 +482,7 @@ Things we explicitly do *not* build in v1, and the trigger that would change tha
 
 ## Recommended Next Step
 
-*(Superseded — M0/M1 are complete and the parity gate is met.)* The next step is the **M2 performance work**: R3's cheap experiment has now run, and `tools/bench` measures the naive matmul at **≈3.0 GFLOP/s single-thread** against a 30 GFLOP/s gate. The scalar `acc += inp[c]*w[c]` reduction is a single serial FMA dependency chain — note that `--config=release` already passes `-march=native`, so the vector ISA was available and the compiler still could not vectorize it. The fix is therefore the code shape, not a compiler flag: multiple independent accumulators to break the chain, then register-blocking over BT rows for weight reuse, then the `std::thread` row partition. Gradient accumulation follows.
+*(Superseded — M0/M1 are complete and the parity gate is met.)* The next step is the **M2 performance work**: DR-3's cheap experiment has now run, and the naive matmul forward is far below the gate (`docs/measurements.md` M-1). The scalar `acc += inp[c]*w[c]` reduction is a single serial FMA dependency chain — the serial `acc +=` dependency chain is the root cause, so the fix is largely the code shape — **but `-march=native` is not neutral: it measures ~1.9x SLOWER than plain `-O3` on this kernel** (`docs/measurements.md` M-1), so the flag must be investigated too: multiple independent accumulators to break the chain, then register-blocking over BT rows for weight reuse, then the `std::thread` row partition. Gradient accumulation follows.
 
 ## Open Questions / Decision Points
 

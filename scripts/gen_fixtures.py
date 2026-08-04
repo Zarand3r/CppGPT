@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-MAGIC = 0x43475446  # "CGTF"
+MAGIC = 0x43475446  # little-endian bytes spell "FTGC"
 VERSION = 1
 
 # Baby config — small but exercises multi-layer, multi-head, all ops.
