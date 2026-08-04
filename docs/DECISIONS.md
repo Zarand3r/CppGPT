@@ -73,3 +73,39 @@ End-to-end: `//tools:train`, 40 steps, 2.10 s → 1.62 s wall.
 The matmul is rewritten with multiple accumulators. Once the reduction is no longer a single serial
 chain, FMA contraction should become a *win* rather than a loss, and `-ffp-contract=fast` may want to
 come back. Re-measure both ways at that point — do not assume this decision still holds.
+
+---
+
+## D2 — `prepare --vocab` fails hard on an unknown byte; the vocabulary never grows
+
+**Date:** 2026-08-04 · **Status:** adopted
+
+### Decision
+`prepare --vocab <existing.vocab>` re-tokenizes a new corpus with a previous run's vocabulary. If the
+corpus contains any byte absent from that vocabulary, `prepare` reports **every** offending byte with
+its count and exits 1. It never drops, remaps, or appends to the vocabulary.
+
+### Why this exists at all
+It is the piece the whole fine-tuning story rests on, and it is not obvious. A second corpus yields a
+different character set → a different `vocab_size` → a different `wte` shape → `ShapeMismatch` from
+`load_checkpoint`. Without vocabulary reuse, fine-tuning is not awkward, it is **impossible**.
+
+### Why not the alternatives
+- **Grow the vocabulary with the new bytes.** Changes `vocab_size`, so the base checkpoint no longer
+  loads — it defeats the purpose. (Growing *and* resizing `wte` in place is a real feature, but it is
+  a model-surgery feature, not a tokenizer one, and nothing in the MVP needs it.)
+- **Map unknown bytes to a sentinel / drop them.** Silent data corruption: the model would train on
+  text that differs from the file on disk, and nothing downstream could detect it. Directly against
+  the fail-fast doctrine, and the exact shape of `docs/engineering-lessons.md` L2/L5.
+- **Abort on the first bad byte** (what `CharTokenizer::encode`'s `ASSERT` would do). Correct but
+  unhelpful: the user cannot tell one stray character from a fundamentally wrong alphabet without
+  re-running repeatedly. Pre-scanning and reporting all of them costs one pass over the corpus.
+
+### What this costs
+The user must clean the corpus, or accept training from scratch with a fresh vocabulary. That is the
+honest trade — the alternative is a model quietly trained on the wrong bytes.
+
+### Note
+`prepare` now takes an output **stem** rather than a filename, emitting `<stem>.train.bin`,
+`<stem>.val.bin` and `<stem>.vocab`. `train` finds the sidecar by stripping the data suffix, and
+accepts an explicit `--vocab` override.
