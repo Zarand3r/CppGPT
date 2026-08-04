@@ -66,7 +66,7 @@ no new subsystems.
 The three verbs. Each box is wiring over code that already exists and is tested.
 
 ### Train — make it usable and knowable
-- [ ] `prepare <corpus> <stem> [--val-frac F] [--vocab <existing>]` → `<stem>.train.bin`,
+- [x] `prepare <corpus> <stem> [--val-frac F] [--vocab <existing>]` → `<stem>.train.bin`,
       `<stem>.val.bin`, `<stem>.vocab` (contiguous tail split). Today `prepare` takes an output
       *filename* and emits one `.bin` + a `.bin.vocab` sidecar — moving to a stem is what makes the
       train/val pair and the fine-tune vocab-reuse name cleanly.
@@ -92,7 +92,7 @@ The three verbs. Each box is wiring over code that already exists and is tested.
   short prompt; greedy decoding (`--top-k 1`) is deterministic.
 
 ### Fine-tune — continue from a checkpoint on new text
-- [ ] `prepare --vocab <existing.vocab>` — tokenize a *new* corpus with the **original** vocabulary.
+- [x] `prepare --vocab <existing.vocab>` — tokenize a *new* corpus with the **original** vocabulary.
       **This is the piece that makes fine-tuning possible at all:** a fresh corpus yields a different
       char vocab, hence a different `vocab_size`, hence `ShapeMismatch` on load. Must fail loudly on a
       byte outside the original vocab rather than silently remapping.

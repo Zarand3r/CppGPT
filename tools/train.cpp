@@ -30,6 +30,7 @@
 #include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/tokenizer.hpp"
+#include "tools/cli.hpp"
 
 namespace {
 using namespace cppgpt;
@@ -81,12 +82,14 @@ void sample_batch(const std::vector<int>& data, int B, int T, Generator& gen,
 }  // namespace
 
 int main(int argc, char** argv) {
+    const cli::Args args(argc, argv, {"vocab"});
     // First arg: a prepared token file (*.bin, streamed via the mmap DataLoader)
     // or a text corpus (tokenized in memory). "" / omitted selects the built-in
     // corpus so the later positional args (steps, checkpoint) stay reachable.
-    const char* data_arg = (argc > 1 && argv[1][0] != '\0') ? argv[1] : nullptr;
-    const int steps = (argc > 2) ? std::atoi(argv[2]) : 30;
-    const char* ckpt = (argc > 3) ? argv[3] : nullptr;
+    const char* data_arg = (!args.positional().empty() && !args.positional()[0].empty())
+                               ? args.positional()[0].c_str() : nullptr;
+    const int steps = args.positional().size() > 1 ? std::atoi(args.positional()[1].c_str()) : 30;
+    const char* ckpt = args.positional().size() > 2 ? args.positional()[2].c_str() : nullptr;
     const bool from_bin = data_arg != nullptr && std::string_view(data_arg).ends_with(".bin");
 
     // Baby config (tanh GELU, bias, fp32 — canonical GPT-2, just small).
@@ -106,7 +109,21 @@ int main(int argc, char** argv) {
     if (from_bin) {
         // Vocab from the .vocab sidecar (tools/prepare wrote it): reconstruct the
         // tokenizer to recover vocab_size — never inferred by scanning the tokens.
-        const std::string vpath = std::string(data_arg) + ".vocab";
+        // Vocab path: explicit --vocab, else derived from the data path's stem.
+        // tools/prepare emits <stem>.train.bin / <stem>.val.bin / <stem>.vocab, so
+        // the sidecar is found by stripping the data suffix, not by appending to it.
+        std::string vpath = std::string(args.str("vocab", ""));
+        if (vpath.empty()) {
+            std::string stem(data_arg);
+            for (const char* suffix : {".train.bin", ".val.bin", ".bin"}) {
+                const std::size_t n = std::string(suffix).size();
+                if (stem.size() > n && stem.compare(stem.size() - n, n, suffix) == 0) {
+                    stem.resize(stem.size() - n);
+                    break;
+                }
+            }
+            vpath = stem + ".vocab";
+        }
         std::ifstream vf(vpath, std::ios::binary);
         if (!vf) {
             std::fprintf(stderr, "train: cannot open vocab '%s' (run tools/prepare first)\n",
