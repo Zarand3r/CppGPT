@@ -42,14 +42,16 @@ and the dynamic loader (libc++ is static). Verify with `ldd bazel-bin/...`.
 scripts/prepare_shakespeare.py data/shakespeare.txt
 
 # 2. tokenize it -> uint16 token .bin + a .vocab sidecar
-bazel run //tools:prepare -- "$PWD"/data/shakespeare.txt "$PWD"/data/shakespeare.bin
+bazel run //tools:prepare -- "$PWD"/data/shakespeare.txt "$PWD"/data/shakespeare --val-frac 0.1
 
 # 3. train from the mmap'd tokens, checkpointing (resumes if the .ckpt exists)
-bazel run //tools:train -- "$PWD"/data/shakespeare.bin 2000 "$PWD"/data/shakespeare.ckpt
+bazel run //tools:train -- --data "$PWD"/data/shakespeare.train.bin \
+    --val "$PWD"/data/shakespeare.val.bin --layers 4 --heads 4 --embd 128 --ctx 128 \
+    --steps 2000 --eval-interval 200 --ckpt "$PWD"/data/shakespeare.ckpt
 
 # train from a plain text file instead (tokenized in memory), or "" for a
 # small built-in corpus:
-bazel run //tools:train -- "$PWD"/data/shakespeare.txt 200
+bazel run //tools:train -- --data "$PWD"/data/shakespeare.txt --steps 200
 
 # 4. train a baby model in-process and sample text from it
 bazel run //tools:generate -- "$PWD"/data/shakespeare.txt 400 256
