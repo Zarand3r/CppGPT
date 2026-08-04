@@ -100,5 +100,59 @@ int main() {
         CHECK(cycle_ok);
     }
 
+    // ---- padding inertness: a short prompt in a padded buffer must give
+    // BIT-IDENTICAL logits to an unpadded forward of exactly that length. This is
+    // the invariant generate_absolute rests on; a left-padding or position-shifting
+    // implementation fails it, while asserting "generate_absolute(1) == forward +
+    // argmax" would not (that restates the implementation). ----
+    {
+        Config cfg{};
+        cfg.max_seq_len = 16;
+        cfg.vocab_size = 7;
+        cfg.n_layer = 2;
+        cfg.n_head = 2;
+        cfg.n_embd = 8;
+        const int V = cfg.vocab_size;
+        const std::vector<int> prompt{3, 1, 4, 1, 5};
+        const auto len = static_cast<int>(prompt.size());
+
+        std::vector<float> tight, padded;
+        for (int T : {len, len + 9}) {
+            Generator g(2024ULL);  // same seed => same weights (they depend only on cfg)
+            GPT2 m(cfg, 1, T);
+            m.init_weights(g);
+            std::vector<int> buf(static_cast<std::size_t>(T), 0);
+            std::copy(prompt.begin(), prompt.end(), buf.begin());
+            m.forward(buf.data(), nullptr);
+            const float* row = m.acts().logits + static_cast<std::size_t>(len - 1) * V;
+            (T == len ? tight : padded).assign(row, row + V);
+        }
+        bool identical = true;
+        for (int i = 0; i < V; ++i) identical = identical && (tight[i] == padded[i]);
+        CHECK(identical);
+    }
+
+    // ---- generate_absolute accepts a prompt shorter than the context, and is
+    // deterministic for a fixed seed ----
+    {
+        Config cfg{};
+        cfg.max_seq_len = 12;
+        cfg.vocab_size = 6;
+        cfg.n_layer = 1;
+        cfg.n_head = 2;
+        cfg.n_embd = 8;
+        Generator init(5ULL);
+        GPT2 m(cfg, 1, 12);
+        m.init_weights(init);
+        const std::vector<int> prompt{2, 0, 3};  // 3 tokens into a 12-wide context
+        Generator a(88ULL), b(88ULL);
+        const auto ga = generate_absolute(m, prompt, 20, 1.0f, 0, a);  // past the context
+        const auto gb = generate_absolute(m, prompt, 20, 1.0f, 0, b);
+        CHECK(ga.size() == 20 && ga == gb);
+        bool in_range = true;
+        for (int t : ga) in_range = in_range && (t >= 0 && t < cfg.vocab_size);
+        CHECK(in_range);
+    }
+
     return cppgpt::test::summary();
 }
