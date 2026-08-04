@@ -1,6 +1,16 @@
 # M3 — Feature-Complete GPT-2 + Pretrained Inference
 
-**Status:** planned, not started. Supersedes the three-line M3 sketch in `ROADMAP.md`.
+> ## ⚠️ SHELVED — out of MVP scope
+> The project goal narrowed to **train / sample / fine-tune a small model of your own**, not GPT-2
+> scale. Loading pretrained 124M weights and the BPE tokenizer are therefore **deferred, not
+> cancelled** (`ROADMAP.md` → Deferred). This document is kept intact because the research in it is
+> verified and expensive to redo: the HF tensor mapping (Conv1D transposes, Q‖K‖V order), the
+> tokenizer spec and its traps, the fixture designs, and the measured greedy-decode margins.
+>
+> **One part is still live and was pulled into the MVP:** `M3-S1`'s absolute-position forward, which
+> the MVP needs for short prompts (`ROADMAP.md` M2 → Infer). Its HuggingFace-parity gate does not apply.
+
+**Status:** shelved (see above). Was: planned, not started.
 **Prerequisite:** M1 complete (parity gate met, ~1e-6). **M2's matmul work is NOT independent of
 this milestone** — see §7 R10; sequence it deliberately.
 

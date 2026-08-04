@@ -1,10 +1,18 @@
 # cppgpt
 
-A canonical **GPT-2** transformer implemented from scratch in C++ — training and
-inference — using only the C++ standard library. CPU-first and feature-complete
-in v1; a from-scratch CUDA backend is a designed-in future phase. See
-[`PLAN.md`](PLAN.md) for the full design and [`ROADMAP.md`](ROADMAP.md) for the
-build-order checklist (the next step is the first unchecked box).
+A canonical **GPT-2** transformer implemented from scratch in C++ — train, sample,
+and fine-tune your own model — using only the C++ standard library.
+
+**Scope (v1 / MVP):** GPT-2's *architecture*, not its scale. The forward pass,
+backward pass and AdamW step are verified against PyTorch to ~1e-6, so the model
+is a real GPT-2 — just small, and trained on your own text with a character-level
+tokenizer. **Loading OpenAI's pretrained 124M/350M weights and the byte-level BPE
+tokenizer are deliberately out of MVP scope** (designed and shelved, see
+[`ROADMAP.md`](ROADMAP.md) → Deferred). CPU-first; a from-scratch CUDA backend is a
+designed-in future phase.
+
+See [`ROADMAP.md`](ROADMAP.md) for what is done and what is next, and
+[`PLAN.md`](PLAN.md) for the design rationale.
 
 ## Build & test
 

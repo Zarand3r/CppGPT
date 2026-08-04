@@ -1,19 +1,31 @@
 # cppgpt — Roadmap (feature checklist)
 
-The running answer to "what do we build next." Flat list of core features, in build order. Design rationale, interfaces, risks, and DoD live in `PLAN.md`.
+**Goal (v1 / MVP):** train, sample from, and **fine-tune your own** small model end to end on your own
+text — using a *canonical GPT-2 architecture*, not GPT-2's scale. **No pretrained-weight loading, no
+124M/350M, no BPE.** The value kept from "canonical" is that the architecture and training step are
+numerically verified against PyTorch (M1, met at ~1e-6) — it is a real GPT-2, just small.
 
-**Locked decisions:** CPU-first v1, feature-complete **canonical GPT-2** (tanh GELU, bias=True, vocab 50257, fp32). Hand-written backward over the fixed GPT-2 graph (no tape). Std-only C++, single Bazel module (hermetic LLVM/Clang + Python). GPU = from-scratch CUDA, designed-in future phase (device seam now, kernels later).
+**MVP gate (the whole product, one loop):**
+```sh
+prepare  corpus.txt  base.bin --val-frac 0.1        # tokenize + hold out a val split
+train    base.bin --steps N --val base.val.bin --ckpt base.ckpt
+generate --checkpoint base.ckpt --prompt "..." --n 200
+prepare  target.txt target.bin --vocab base.bin.vocab   # SAME vocab
+train    target.bin --init-from base.ckpt --lr 3e-4 --ckpt tuned.ckpt
+generate --checkpoint tuned.ckpt --prompt "..." --n 200
+```
+Binary: val loss descends on both runs; fine-tuning lowers val loss **on the target corpus** versus
+the base checkpoint; both runs reproduce exactly from their seed.
 
-Legend: `[ ]` todo · `[~]` in progress · `[x]` done. **Next step = first unchecked box** within the
-current milestone.
+Legend: `[ ]` todo · `[~]` in progress · `[x]` done. Design rationale lives in `PLAN.md`, measured
+numbers in `docs/measurements.md`, lessons in `docs/engineering-lessons.md`.
 
 **Every milestone's acceptance gate includes one `review-codify-loop` run** — adversarial review,
-triage with no silent drops, and lessons codified into `docs/engineering-lessons.md`. A milestone
-whose functional gate passes but which left no review cycle behind is not closed.
+triage with no silent drops, and lessons codified. A milestone whose functional gate passes but which
+left no review cycle behind is not closed.
 
-**Current focus (M2):** cache-blocked + vectorized matmul (line under "M2"), to close the measured
-~10× gap to the 30 GFLOP/s gate; then gradient accumulation. The one open M0 box (CI) is real but
-not on the M2 critical path.
+**Status:** the *engine* is done and verified. Everything below is CLI wiring plus a val/eval path —
+no new subsystems.
 
 ---
 
@@ -39,65 +51,70 @@ not on the M2 critical path.
 - [x] Finite-difference gradient checker test (`model_test` end-to-end gradcheck + `tests/numeric.hpp`)
 - [x] **Gate MET:** cppgpt matches canonical GPT-2 in PyTorch — forward ≤ 1e-4, gradients ≤ 1e-3, 10-step AdamW loss ≤ 1e-3 (measured ~1e-6; `scripts/gen_fixtures.py` → committed `.bin` → `tests/integration/parity_test`). **M1 complete.**
 
-## M2 — TinyShakespeare convergence + CPU perf
-- [x] `dataloader` (mmap uint16, shuffled epochs, trailing partial batch dropped) · `tools/prepare.cpp` (text → uint16 `.bin` + `.vocab` sidecar) · `scripts/prepare_shakespeare.py` (corpus download only — tokenization stays in the C++ `CharTokenizer`, so there is no second tokenizer to drift)
-- [x] `checkpoint` (64-byte versioned header + raw fp32, FNV-1a-64 checksum over header+payload, atomic tmp→fsync→rename) + AdamW moment/step resume + periodic save in `tools/train`
-- [~] cosine+warmup LR schedule (`cosine_lr`) · `clip_grad_norm` (+ `GPT2::clip_grad_norm`) **done**, both wired into `tools/train`; **gradient accumulation still to do** (op backwards already `+=`; needs the micro-batch loop + 1/K loss scaling)
-- [ ] **Eval path (blocks the convergence gate; currently unimplementable):** `prepare --val-frac`
-      writing train/val `.bin`s · `train --val/--eval-interval` logging val loss + tokens/s + elapsed +
-      peak RSS · model/batch/lr as CLI flags (`tools/train.cpp` hardcodes L3/H4/C64/T32)
-- [ ] **Sample from a saved checkpoint** — `generate --checkpoint <ckpt> --vocab <.vocab> --prompt`.
-      M2's DoD promises a *sampleable* checkpoint; nothing can read one today (`tools/generate` trains
-      in-process, and `generate()` demands a full-length context).
-- [ ] Cache-blocked matmul · `std::thread` work pool (**static** partition; reduction order independent
-      of `T` and thread count)
-- [x] Sampling: argmax / temperature / top-k (`sample.hpp`; `top_k = 1` dispatches to argmax so greedy decoding is tie-stable)
-- [x] `tools/generate.cpp` (+ `generate.hpp` sliding-window decode; `forward(tokens, nullptr)` = logits-only inference)
-- [~] `tools/bench.cpp` (matmul GFLOP/s) — **written but NOT on `main`**: lives on branch `m2-bench` (PR #20), unmerged. Merge before quoting any number it produced.
-- [ ] **Gate (rewritten — the old one-line version was half-passed with zero work):**
-  1. `matmul_forward` ≥ 30 GFLOP/s single-thread at `BT=1024, C=768, OC=3072` under `--config=release`.
-     *Direction, shape and config are all load-bearing:* `matmul_backward` already measures ~37–42
-     GFLOP/s (its inner loop carries no reduction and auto-vectorizes), so an unqualified
-     "matmul ≥ 30" passes today. Baselines and the `-march=native` finding: `docs/measurements.md` M-1/M-2.
-  2. Threading: ≥ 12× aggregate over single-thread on that shape, with a **static** row partition whose
-     reduction order is independent of `T` **and of thread count**, output bit-identical across 1/2/16
-     threads. (This is also `M3-R10`'s mitigation and the constitution's determinism clause — a dynamic
-     partition violates both.)
-  3. ≥ 2,000 tokens/s end-to-end at 6L/384C/6H, T=256 — the unit the convergence gate actually consumes
-     (`docs/measurements.md` M-3: today 197 tok/s; the ≤1.6 val-loss run needs ~25–40M tokens).
-  4. val loss ≤ 1.6 on a held-out split — **blocked**: needs the val-split/eval work below.
+## M2 — MVP: train · infer · fine-tune
 
-## M3 — BPE + pretrained GPT-2 124M inference
+The three verbs. Each box is wiring over code that already exists and is tested.
 
-**Full executable plan: [`docs/M3_INFERENCE_PLAN.md`](docs/M3_INFERENCE_PLAN.md)** — slices, binary
-gates, fixture inventory and risk register, grounded in measured values. Summary below.
+### Train — make it usable and knowable
+- [ ] `prepare --val-frac F` → `<out>.train.bin` + `<out>.val.bin` (contiguous tail split)
+- [ ] `train` CLI flags: `--layers --heads --embd --ctx --batch --lr --steps --seed --ckpt`
+      (`tools/train.cpp` currently hardcodes L3/H4/C64/T32; only steps and the ckpt path are arguments)
+- [ ] Eval loop: `--val <bin> --eval-interval N` logging **val loss**, tokens/s, elapsed, peak RSS.
+      Without a val number you cannot tell training from memorizing.
+- **Gate:** val loss descends and stays below a same-corpus bigram baseline; two runs at the same seed
+  produce bit-identical loss curves.
 
-- [ ] **S1** Absolute-position generation (`generate_absolute`, right-pad-and-read). **Blocking:** today's
-      sliding-window `generate()` shifts every token's `wpe` row each step, so it diverges from HF at
-      the *first* token — verified. The existing sliding-window mode stays, unchanged.
-- [ ] **S2** `scripts/convert_hf_gpt2.py` (HF → raw fp32) + `tools/import_hf` (writes the checkpoint
-      container in C++, so the header/checksum format is never duplicated). Transpose all 4 Conv1D
-      weight matrices; drop the tied `lm_head`; QKV is Q‖K‖V and needs no reordering (all verified).
-- [ ] **S3** BPE: byte-level encoder + merges + **hand-rolled** pre-tokenizer (`std::regex` supports
-      none of `\p{L}`/`\p{N}`/UTF-8/lookahead). Ship `vocab.bpe` only — the whole 50,257 vocab is
-      reconstructible from it, so no JSON parser.
-- [ ] **S4** KV cache (fp32; the `Storage` that later becomes the E2/E3 quantization seam) · prefix +
-      autoregressive decode · logit cropping (last position)
-- [ ] **S5** `tools/infer` — **the ultimate integration test**: real GPT-2 124M weights + our BPE +
-      greedy decode, token-exact vs HF.
-- [ ] **S6** Inference-only arenas (skip grad/act-grad): 124M at T=1024 costs 5.32 GB today vs 2.61 GB.
-- [ ] **Gate:** tokenizer byte-exact vs tiktoken (1000+ strings); generation token-exact vs HF for ≥ 50
-      tokens; KV-cache on/off identical. Pick the greedy prompt by *measured* top1−top2 margin (worst
-      observed over 250 steps: 0.0072 vs ~1e-4 fp32 error — only 7–70× headroom, so an arbitrary
-      prompt is not safe).
+### Infer — generate from a checkpoint you trained
+- [ ] `generate --checkpoint <ckpt> --vocab <vocab> --prompt "..." --n K [--temperature --top-k --seed]`
+      (today `tools/generate` calls `init_weights` and trains in-process — it can *never* read a `.ckpt`)
+- [ ] **Short prompts.** `generate()` copies exactly `seq_len` tokens, so a 5-token prompt is impossible.
+      Place the prompt at `[0, len)`, forward, read logits at `len-1` (causality makes the padded tail
+      inert). Same fix as the shelved `M3-S1`, minus the HuggingFace gate.
+- **Gate:** a checkpoint trained to low loss produces text recognizably in the corpus's style from a
+  short prompt; greedy decoding (`--top-k 1`) is deterministic.
 
-## M4 — Polish + GPT-2 medium inference + GPU-seam readiness
-- [ ] Structured logging everywhere · `Result`+`[[nodiscard]]` at all loader/parser/checkpoint boundaries
-- [ ] Observability CSV (tokens/sec, grad norm, peak memory, step time)
-- [ ] GPT-2 medium (350M) inference — HF parity + measured tokens/sec
-- [ ] GPU-seam audit (every op carries `Device`; no host-pointer leakage)
-- [ ] `docs/ARCHITECTURE.md` · `docs/CONTRIBUTING.md` (incl. "how to add a CUDA backend")
-- [ ] **Gate:** clone → build → train baby → generate 124M → infer 350M → read docs, under an hour
+### Fine-tune — continue from a checkpoint on new text
+- [ ] `prepare --vocab <existing.vocab>` — tokenize a *new* corpus with the **original** vocabulary.
+      **This is the piece that makes fine-tuning possible at all:** a fresh corpus yields a different
+      char vocab, hence a different `vocab_size`, hence `ShapeMismatch` on load. Must fail loudly on a
+      byte outside the original vocab rather than silently remapping.
+- [ ] `train --init-from <ckpt>` — load **weights only**, reset optimizer moments/step and restart the
+      LR schedule (a plain `--ckpt` resume deliberately restores moments; fine-tuning wants fresh ones
+      at a lower LR). The weights-only path already exists — `load_checkpoint` on a moment-less file
+      resets Adam and says so.
+- **Gate:** fine-tuning a base checkpoint on a target corpus lowers val loss **on the target** relative
+  to the base checkpoint, without a from-scratch run beating it in the same wall-clock.
+
+### Enough performance to iterate (not a benchmark contest)
+- [ ] Re-measure and fix the build flags: `-march=native` measures **1.9× SLOWER** than plain `-O3` on
+      the dominant kernel (`docs/measurements.md` M-1). Free speedup, no code change.
+- [ ] `tools/bench` — merge branch `m2-bench` (PR #20) so the number has a reproducible source.
+- [ ] Then reassess. At ~200 tok/s a small model is trainable in minutes-to-hours; blocking/threading
+      only if iteration is actually painful. **No 30 GFLOP/s gate for the MVP** — that target existed
+      to make a TinyShakespeare convergence run finish overnight, which is no longer the goal.
+- [ ] *(optional)* Gradient accumulation — only if a batch you want exceeds RAM (measured: B=64 at
+      T=256 costs 8.15 GB).
+
+---
+
+## Deferred — GPT-2 scale (out of MVP scope; nothing here is deleted)
+
+Everything below was planned in detail and is **shelved, not cancelled**. The design work stands if
+the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the inference path.
+
+- [ ] **Byte-level BPE tokenizer.** Needed only to share GPT-2's 50257 vocabulary. Char-level is the
+      MVP tokenizer; it already round-trips exactly and needs no assets. (Full spec, traps and
+      fixtures: `docs/M3_INFERENCE_PLAN.md` M3-S3.)
+- [ ] **Load pretrained GPT-2 124M weights** (`convert_hf_gpt2.py` + `tools/import_hf`) and the
+      token-exact-vs-HuggingFace gate. The mapping is fully researched and verified — Conv1D
+      transposes, Q‖K‖V order, the layer-bisect fixture. (`M3-S2`, `M3-S5`.)
+- [ ] **KV cache** — an inference speedup, irrelevant at MVP context lengths. (`M3-S4`.)
+- [ ] **Inference-only arenas** — 124M at T=1024 costs 5.32 GB vs 2.61 GB; immaterial for a small
+      model on a 120 GB host. (`M3-S6`.)
+- [ ] **GPT-2 medium (350M) inference**, GPU-seam audit, observability CSV, `docs/ARCHITECTURE.md`.
+- [ ] **CI** — one Linux build + `ldd` allow-list + ASan/UBSan. The only genuinely open M0 box; worth
+      doing whenever, independent of scope.
+- [ ] **30 GFLOP/s matmul + threading** — revisit only if training speed becomes the binding constraint.
 
 ---
 
