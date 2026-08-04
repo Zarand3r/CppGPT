@@ -53,8 +53,9 @@ bazel run //tools:train -- --data "$PWD"/data/shakespeare.train.bin \
 # small built-in corpus:
 bazel run //tools:train -- --data "$PWD"/data/shakespeare.txt --steps 200
 
-# 4. train a baby model in-process and sample text from it
-bazel run //tools:generate -- "$PWD"/data/shakespeare.txt 400 256
+# 4. sample from the checkpoint you trained
+bazel run //tools:generate -- --checkpoint "$PWD"/data/shakespeare.ckpt \
+    --vocab "$PWD"/data/shakespeare.vocab --prompt "To be" --n 300
 
 # matmul throughput (always measure in release)
 bazel run --config=release //tools:bench -- 20

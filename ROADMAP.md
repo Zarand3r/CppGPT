@@ -78,14 +78,14 @@ The three verbs. Each box is wiring over code that already exists and is tested.
   produce bit-identical loss curves.
 
 ### Infer — generate from a checkpoint you trained
-- [ ] `generate --checkpoint <ckpt> --vocab <vocab> --prompt "..." --n K [--temperature --top-k --seed]`
-- [ ] **Build the model from the checkpoint header.** `GPT2`'s ctor needs a `Config` *before*
+- [x] `generate --checkpoint <ckpt> --vocab <vocab> --prompt "..." --n K [--temperature --top-k --seed]`
+- [x] **Build the model from the checkpoint header.** `GPT2`'s ctor needs a `Config` *before*
       `load_checkpoint` can validate one against it — so `generate` must first peek the header
       (`CheckpointFile::open`, already public, returns it), construct from that `Config`, and only
       then load. Without this step `--checkpoint` cannot work at all: you would have to retype the
       exact architecture on the command line and a mismatch is `ShapeMismatch`.
       (today `tools/generate` calls `init_weights` and trains in-process — it can *never* read a `.ckpt`)
-- [ ] **Short prompts.** `generate()` copies exactly `seq_len` tokens, so a 5-token prompt is impossible.
+- [x] **Short prompts.** `generate()` copies exactly `seq_len` tokens, so a 5-token prompt is impossible.
       Place the prompt at `[0, len)`, forward, read logits at `len-1` (causality makes the padded tail
       inert). Same fix as the shelved `M3-S1`, minus the HuggingFace gate.
 - **Gate:** a checkpoint trained to low loss produces text recognizably in the corpus's style from a

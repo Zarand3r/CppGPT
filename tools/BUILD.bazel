@@ -26,7 +26,10 @@ cc_binary(
 cc_binary(
     name = "generate",
     srcs = ["generate.cpp"],
-    deps = ["//:cppgpt"],
+    deps = [
+        ":cli",
+        "//:cppgpt",
+    ],
 )
 
 cc_binary(
