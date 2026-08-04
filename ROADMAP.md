@@ -70,9 +70,9 @@ The three verbs. Each box is wiring over code that already exists and is tested.
       `<stem>.val.bin`, `<stem>.vocab` (contiguous tail split). Today `prepare` takes an output
       *filename* and emits one `.bin` + a `.bin.vocab` sidecar — moving to a stem is what makes the
       train/val pair and the fine-tune vocab-reuse name cleanly.
-- [ ] `train` CLI flags: `--layers --heads --embd --ctx --batch --lr --steps --seed --ckpt`
+- [x] `train` CLI flags: `--layers --heads --embd --ctx --batch --lr --min-lr --warmup --clip --steps --seed --ckpt`
       (`tools/train.cpp` currently hardcodes L3/H4/C64/T32; only steps and the ckpt path are arguments)
-- [ ] Eval loop: `--val <bin> --eval-interval N` logging **val loss**, tokens/s, elapsed, peak RSS.
+- [x] Eval loop: `--val <bin> --eval-interval N --eval-batches K` logging **val loss**, tokens/s, elapsed, peak RSS.
       Without a val number you cannot tell training from memorizing.
 - **Gate:** val loss descends and stays below a same-corpus bigram baseline; two runs at the same seed
   produce bit-identical loss curves.
