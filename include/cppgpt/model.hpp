@@ -1,4 +1,4 @@
-// cppgpt GPT-2 model: parameter/activation arenas and the forward pass.
+// cppgpt GPT-2 model: parameter/activation arenas and the full training step.
 //
 // Parameters and activations each live in one Storage arena; ParamTensors /
 // ActTensors are non-owning views (pointers) into them, laid out in llm.c .bin
@@ -6,7 +6,9 @@
 // The classifier head is weight-tied to the token embedding (lm_head == wte), so
 // there is no separate lm_head parameter.
 //
-// This header is forward-only for now; gpt2_backward + AdamW arrive next.
+// The model owns the whole training step: forward (loss, or logits-only when
+// targets == nullptr), backward, gradient clipping and the AdamW update, plus
+// versioned checkpoint save/load (see cppgpt/checkpoint.hpp).
 #pragma once
 
 #include <cstddef>
@@ -98,6 +100,8 @@ public:
     // Backward pass for the same tokens/targets as the preceding forward(),
     // accumulating into the gradient arenas. `dwte` receives contributions from
     // both the classifier (tied head) and the embedding paths (weight tying).
+    // Requires that the preceding forward() was given targets (it consumes the
+    // probabilities that only a loss-computing forward fills); asserts otherwise.
     void backward(const int* tokens, const int* targets);
 
     // AdamW step over all parameters using the current gradients (from backward).
@@ -115,8 +119,11 @@ public:
     [[nodiscard]] float clip_grad_norm(float max_norm) noexcept;
 
     // Write a checkpoint to `path` (atomic tmp->rename): the weights, plus the
-    // AdamW moments and step counter when the optimizer has run (so training can
-    // resume trajectory-exact). See cppgpt/checkpoint.hpp for the format.
+    // AdamW moments and step counter when the optimizer has run. NOTE: the RNG
+    // engine state, the dataloader cursor and the LR-schedule position are NOT
+    // saved, so a resumed run restores weights and optimizer state exactly but
+    // replays the data order and the schedule from step 0 — resume is
+    // state-exact, not trajectory-exact. See cppgpt/checkpoint.hpp for the format.
     [[nodiscard]] Result<void> save_checkpoint(const char* path) const noexcept;
 
     // Load a checkpoint written by save_checkpoint. Validates magic/version, that
@@ -124,8 +131,9 @@ public:
     // checksum — returning VersionMismatch / ShapeMismatch / CorruptCheckpoint /
     // ChecksumMismatch without touching the live arenas on failure. On success
     // restores weights (and moments + step, if the file carries them). A
-    // moment-less file leaves the optimizer state at zero (a warned, bounded
-    // degradation on resume, not silent).
+    // moment-less file RESETS the optimizer moments and step to zero, so the
+    // state always matches what is logged (a warned, bounded degradation, never
+    // a silent carry-over of a previous run's moments).
     [[nodiscard]] Result<void> load_checkpoint(const char* path) noexcept;
 
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
@@ -166,6 +174,11 @@ private:
     float* v_ = nullptr;
     int adam_step_ = 0;  // 1-based step counter for bias correction
     float mean_loss_ = 0.0f;
+    // Whether the last forward() computed probs/mean_loss (i.e. had targets).
+    // backward() consumes acts().probs, so running it after an inference-only
+    // forward would silently produce gradients from another batch's (or
+    // uninitialized) probabilities.
+    bool has_loss_ = false;
 };
 
 }  // namespace cppgpt

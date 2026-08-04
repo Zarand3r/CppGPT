@@ -55,8 +55,11 @@ private:
     std::mt19937_64 engine_;
     float cached_ = 0.0f;
     bool has_cached_ = false;
-    // NOTE: exact engine-state serialization for checkpoint resume (M2) will use
-    // the standard operator<</>> on std::mt19937_64; not needed before then.
+    // NOTE: engine state is deliberately NOT serialized into checkpoints. A
+    // resumed run reseeds from the run's fixed seed, so weights and optimizer
+    // moments resume exactly while the data order and sampling stream restart.
+    // If bit-exact resume is ever required, serialize via the standard
+    // operator<</>> on std::mt19937_64 and store it alongside the checkpoint.
 };
 
 }  // namespace cppgpt

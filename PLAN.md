@@ -47,7 +47,7 @@ Non-numeric: the code reads cleanly, ownership is obvious, hot paths perform no 
 - **Canonical GPT-2 semantics.** Where nanoGPT or other references deviate from stock GPT-2 (HuggingFace `gpt2` / OpenAI release), we follow GPT-2 — see "Canonical GPT-2 conformance." This is what lets M3 load HF weights and match `transformers`.
 - **Both training and inference.** Inference may share or specialize the forward pass; backward is training-only.
 - **Tiny scale first, then scale.** v1 works on a laptop CPU in fp32 on a tiny model in minutes; feature-complete for 124M/350M *inference*. Big-model *training* is the GPU phase's job.
-- **fp32 in v1.** Mixed precision (bf16/tf32) is a GPU-phase concern; `DType` exists but is `F32`-only in v1.
+- **fp32 in v1.** Mixed precision (bf16/tf32) is a GPU-phase concern. *(As built: no `DType` type was created — v1 is fp32 throughout, so the enum was deferred until a second dtype actually exists. The device seam is the `Device` tag + per-op dispatch.)*
 - **Right-sized abstractions.** Every abstraction must encode an invariant, hide real complexity, or localize a known axis of change. No speculative abstraction for capabilities we won't ship in v1. The one forward-looking exception is the **device seam** (`Storage` device tag + op dispatch + real `DType`), justified because it makes the planned GPU phase additive instead of a rewrite.
 
 ## Non-Goals (v1)
@@ -91,7 +91,7 @@ Non-numeric: the code reads cleanly, ownership is obvious, hot paths perform no 
 
 ## Existing System Understanding
 
-Repo state: greenfield at `/home/rbao/cppgpt/`. Present: `CLAUDE.md` (skill wiring), `PLAN.md` (this file), `ROADMAP.md` (the short checklist, kept in sync with this plan). No build system, no source, no commits yet.
+Repo state (updated): **M0 and M1 are complete** — the parity gate is met (~1e-6 measured). **M2 is in progress**: dataloader (mmap uint16) + `tools/prepare`, checkpoint save/resume, sampling + generation, cosine LR schedule + grad clipping, and `tools/bench` have all landed; the cache-blocked/threaded matmul and gradient accumulation remain. `ROADMAP.md` is the live checklist and takes precedence over this document where they disagree; the design sections below are kept for rationale, with **as-built** notes where the implementation diverged.
 
 The GPT-2 math is public and well-trodden; the verification oracle is a ~100-line PyTorch script. The hard part is not "what to compute" — it is laying out the C++ so the math stays obvious, the data stays dense, the hot path stays allocation-free, and the device seam stays clean enough that a CUDA backend drops in later.
 
@@ -146,7 +146,7 @@ cppgpt/
 
 Modules and responsibilities:
 
-1. **Storage / TensorView.** `Storage` owns an aligned fp32 buffer **tagged with a `Device`** (arena-allocated for activations; persistent for params/grads). `TensorView` is a non-owning `{float*, shape, stride, rank, device}`, ranks up to 4 (B, T, C, H). `DType` exists (`F32` only) for forward-compat. No `std::variant`, no virtuals.
+1. **Storage / TensorView.** `Storage` owns an aligned fp32 buffer **tagged with a `Device`** (arena-allocated for activations; persistent for params/grads). *(As built: `Storage` shipped as a 64B-aligned bump arena, move-only, sized in floats, fail-fast on OOM. `TensorView` and `DType` were never built — ops take raw `float*` + dims, so neither had a consumer. No `std::variant`, no virtuals.)*
 2. **Ops (forward).** Free functions, no allocation inside, caller passes output buffers. Each **dispatches on `device`** (CPU impl in v1; the seam for CUDA later). Signatures mirror llm.c: `matmul_forward(out, inp, weight, bias, B,T,C,OC)`, `layernorm_forward(out, mean, rstd, x, w, b, B,T,C)`, `attention_forward(out, preatt, att, qkv, B,T,C,NH)`, `gelu_forward` (tanh), `softmax`, `residual`, `encoder_forward`, `crossentropy_forward`.
 3. **Ops (backward).** Symmetric, hand-derived. Each takes upstream gradient + saved activations, produces downstream gradient. No autograd tape — the graph is the fixed GPT-2 architecture.
 4. **Model.** `struct GPT2 { Config cfg; Storage params, grads, activations, act_grads; AdamState opt; }`. Param layout matches llm.c `.bin` ordering. **Weight tying:** `lm_head` aliases `wte` (same offset in `params`); backward adds into that one region from both paths. `gpt2_forward` writes activations and sets loss; `gpt2_backward` consumes them into `grads`; `gpt2_update` runs AdamW.
@@ -163,7 +163,9 @@ Build: single Bazel module (bzlmod), hermetic LLVM/Clang 20 with statically-link
 
 ```cpp
 enum class Device { CPU };          // CUDA reserved for the GPU phase; v1 ops assert device==CPU.
-enum class DType  { F32 };          // BF16/F16 reserved; assert-on-use in v1.
+// NOTE (as-built): there is no DType. v1 is fp32 throughout, so the enum was
+// deliberately not created until a second dtype exists (GPU / quantization
+// phase). The device seam that DOES exist is the Device tag + per-op dispatch.
 
 // Owning, device-tagged, arena-backed.
 class Storage {
@@ -188,20 +190,23 @@ struct TensorView {
     Device device;
 };
 
+// AS BUILT (model.hpp). Config stayed minimal — pure architecture, no training
+// recipe, no GQA hook, no dropout, no factories. Hyperparameters live in AdamW
+// (optimizer.hpp) and in the tools; nothing speculative was added.
 struct Config {
-    int   max_seq_len, vocab_size;          // 50257 for GPT-2
-    int   n_layer, n_head, n_kv_head, n_embd;   // n_kv_head defaults to n_head (GQA hook)
-    float dropout;                          // 0.0 in v1
-    // training recipe (M2+): learning_rate, weight_decay, beta1, beta2, eps,
-    //   grad_clip, warmup_iters, lr_decay_iters, min_lr, max_iters, batch_size.
-    // factories: baby(), shakespeare(), gpt2_124m(), gpt2_medium(); validate() -> Result<void,Error>.
+    int max_seq_len, vocab_size;   // 50257 for GPT-2
+    int n_layer, n_head, n_embd;
 };
 
-struct GPT2 {
-    Config   cfg;
-    Storage  params, grads;          // persistent; lm_head region aliases wte region (weight tying)
-    Storage  activations, act_grads; // per-step arenas, reset each step
-    AdamState opt;                   // m, v, step
+// AS BUILT: a class with private arenas + accessors, not a bare struct. The
+// AdamW moments are two lazily-allocated Storages (allocated on the first
+// update(), so inference pays no moment memory) plus an int step counter.
+class GPT2 {
+    Config cfg_;
+    Storage param_store_, grad_store_;        // persistent; lm_head aliases wte (weight tying)
+    Storage act_store_, act_grad_store_;      // per-step arenas
+    Storage scratch_store_;                   // attention-backward scratch (datt, dpreatt)
+    Storage m_store_, v_store_; int adam_step_;  // AdamW state (lazy)
 };
 
 // All ops: pure functions, no allocation, caller passes output buffer; dispatch on device.
@@ -212,12 +217,25 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
                      int B, int T, int C, int OC, Device dev);
 // ... layernorm, attention, gelu (tanh), softmax, residual, encoder, classifier, crossentropy: all symmetric.
 
-// Top-level (fixed GPT-2 graph; hand-written backward).
-void  gpt2_forward (GPT2& m, const int* tokens, const int* targets, int B, int T);  // sets loss
-void  gpt2_backward(GPT2& m);
-void  gpt2_update  (GPT2& m, float lr, float wd, float b1, float b2, float eps, int t);  // 2-group decay inside
-float clip_grad_norm(GPT2& m, float max_norm);
-float cosine_with_warmup(int it, int warmup, int decay_iters, float min_lr, float max_lr);
+// Top-level, AS BUILT (member functions; B/T are fixed at construction).
+void   GPT2::init_weights(Generator& gen);
+void   GPT2::forward (const int* tokens, const int* targets);  // targets==nullptr => logits only
+void   GPT2::zero_grads() noexcept;
+void   GPT2::backward(const int* tokens, const int* targets);  // requires a forward WITH targets
+void   GPT2::update  (const AdamW& opt) noexcept;              // 2-group decay inside
+float  GPT2::clip_grad_norm(float max_norm) noexcept;          // returns the pre-clip norm
+Result<void> GPT2::save_checkpoint(const char* path) const noexcept;
+Result<void> GPT2::load_checkpoint(const char* path) noexcept;
+
+// Free functions (optimizer.hpp / sample.hpp / generate.hpp / dataloader.hpp).
+float clip_grad_norm(float* grad, int n, float max_norm) noexcept;
+float cosine_lr(int step, float max_lr, float min_lr, int warmup, int max_steps) noexcept;
+int   argmax(const float* logits, int V) noexcept;
+int   sample(const float* logits, int V, float temperature, int top_k, Generator& gen);
+std::vector<int> generate(GPT2&, const int* ctx, int n_new, float temp, int top_k, Generator&);
+Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_t seed) noexcept;
+void  DataLoader::next_batch() noexcept;                       // inputs()/targets() borrow [B*T]
+Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcept;
 ```
 
 The signatures deliberately mirror **llm.c** — that repo is already bit-compared against PyTorch, so matching its shapes and `.bin` parameter ordering makes our weight converter and fixtures interchangeable and collapses verification effort. The only addition is the trailing `Device dev` on each op: in v1 it asserts `CPU`; in the GPU phase it selects a kernel. The math and the public API are otherwise device-agnostic.
@@ -293,7 +311,7 @@ Going CPU→GPU changes the *execution and memory model*, not the math. Three se
 
 1. **`Storage` carries a `Device`** and owns device memory. CPU = aligned host buffer; CUDA later = `cudaMalloc`'d arena. Same bump-allocator interface; allocation happens once and is reused (mandatory on GPU where `cudaMalloc` is expensive).
 2. **Ops dispatch on `device`.** `*_forward`/`*_backward` take a `Device` and select an implementation. v1 has only the CPU path; the GPU phase adds `.cu` kernels behind the same call site. The CPU implementation becomes the **numerical oracle** that validates every kernel via the existing fixture harness — exactly the llm.c → llm.cu relationship.
-3. **`DType` is real.** v1 is `F32` only, but the field exists so mixed precision (bf16/tf32 — a GPU-phase item) slots in without touching op signatures.
+3. **~~`DType` is real.~~** *(Not built.* v1 is fp32 throughout and no second dtype exists, so adding the enum would have been a speculative abstraction. Mixed precision arrives with the GPU phase; op signatures already carry `Device`, which is the seam that matters.)*
 
 What the GPU phase *adds* (out of v1 scope, listed so it is not forgotten): hand-written CUDA kernels (tiled matmul, fused attention, reduction-based layernorm/softmax/loss), host↔device transfer + streams, mixed precision, GPU-aware memory budgeting, and a relaxed determinism contract (GPU reductions are not bit-identical by default). None of these alter the v1 model or API.
 
@@ -358,7 +376,7 @@ What the GPU phase *adds* (out of v1 scope, listed so it is not forgotten): hand
 
 **Single-file vs multi-file (resolved).** Multi-file, per-module `.hpp/.cpp`, one library + several CLIs + one test binary. Strict include hygiene; the matmul kernel findable in seconds.
 
-**Abstraction discipline (resolved, right-sized).** Pluggable only where a second implementation already exists or is on the v1 schedule: `Tokenizer` (char + BPE) and `Sampler` (greedy/temperature/top-k). `LayerNorm`, `GELU`, attention, MLP are concrete. `Config::n_kv_head` exists as a five-line GQA hook. Everything else is concrete until a real need appears.
+**Abstraction discipline (resolved, right-sized).** Pluggable only where a second implementation already exists or is on the v1 schedule: `Tokenizer` (char + BPE) and `Sampler` (greedy/temperature/top-k). `LayerNorm`, `GELU`, attention, MLP are concrete. Everything else is concrete until a real need appears. *(As built: `Config` carries architecture only — no `n_kv_head` GQA hook and no `dropout` field were added, since neither has a v1 implementation. Sampling shipped as free functions, not a `Sampler` interface — there is one implementation.)*
 
 ## Risks and Bottlenecks
 
@@ -366,7 +384,7 @@ What the GPU phase *adds* (out of v1 scope, listed so it is not forgotten): hand
 |---|---|---|---|---|
 | R1 | **Numerical drift hidden until late.** A subtle indexing bug in attention/layernorm diverges silently from the reference. | Build the fixture harness *first* (M0): PyTorch (tanh GELU) dumps inputs, weights, every activation; cppgpt loads and asserts. | Per-tensor max-abs-error ≤ 1e-4. | Bisect by tensor name → offending op → focused unit test. |
 | R2 | **Backward derivation errors.** Hand-derived gradients are error-prone (attention, layernorm). | Per-op finite-difference Jacobian on tiny tensors + fixture compare. | Relative error ≤ 1e-3. | Re-derive on paper; cross-check vs `torch.autograd.grad`. |
-| R3 | **CPU matmul is a brick.** Naive triple-loop on 124M is unusable. | Bench naive matmul at M2 start; if < 5 GFLOP/s, plan blocking immediately. | ≥ 30 GFLOP/s single-thread fp32 on a modern x86 core. | Cache-blocked matmul; then compile-gated AVX2 intrinsics (still no external lib). |
+| R3 | **CPU matmul is a brick.** Naive triple-loop on 124M is unusable. | **FIRED.** `tools/bench` measures **≈3.0 GFLOP/s** single-thread (Ryzen 9 9950X3D, `--config=release`) — below the 5 GFLOP/s trigger. | ≥ 30 GFLOP/s single-thread fp32 on a modern x86 core. | Now the mandated path, not a contingency: break the serial FMA chain with multiple accumulators, register-block over BT rows, then thread. Note `-march=native` is already on, so this is a code-shape fix, not a flag. |
 | R4 | **BPE/tokenizer parity.** Unicode, byte fallbacks, regex pre-tokenization; `std::regex` lacks `\p{L}`/`\p{N}`. | Hand-roll the pre-tokenizer; test vs tiktoken on 1000 strings before integrating. | 100% token-stream match. | Pre-tokenize in Python for training-only paths (delays standalone inference). |
 | R5 | **Activation memory.** Attention score buffers (`preatt`+`att`, each `L·B·NH·T·T` fp32) dominate: for 124M at B=8/T=1024 that pair alone is ~9.6 GB — past a laptop. **v1 trains only the ~10M baby model; 124M/350M are inference-only**, where no saved-activation graph exists. | Measure baby-model peak at M2; measure inference peak at M3/M4. | Baby training peak ≤ 2 GB; GPT-2 medium inference peak ≤ 4 GB. | Reduce B/T; recompute attention in backward; activation checkpointing → GPU phase. |
 | R6 | **Abstraction creep under "production-grade".** | Allow-list of pluggable interfaces fixed up front (`Tokenizer`, `Sampler`); anything else concrete until a 2nd impl exists. | Review rejects new interfaces without ≥2 impls. | Delete the interface; inline the impl. |
@@ -386,7 +404,7 @@ Each maps to a test, assertion, or check.
 7. **Ownership is unambiguous** — `Storage` owns; `TensorView` borrows. No `shared_ptr<float>`. *(Review gate.)*
 8. **Every op carries its `Device`; v1 asserts `CPU`.** The seam never silently assumes host memory. *(Op-entry assertion + R7 lint.)*
 9. **Verification is run, not promised** — every commit touching an op runs the fixture vs PyTorch. *(CI gate.)*
-10. **No third-party runtime deps** — `ldd` allow-list (libc/libm/libstdc++/libpthread). *(CI gate.)*
+10. **No third-party runtime deps** — `ldd` allow-list (libc/libm/libpthread + the dynamic loader; **not** libstdc++ — libc++ is statically linked by the hermetic toolchain). *(CI gate — not yet built.)*
 11. **Efficiency/approximation modes never relax the canonical gates.** Any quantized, sparse, linear, or otherwise-approximate path is opt-in and validated against the fp32 CPU path within a *documented, committed* tolerance; the fp32 CPU path remains the parity oracle. A mode that loosens, skips, or replaces a canonical parity check to "pass" is out of scope by construction. *(Applies to the whole Efficiency & Research Track; exact modes like E1 flash attention still meet the standard fp32 tolerance.)*
 
 (Future-phase invariant, M-GPU: CPU and CUDA paths are numerically equivalent within a documented tolerance — same fixture harness, both backends.)
@@ -510,7 +528,7 @@ Things we explicitly do *not* build in v1, and the trigger that would change tha
 
 ## Recommended Next Step
 
-Hand off to `principal-production-engineer` and start **M0** — the `Storage`/`TensorView`/`Config` skeleton, the device-dispatched matmul forward+backward, and the canonical-GPT-2 fixture harness. It is the cheapest experiment that retires the highest-impact risk (R1: silent numerical drift) and exercises the device seam (R7) from the first commit.
+*(Superseded — M0/M1 are complete and the parity gate is met.)* The next step is the **M2 performance work**: R3's cheap experiment has now run, and `tools/bench` measures the naive matmul at **≈3.0 GFLOP/s single-thread** against a 30 GFLOP/s gate. The scalar `acc += inp[c]*w[c]` reduction is a single serial FMA dependency chain — note that `--config=release` already passes `-march=native`, so the vector ISA was available and the compiler still could not vectorize it. The fix is therefore the code shape, not a compiler flag: multiple independent accumulators to break the chain, then register-blocking over BT rows for weight reuse, then the `std::thread` row partition. Gradient accumulation follows.
 
 ## Open Questions / Decision Points
 

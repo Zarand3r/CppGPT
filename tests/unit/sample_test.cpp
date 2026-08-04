@@ -6,9 +6,12 @@
 // draws the empirical distribution matches softmax).
 #include "cppgpt/sample.hpp"
 
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
+#include "cppgpt/core.hpp"
 #include "cppgpt/random.hpp"
 #include "tests/check.hpp"
 
@@ -68,6 +71,33 @@ int main() {
             if (sample(logits, 2, 1.0f, 0, g) == 1) ++count1;
         const double freq = static_cast<double>(count1) / N;
         CHECK(freq > 0.72 && freq < 0.745);  // ≈ 0.7311
+    }
+
+    // ---- top_k == 1 is exactly argmax, even when the maximum is TIED ----
+    // The top-k threshold is `>= kth_largest`, so ties would all stay eligible
+    // and softmax would spread over them — breaking the documented "top_k = 1
+    // gives greedy decoding" and greedy determinism vs the PyTorch reference.
+    {
+        const float logits[6] = {3.0f, 3.0f, 3.0f, 0.0f, 0.0f, 0.0f};  // three-way tie
+        Generator g(31337ULL);
+        bool always_argmax = true;
+        for (int i = 0; i < 200; ++i)
+            always_argmax = always_argmax && (sample(logits, 6, 1.0f, 1, g) == argmax(logits, 6));
+        CHECK(always_argmax);
+    }
+
+    // ---- non-finite logits fail fast instead of silently returning a token ----
+    // A NaN/inf distribution means upstream numerics already broke (diverged lr,
+    // corrupt weights). Returning token 0 forever would hide it.
+    {
+        const float nan_logits[3] = {std::nanf(""), std::nanf(""), std::nanf("")};
+        Generator g(5ULL);
+        CHECK_DIES(IGNORE(sample(nan_logits, 3, 1.0f, 0, g)));
+
+        const float inf_logits[3] = {-std::numeric_limits<float>::infinity(),
+                                     -std::numeric_limits<float>::infinity(),
+                                     -std::numeric_limits<float>::infinity()};
+        CHECK_DIES(IGNORE(sample(inf_logits, 3, 1.0f, 0, g)));
     }
 
     return cppgpt::test::summary();

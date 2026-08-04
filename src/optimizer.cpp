@@ -44,6 +44,10 @@ float clip_grad_norm(float* grad, int n, float max_norm) noexcept {
         sumsq += g * g;
     }
     const float norm = static_cast<float>(std::sqrt(sumsq));
+    // NaN/Inf gradients mean the training step already diverged. `norm > max_norm`
+    // is false for NaN, so without this the norm would be neither clipped nor
+    // reported and the corruption would propagate into the weights unnoticed.
+    ASSERT_MSG(std::isfinite(norm), "clip_grad_norm: gradients are not finite (training diverged)");
     if (max_norm > 0.0f && norm > max_norm) {
         const float scale = max_norm / (norm + 1e-6f);
         for (int i = 0; i < n; ++i) grad[i] *= scale;

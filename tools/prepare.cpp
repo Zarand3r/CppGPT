@@ -68,6 +68,11 @@ int main(int argc, char** argv) {
         std::ofstream vf(vocab_path, std::ios::binary | std::ios::trunc);
         const std::string_view v = tok.vocab();
         vf.write(v.data(), static_cast<std::streamsize>(v.size()));
+        // close() before checking: a vocab is far smaller than the stream buffer,
+        // so without an explicit flush the write has not reached the disk yet and
+        // `!vf` would report success on a full filesystem — leaving the .bin and
+        // its .vocab silently out of sync.
+        vf.close();
         if (!vf) {
             std::fprintf(stderr, "prepare: writing '%s' failed\n", vocab_path.c_str());
             return 1;

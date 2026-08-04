@@ -23,6 +23,38 @@ bazel run   //scripts:env_info    # show the hermetic Python interpreter
 No external runtime dependencies: the shipped binary links only `libc`, `libm`,
 and the dynamic loader (libc++ is static). Verify with `ldd bazel-bin/...`.
 
+## Run
+
+```sh
+# 1. get a corpus (downloads TinyShakespeare, ~1 MB; does not tokenize)
+scripts/prepare_shakespeare.py data/shakespeare.txt
+
+# 2. tokenize it -> uint16 token .bin + a .vocab sidecar
+bazel run //tools:prepare -- data/shakespeare.txt data/shakespeare.bin
+
+# 3. train from the mmap'd tokens, checkpointing (resumes if the .ckpt exists)
+bazel run //tools:train -- data/shakespeare.bin 2000 data/shakespeare.ckpt
+
+# train from a plain text file instead (tokenized in memory), or "" for a
+# small built-in corpus:
+bazel run //tools:train -- data/shakespeare.txt 200
+
+# 4. train a baby model in-process and sample text from it
+bazel run //tools:generate -- data/shakespeare.txt 400 256
+
+# matmul throughput (always measure in release)
+bazel run --config=release //tools:bench -- 20
+```
+
+`prepare` writes `<out.bin>` plus a `<out.bin>.vocab` sidecar; `train` needs the
+sidecar to size the model, and never infers the vocabulary by scanning tokens.
+Tokenization lives only in the C++ `CharTokenizer`, so there is no second
+tokenizer that can drift out of parity.
+
+Checkpoints carry the weights plus the AdamW moments and step counter. Resume
+restores those exactly, but the RNG and dataloader position are not saved, so a
+resumed run replays the data order and LR schedule from step 0.
+
 ## Prerequisites
 
 - A C++ host able to run the LLVM toolchain (Linux/x86-64; v1 is Linux-only).
@@ -48,8 +80,8 @@ and proceeds.)
 ```
 include/cppgpt/   public headers (<cppgpt/...>)
 src/              library implementation (cc_library //:cppgpt)
-tests/            std-only test harness (//tests:check) + unit/ tests
+tests/            std-only harness (//tests:check) + unit/ · integration/ · fixtures/
 scripts/          Python oracle / data scripts (py_binary, py_test)
-tools/            CLI binaries (train, generate, bench, verify) — from M1
+tools/            CLI binaries (train, prepare, generate, bench)
 third_party/      intentionally empty (no third-party runtime deps)
 ```

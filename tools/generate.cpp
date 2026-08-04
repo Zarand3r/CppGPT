@@ -1,9 +1,11 @@
 // generate — train a baby GPT-2 on a corpus, then sample text from it.
 //
 // Demonstrates the full toy loop: tokenize → train (forward/backward/AdamW) →
-// autoregressively generate and decode. Char-level, single process (no checkpoint
-// loading yet — that's M2). The production sampler (nucleus, repetition penalty)
-// and a KV cache (M3) are out of scope; this is the minimal train-and-sample demo.
+// autoregressively generate and decode. Char-level, single process: this demo
+// trains in-process rather than loading a checkpoint (GPT2::load_checkpoint
+// exists and tools/train writes one; wiring it in here is a TODO). The
+// production sampler (nucleus, repetition penalty) and a KV cache (M3) are out
+// of scope; this is the minimal train-and-sample demo.
 //
 // Usage: generate [corpus.txt] [train_steps] [n_generate]
 #include <cstddef>

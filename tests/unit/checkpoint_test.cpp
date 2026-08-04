@@ -3,6 +3,7 @@
 // validation error paths (magic/version/shape/checksum/truncation/missing).
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -120,7 +121,7 @@ int main() {
     // ---- VersionMismatch: bump the header version byte ----
     {
         std::vector<char> bytes = slurp(path);
-        bytes[4] = 2;  // version is the second u32 (offset 4); 1 -> 2
+        bytes[4] = 99;  // version is the second u32 (offset 4)
         const std::string p = tmp_path("badver.ckpt");
         dump(p, bytes);
         GPT2 M(cfg, B, T);
@@ -191,6 +192,74 @@ int main() {
         Generator gg(66ULL);
         G.init_weights(gg);
         CHECK(G.load_checkpoint(p.c_str()).has_value());
+    }
+
+    // ---- a weights-only load must RESET the optimizer state, not keep stale
+    // moments. Otherwise a model that already trained carries old m/v into the
+    // next step, and step-1 bias correction (1/(1-beta1) = 10x) amplifies them
+    // into a large arbitrary kick — visible here as weights moving under
+    // ZERO gradients. ----
+    {
+        const std::string wonly = tmp_path("wo2.ckpt");
+        {
+            Generator g0(77ULL);
+            GPT2 F(cfg, B, T);
+            F.init_weights(g0);
+            CHECK(F.save_checkpoint(wonly.c_str()).has_value());  // weights only
+        }
+        Generator gh(88ULL);
+        GPT2 H(cfg, B, T);
+        H.init_weights(gh);
+        for (int i = 0; i < 5; ++i) step(H, in, tg);  // build up real moments
+        CHECK(H.load_checkpoint(wonly.c_str()).has_value());
+
+        const std::vector<float> before(H.params().wte, H.params().wte + H.param_count());
+        H.zero_grads();          // gradients are exactly zero ...
+        H.update(AdamW{.lr = 1e-2f});  // ... so a correct AdamW step must not move weights
+        bool unmoved = true;
+        for (std::size_t i = 0; i < H.param_count(); ++i)
+            unmoved = unmoved && (H.params().wte[i] == before[i]);
+        CHECK(unmoved);
+    }
+
+    // ---- header fields are covered by the checksum: corrupting adam_step (which
+    // no range check can catch on its own) must be detected, not fed into the
+    // bias correction where it overflows. ----
+    {
+        std::vector<char> bytes = slurp(path);
+        const std::int32_t huge = 2147483647;  // adam_step is at offset 28
+        std::memcpy(bytes.data() + 28, &huge, sizeof(huge));
+        const std::string p = tmp_path("badstep.ckpt");
+        dump(p, bytes);
+        GPT2 M(cfg, B, T);
+        Generator g(1ULL);
+        M.init_weights(g);
+        auto r = M.load_checkpoint(p.c_str());
+        CHECK(!r.has_value() && r.error() == ErrorCode::ChecksumMismatch);
+    }
+
+    // ---- unknown flag bits => corrupt (written by something we don't understand) ----
+    {
+        std::vector<char> bytes = slurp(path);
+        const std::uint32_t bogus = 0xDEAD0000u;  // flags is at offset 32
+        std::memcpy(bytes.data() + 32, &bogus, sizeof(bogus));
+        const std::string p = tmp_path("badflags.ckpt");
+        dump(p, bytes);
+        GPT2 M(cfg, B, T);
+        Generator g(1ULL);
+        M.init_weights(g);
+        auto r = M.load_checkpoint(p.c_str());
+        CHECK(!r.has_value() && r.error() == ErrorCode::CorruptCheckpoint);
+    }
+
+    // ---- backward() after an inference-only forward must fail fast, not consume
+    // stale/uninitialized probs and emit plausible-but-wrong gradients ----
+    {
+        GPT2 M(cfg, B, T);
+        Generator g(2ULL);
+        M.init_weights(g);
+        M.forward(in.data(), nullptr);  // inference: no probs, no loss
+        CHECK_DIES(M.backward(in.data(), tg.data()));
     }
 
     (void)V;
