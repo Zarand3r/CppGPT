@@ -106,7 +106,7 @@ The three verbs. Each box is wiring over code that already exists and is tested.
 ### Enough performance to iterate (not a benchmark contest)
 - [ ] Re-measure and fix the build flags: `-march=native` measures **1.9× SLOWER** than plain `-O3` on
       the dominant kernel (`docs/measurements.md` M-1). Free speedup, no code change.
-- [ ] `tools/bench` — merge branch `m2-bench` (PR #20) so the number has a reproducible source.
+- [x] `tools/bench` — merged (PR #20); `bazel run --config=release //tools:bench -- 20`.
 - [ ] Then reassess. At ~200 tok/s a small model is trainable in minutes-to-hours; blocking/threading
       only if iteration is actually painful. **No 30 GFLOP/s gate for the MVP** — that target existed
       to make a TinyShakespeare convergence run finish overnight, which is no longer the goal.
@@ -128,8 +128,8 @@ on this page.
 | `kFnvOffset64` is the textbook FNV-1a-64 basis with a digit dropped | `docs/engineering-lessons.md` L6 | ⬜ **Deferred by design** — it still functions as a hash, and fixing it invalidates every existing checkpoint's checksum. Bundle with the next `kCheckpointVersion` bump. Tracked at the point of use in `checkpoint.hpp`. |
 | `docs/M3_INFERENCE_PLAN.md` risk/invariant/slice IDs are unprefixed (`R1`, `S1`) and collide with `PLAN.md`'s `DR-n` | `docs/review-audit.md` 2026-08-03 | ⬜ Rename to `M3-Rn` / `M3-In` / `M3-Sn`. Cosmetic while the doc is shelved; do it if M3 is ever revived. |
 | `write_token_bin` did tmp+rename but **no `fsync`** — the rule from the lesson whose incident is that very function | `docs/engineering-lessons.md` L5 | ✅ **Fixed** — fsync of file and containing directory. |
-| `tools/bench` is written but lives on unmerged branch `m2-bench` (PR #20) | 3-axis review, 2026-08-03 | ⬜ Merge it — listed under MVP → performance above. |
-| Open PRs: #20 bench · #21 review fixes + docs · #22 this planning work | — | ⬜ Merge order: #20, then #21, then #22. |
+| `tools/bench` was written but lived on an unmerged branch | 3-axis review, 2026-08-03 | ✅ **Merged** (PR #20). |
+| Open PRs | — | ✅ #20, #21 merged. |
 
 ---
 
