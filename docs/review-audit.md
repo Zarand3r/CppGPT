@@ -41,3 +41,20 @@ the ASCII its little-endian bytes actually spell).
 
 **Not swept (no signature):** semantic constants with no external canonical value (arena alignment,
 default LR/betas, batch dims) — correctness for these is a design question, not a lookup.
+
+## 2026-08-03 — Doc claims vs the tree (L12); measured-number ownership (L13)
+
+**Trigger.** `tools/bench` marked done in `ROADMAP.md` while absent from the branch; the ≈3.0 GFLOP/s
+figure it produced copied into five sites across four documents.
+
+| Sweep | Command | Result |
+|---|---|---|
+| Every `//tools:*` named in a doc exists | `bazel query //tools:all` vs mentions in `README.md`/`ROADMAP.md`/`PLAN.md` | ❌ **`bench` claimed in 5 sites, absent from the tree** (only on branch `m2-bench`). `verify` claimed in `PLAN.md`'s file tree, never built. Both fixed/annotated. |
+| Numeric literal with a unit outside `docs/measurements.md` | `grep -rnE '[0-9]+(\.[0-9]+)? ?(GFLOP/s\|GiB\|GB\|MB\|tokens/s)' *.md docs/*.md` | ❌ 3.0 GFLOP/s in 5 sites; memory figures in 2. Consolidated into `docs/measurements.md`; other docs now link. |
+| Bare risk/invariant IDs (`R5`, `invariant 11`) resolving ambiguously | `grep -rnE '\b(R\|E\|A\|S\|L)[0-9]+\b'` | ❌ **All 8 of `PLAN.md`'s risks collided with `M3_INFERENCE_PLAN.md`'s R1–R10**; `ROADMAP.md` had an ambiguous bare `R5`. PLAN's are now `DR-n`; M3's should become `M3-Rn`. |
+| Documented commands actually run | executed each `bazel run` in `README.md` | ❌ every one used a workspace-relative path, which `bazel run` resolves into the runfiles dir. Fixed to `"$PWD"/…`. |
+| Constitution clauses with an enforcing test | manual audit | ❌ 5 clauses unenforced: per-op PyTorch fixtures, every-intermediate-activation parity, alloc-counter hook, NaN/Inf-loss abort, `ldd` allow-list. **Deferred** — tracked below. |
+
+**Deferred (needs a decision, not just a fix):** the five unenforced constitution clauses. Each is
+either "write the test" or "reword the clause"; the constitution is human-frozen, so the rewording
+option is **not mine to take**. Raised for the owner.

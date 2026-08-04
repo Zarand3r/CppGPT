@@ -25,22 +25,26 @@ and the dynamic loader (libc++ is static). Verify with `ldd bazel-bin/...`.
 
 ## Run
 
+> `bazel run` sets the working directory to the target's **runfiles** dir, not the workspace root,
+> so paths passed after `--` must be absolute (`"$PWD"/...`). A bare relative path silently reads or
+> writes inside the runfiles tree.
+
 ```sh
 # 1. get a corpus (downloads TinyShakespeare, ~1 MB; does not tokenize)
 scripts/prepare_shakespeare.py data/shakespeare.txt
 
 # 2. tokenize it -> uint16 token .bin + a .vocab sidecar
-bazel run //tools:prepare -- data/shakespeare.txt data/shakespeare.bin
+bazel run //tools:prepare -- "$PWD"/data/shakespeare.txt "$PWD"/data/shakespeare.bin
 
 # 3. train from the mmap'd tokens, checkpointing (resumes if the .ckpt exists)
-bazel run //tools:train -- data/shakespeare.bin 2000 data/shakespeare.ckpt
+bazel run //tools:train -- "$PWD"/data/shakespeare.bin 2000 "$PWD"/data/shakespeare.ckpt
 
 # train from a plain text file instead (tokenized in memory), or "" for a
 # small built-in corpus:
-bazel run //tools:train -- data/shakespeare.txt 200
+bazel run //tools:train -- "$PWD"/data/shakespeare.txt 200
 
 # 4. train a baby model in-process and sample text from it
-bazel run //tools:generate -- data/shakespeare.txt 400 256
+bazel run //tools:generate -- "$PWD"/data/shakespeare.txt 400 256
 
 # matmul throughput (always measure in release)
 bazel run --config=release //tools:bench -- 20
@@ -75,6 +79,23 @@ linker, so this host symlink is unavoidable on bleeding-edge distros. It is
 harmless — the linker prints a benign "no version information available" warning
 and proceeds.)
 
+## Document map
+
+Each fact has **one owner**; every other mention links to it. Stating the same fact twice is how the
+docs drifted before (see `docs/review-audit.md`).
+
+| Document | Owns — and only this |
+|---|---|
+| [`docs/constitution.md`](docs/constitution.md) | Frozen human-authored deal-breakers. **Never edited by an agent.** |
+| [`ROADMAP.md`](ROADMAP.md) | **The only status surface** — milestone checkboxes, current focus, one `Gate:` line per milestone. The only file allowed to contain `[x]`/`[ ]`. |
+| [`PLAN.md`](PLAN.md) | Design rationale, options, tradeoffs, deferred-complexity triggers. Risk IDs are `DR-n`. No status, no measurements. |
+| [`docs/measurements.md`](docs/measurements.md) | **Every measured number**, each with the command that reproduces it. No other doc states a measurement. |
+| [`docs/M3_INFERENCE_PLAN.md`](docs/M3_INFERENCE_PLAN.md) | Execution detail for the active milestone (slices, gates, fixtures). IDs are `M3-*`. |
+| [`docs/engineering-lessons.md`](docs/engineering-lessons.md) | Rules distilled from real defects here, each citing its incident. |
+| [`docs/review-audit.md`](docs/review-audit.md) | Mechanical sweeps and their results. |
+| `README.md` | Build, run, layout — every command names a target that exists. |
+| `CLAUDE.md` | Agent wiring, engineering rules, process obligations. |
+
 ## Layout
 
 ```
@@ -82,6 +103,6 @@ include/cppgpt/   public headers (<cppgpt/...>)
 src/              library implementation (cc_library //:cppgpt)
 tests/            std-only harness (//tests:check) + unit/ · integration/ · fixtures/
 scripts/          Python oracle / data scripts (py_binary, py_test)
-tools/            CLI binaries (train, prepare, generate, bench)
+tools/            CLI binaries (train, prepare, generate)
 third_party/      intentionally empty (no third-party runtime deps)
 ```

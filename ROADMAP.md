@@ -43,10 +43,29 @@ not on the M2 critical path.
 - [x] `dataloader` (mmap uint16, shuffled epochs, trailing partial batch dropped) · `tools/prepare.cpp` (text → uint16 `.bin` + `.vocab` sidecar) · `scripts/prepare_shakespeare.py` (corpus download only — tokenization stays in the C++ `CharTokenizer`, so there is no second tokenizer to drift)
 - [x] `checkpoint` (64-byte versioned header + raw fp32, FNV-1a-64 checksum over header+payload, atomic tmp→fsync→rename) + AdamW moment/step resume + periodic save in `tools/train`
 - [~] cosine+warmup LR schedule (`cosine_lr`) · `clip_grad_norm` (+ `GPT2::clip_grad_norm`) **done**, both wired into `tools/train`; **gradient accumulation still to do** (op backwards already `+=`; needs the micro-batch loop + 1/K loss scaling)
-- [ ] Cache-blocked matmul · `std::thread` work pool (deterministic row partition)
+- [ ] **Eval path (blocks the convergence gate; currently unimplementable):** `prepare --val-frac`
+      writing train/val `.bin`s · `train --val/--eval-interval` logging val loss + tokens/s + elapsed +
+      peak RSS · model/batch/lr as CLI flags (`tools/train.cpp` hardcodes L3/H4/C64/T32)
+- [ ] **Sample from a saved checkpoint** — `generate --checkpoint <ckpt> --vocab <.vocab> --prompt`.
+      M2's DoD promises a *sampleable* checkpoint; nothing can read one today (`tools/generate` trains
+      in-process, and `generate()` demands a full-length context).
+- [ ] Cache-blocked matmul · `std::thread` work pool (**static** partition; reduction order independent
+      of `T` and thread count)
 - [x] Sampling: argmax / temperature / top-k (`sample.hpp`; `top_k = 1` dispatches to argmax so greedy decoding is tie-stable)
-- [x] `tools/generate.cpp` (+ `generate.hpp` sliding-window decode; `forward(tokens, nullptr)` = logits-only inference) · `tools/bench.cpp` (matmul GFLOP/s)
-- [ ] **Gate:** val loss ≤ 1.6 overnight; matmul ≥ 30 GFLOP/s single-thread (**measured baseline ≈ 3.0 GFLOP/s** on the naive triple loop via `tools/bench`, Ryzen 9 9950X3D — a ~10× gap; the scalar `acc +=` reduction is one serial FMA chain, so blocking + vectorization is the whole remaining M2 delta)
+- [x] `tools/generate.cpp` (+ `generate.hpp` sliding-window decode; `forward(tokens, nullptr)` = logits-only inference)
+- [~] `tools/bench.cpp` (matmul GFLOP/s) — **written but NOT on `main`**: lives on branch `m2-bench` (PR #20), unmerged. Merge before quoting any number it produced.
+- [ ] **Gate (rewritten — the old one-line version was half-passed with zero work):**
+  1. `matmul_forward` ≥ 30 GFLOP/s single-thread at `BT=1024, C=768, OC=3072` under `--config=release`.
+     *Direction, shape and config are all load-bearing:* `matmul_backward` already measures ~37–42
+     GFLOP/s (its inner loop carries no reduction and auto-vectorizes), so an unqualified
+     "matmul ≥ 30" passes today. Baselines and the `-march=native` finding: `docs/measurements.md` M-1/M-2.
+  2. Threading: ≥ 12× aggregate over single-thread on that shape, with a **static** row partition whose
+     reduction order is independent of `T` **and of thread count**, output bit-identical across 1/2/16
+     threads. (This is also `M3-R10`'s mitigation and the constitution's determinism clause — a dynamic
+     partition violates both.)
+  3. ≥ 2,000 tokens/s end-to-end at 6L/384C/6H, T=256 — the unit the convergence gate actually consumes
+     (`docs/measurements.md` M-3: today 197 tok/s; the ≤1.6 val-loss run needs ~25–40M tokens).
+  4. val loss ≤ 1.6 on a held-out split — **blocked**: needs the val-split/eval work below.
 
 ## M3 — BPE + pretrained GPT-2 124M inference
 

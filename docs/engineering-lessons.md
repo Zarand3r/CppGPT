@@ -146,3 +146,32 @@ skip silently". Together those turn every fresh clone red — and `CLAUDE.md` ma
 from the `//...` wildcard and invoked explicitly. Exclusion-by-tag is not a runtime skip: once
 invoked, it still fails loudly when the artifact is missing. Never make a wildcard test conditionally
 green.
+
+## L12 — A document may not state a fact about the tree that a command cannot confirm
+
+**Incident (2026-08, `ROADMAP.md`, `README.md`, `PLAN.md`).** `tools/bench` was marked `[x]` done,
+documented as a runnable command (`bazel run //tools:bench -- 20`), and cited in four documents as the
+source of the repo's most-referenced measurement — while **never having been on the branch**. It lives
+on the unmerged `m2-bench` branch. The checkbox was ticked from a branch that did not contain the
+file. `bazel query //tools:all` disproves all five sites in under a second. Three independent
+reviewers each found it first.
+
+**Rule.** Before writing that something exists, is done, or is runnable, run the command that proves
+it — `bazel query`, `ls`, `git ls-tree <branch>`. When work spans branches, a checkbox describes
+**`main`**, not your working tree. Any documented command must name a target that exists on the branch
+the reader will check out.
+
+## L13 — Verify the direction of a performance claim before acting on it
+
+**Incident (2026-08, `.bazelrc` / `PLAN.md`).** A plan asserted that because `--config=release`
+already passes `-march=native`, "the vector ISA was available and the compiler still could not
+vectorize it — the fix is the code shape, not a compiler flag." Measured on the real kernel with the
+pinned clang: `-march=native` **2.82** GFLOP/s vs plain `-O3` **5.39** GFLOP/s. The flag was not
+neutral, it was **costing ~1.9×** — so a free speedup sat behind *removing* a flag while the plan
+argued only for a code rewrite. The root-cause diagnosis (serial `acc +=` chain) was right; the
+conclusion drawn from it was not.
+
+**Rule.** A claim that a flag, setting, or configuration is *neutral or beneficial* is a measurement,
+not a deduction — benchmark both ways before building a plan on it. Reasoning correctly about a
+bottleneck does not license an untested claim about what does or does not affect it. Record the
+numbers in `docs/measurements.md` with a reproduce command.
