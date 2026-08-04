@@ -22,19 +22,25 @@ best-of-8 after warmup.
 
 | Build flags | GFLOP/s | Date |
 |---|---|---|
-| `-O3 -march=native` — **the current `--config=release`** | **2.82** | 2026-08-03 |
-| `-O3` (no ISA flags; SSE2 baseline) | **5.39** | 2026-08-03 |
-| `-O3 -mavx2 -mfma` | 2.81 | 2026-08-03 |
+| `-O3 -march=native` — *the old `--config=release`* | 2.87 | 2026-08-04 |
+| `-O3 -march=x86-64-v3` (AVX2+FMA) | 2.95 | 2026-08-04 |
+| `-O3 -march=x86-64-v2` (SSE4.2) | 2.95 | 2026-08-04 |
+| `-O3 -march=x86-64` (SSE2) | 2.93 | 2026-08-04 |
+| `-O3 -march=native -ffp-contract=off` | 5.79 | 2026-08-04 |
+| **`-O3 -march=x86-64-v3 -ffp-contract=off`** — **the current `--config=release`** | **5.82** | 2026-08-04 |
+| `-O3 -march=x86-64-v2 -ffp-contract=off` | 5.63 | 2026-08-04 |
 
-> ⚠️ **`-march=native` currently costs ~1.9× on this kernel.** Enabling AVX2/FMA makes it *slower*,
-> not faster — the opposite of the usual assumption, and the opposite of what an earlier draft of
-> `PLAN.md` asserted ("the vector ISA was available and the compiler still could not vectorize it;
-> the fix is the code shape, not a compiler flag"). Half of that is right — the serial `acc +=`
-> dependency chain is still the root cause and blocking/multiple-accumulators is still the real fix —
-> but the flag is not neutral, it is harmful. **Investigate before the blocking work**, and re-measure
-> after: the true naive baseline is **5.39**, so the gap to the 30 GFLOP/s gate is ~5.6×, not ~10×.
-> Mechanism not yet diagnosed (suspect FMA contraction serializing the reduction at ~4-cycle latency);
-> confirm by disassembly before acting.
+> **Resolved — see `docs/DECISIONS.md` D1.** The bottleneck was **FMA contraction, not the ISA**:
+> every `-march` level sits at ~2.9 with contraction on and jumps to ~5.8 with it off, because
+> clang's default `-ffp-contract=fast` fuses the inner `acc += a*b` into one `vfmadd` and serializes
+> the reduction on FMA latency. `-march=native` was buying nothing (`x86-64-v3` matches it), so it
+> was replaced with an explicit baseline for reproducible builds. Net ~2x, and the canonical-GPT-2
+> parity gate still holds at ~50x margin (forward logit error 9.54e-07 -> 1.91e-06 vs a 1e-4 gate).
+> End-to-end `//tools:train` 40 steps: 2.10 s -> 1.62 s.
+>
+> The serial-dependency diagnosis stands and the blocked/multi-accumulator rewrite is still the real
+> fix; this was two lines for half of it. **True baseline is now 5.82**, so the gap to a 30 GFLOP/s
+> target is ~5x.
 
 **Reproduce** (standalone, isolates codegen from Bazel):
 ```sh

@@ -24,7 +24,7 @@ libc++, and Python is a pinned 3.12 interpreter — none come from the host.
 bazel build //...                 # build everything
 bazel test  //...                 # build + run tests
 bazel test  //... --config=dev    # with ASan + UBSan
-bazel build //... --config=release # -O3 -march=native
+bazel build //... --config=release # -O3, explicit ISA baseline (see docs/DECISIONS.md D1)
 bazel run   //scripts:env_info    # show the hermetic Python interpreter
 ```
 
@@ -97,6 +97,7 @@ docs drifted before (see `docs/review-audit.md`).
 | [`docs/constitution.md`](docs/constitution.md) | Frozen human-authored deal-breakers. **Never edited by an agent.** |
 | [`ROADMAP.md`](ROADMAP.md) | **The single source of truth for what has to be done** — milestones, the MVP gate, deferred scope, and all outstanding debt. The only file allowed to contain `[x]`/`[ ]`, and the only one that holds work items. |
 | [`PLAN.md`](PLAN.md) | Design rationale, options, tradeoffs, deferred-complexity triggers. Risk IDs are `DR-n`. No status, no measurements. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Locked decisions — what was decided, the evidence, and what it cost. |
 | [`docs/measurements.md`](docs/measurements.md) | **Every measured number**, each with the command that reproduces it. No other doc states a measurement. |
 | [`docs/M3_INFERENCE_PLAN.md`](docs/M3_INFERENCE_PLAN.md) | Execution detail for the active milestone (slices, gates, fixtures). IDs are `M3-*`. |
 | [`docs/engineering-lessons.md`](docs/engineering-lessons.md) | Rules distilled from real defects here, each citing its incident. |

@@ -104,8 +104,9 @@ The three verbs. Each box is wiring over code that already exists and is tested.
   to the base checkpoint, without a from-scratch run beating it in the same wall-clock.
 
 ### Enough performance to iterate (not a benchmark contest)
-- [ ] Re-measure and fix the build flags: `-march=native` measures **1.9× SLOWER** than plain `-O3` on
-      the dominant kernel (`docs/measurements.md` M-1). Free speedup, no code change.
+- [x] Build flags fixed — root cause was **FMA contraction, not the ISA**. `--config=release` is now
+      `-march=x86-64-v3 -ffp-contract=off`: ~2x on the dominant kernel (2.95 -> 5.82 GFLOP/s), builds no
+      longer depend on the build host, parity holds at ~50x margin. See `docs/DECISIONS.md` D1.
 - [x] `tools/bench` — merged (PR #20); `bazel run --config=release //tools:bench -- 20`.
 - [ ] Then reassess. At ~200 tok/s a small model is trainable in minutes-to-hours; blocking/threading
       only if iteration is actually painful. **No 30 GFLOP/s gate for the MVP** — that target existed

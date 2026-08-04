@@ -16,10 +16,19 @@ build --cxxopt=-Wextra
 build --cxxopt=-Wpedantic
 build --cxxopt=-Werror
 
-# --- config=release: optimized, PLAN.md "-O3 -march=native". ---
+# --- config=release: optimized. See docs/DECISIONS.md D1 for the flag choice. ---
 build:release --compilation_mode=opt
 build:release --cxxopt=-O3
-build:release --cxxopt=-march=native
+# Explicit ISA baseline, not -march=native: native measured no faster (2.87 vs 2.95
+# GFLOP/s) while making every binary depend on the build host, which contradicts the
+# hermetic-toolchain premise. v3 = AVX2 + FMA (Haswell 2013+ / Zen 1+).
+build:release --cxxopt=-march=x86-64-v3
+# The dominant matmul is a serial `acc += a*b` reduction; clang's default
+# -ffp-contract=fast fuses it into one vfmadd and serializes on FMA latency.
+# Disabling contraction is ~2x on that kernel (2.95 -> 5.82 GFLOP/s) and keeps the
+# canonical-GPT-2 parity gate at ~50x margin. Revisit once the matmul uses multiple
+# accumulators -- contraction should become a win again.
+build:release --cxxopt=-ffp-contract=off
 
 # --- config=dev: PLAN.md "-O1 -g -fsanitize=address,undefined". ---
 build:dev --compilation_mode=fastbuild
