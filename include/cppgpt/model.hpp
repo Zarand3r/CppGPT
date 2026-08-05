@@ -126,6 +126,14 @@ public:
     // state-exact, not trajectory-exact. See cppgpt/checkpoint.hpp for the format.
     [[nodiscard]] Result<void> save_checkpoint(const char* path) const noexcept;
 
+    // How much of a checkpoint to restore.
+    //   Full        — weights + AdamW moments + step: resuming an interrupted run.
+    //   WeightsOnly — weights only; moments and step reset to zero. This is what
+    //                 fine-tuning wants: the saved moments and step belong to the
+    //                 base run's schedule, and carrying them into a new run at a
+    //                 different LR applies stale, differently-scaled updates.
+    enum class LoadMode { Full, WeightsOnly };
+
     // Load a checkpoint written by save_checkpoint. Validates magic/version, that
     // the file's Config and param_count match this model, and the payload
     // checksum — returning VersionMismatch / ShapeMismatch / CorruptCheckpoint /
@@ -134,7 +142,8 @@ public:
     // moment-less file RESETS the optimizer moments and step to zero, so the
     // state always matches what is logged (a warned, bounded degradation, never
     // a silent carry-over of a previous run's moments).
-    [[nodiscard]] Result<void> load_checkpoint(const char* path) noexcept;
+    [[nodiscard]] Result<void> load_checkpoint(const char* path,
+                                              LoadMode mode = LoadMode::Full) noexcept;
 
     [[nodiscard]] const Config& config() const noexcept { return cfg_; }
     [[nodiscard]] int batch() const noexcept { return B_; }    // fixed batch size

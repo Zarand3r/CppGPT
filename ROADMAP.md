@@ -96,7 +96,7 @@ The three verbs. Each box is wiring over code that already exists and is tested.
       **This is the piece that makes fine-tuning possible at all:** a fresh corpus yields a different
       char vocab, hence a different `vocab_size`, hence `ShapeMismatch` on load. Must fail loudly on a
       byte outside the original vocab rather than silently remapping.
-- [ ] `train --init-from <ckpt>` — load **weights only**, reset optimizer moments/step and restart the
+- [x] `train --init-from <ckpt>` — load **weights only**, reset optimizer moments/step and restart the
       LR schedule (a plain `--ckpt` resume deliberately restores moments; fine-tuning wants fresh ones
       at a lower LR). The weights-only path already exists — `load_checkpoint` on a moment-less file
       resets Adam and says so.
