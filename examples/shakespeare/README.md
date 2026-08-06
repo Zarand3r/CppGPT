@@ -60,10 +60,48 @@ The progression is legible and worth watching:
 | ~1.8 | mostly real words, `NAME:` speaker labels, dialogue structure |
 | ~1.5 | fluent pseudo-Shakespeare — the nanoGPT reference point |
 
-The 900-step run above lands around the middle of that table. Getting to ~1.5 needs
-roughly 10× more tokens; the model and the pipeline do not change, only `--steps`.
-Measured throughput and the reasoning behind the build flags are in
-`docs/measurements.md`.
+### Actual output from the command above
+
+Measured on a Ryzen 9 9950X3D, `--config=release`, 900 steps = 1.84 M tokens in
+**634 s** at 2908 tok/s, peak RSS 204 MB. Validation loss fell monotonically:
+
+```
+[eval] step 150  val loss 2.4214      [eval] step 600  val loss 1.9489
+[eval] step 300  val loss 2.1499      [eval] step 750  val loss 1.8600
+[eval] step 450  val loss 2.0290      [eval] step 900  val loss 1.8120
+```
+
+Sampling at `--temperature 0.8 --top-k 20 --seed 42`:
+
+```
+ROMEO:
+This be he most; be the can the statine
+The dording are your loth.
+
+GLOUCESTER:
+I shall monely will shall parlenty his the indeess
+To the die.
+
+First I speak:
+I be many, let he be the
+heave anshall the told he dread be with leave:
+Which we to son the pursed an and in the boy
+In now to set but wife, and be more to be uneyal,
+Uno, thou not you his black'd of thee,
+In will now say but a not brows! Go
+```
+
+Read that for structure rather than sense. In ten minutes the model has learned the
+`NAME:` speaker convention, blank lines between speeches, verse-length line breaks,
+a real character name it only ever saw in the corpus (`GLOUCESTER`), ordinary English
+words, and Shakespearean forms — `thou`, `thee`, `dread`, and the elided `black'd`.
+It has not learned to mean anything. That is the honest state of a 1.8-val-loss
+character model, and it is the point of the table above: you can watch which of these
+appears at which loss.
+
+Getting to ~1.5 needs roughly 10× more tokens; the model and the pipeline do not
+change, only `--steps`. The reasoning behind the build flags is in
+`docs/DECISIONS.md` D1, and throughput baselines are in `docs/measurements.md`.
 
 ## Fine-tuning onto a second corpus
 
