@@ -15,6 +15,10 @@ module(
 
 # Build-rule providers and platform constraints (not runtime deps).
 bazel_dep(name = "rules_cc", version = "0.2.19")
+# sh_test for the end-to-end CLI pipeline test. Build-time only; Bazel 9 removed
+# the native sh_* rules, so this is the canonical replacement, not a new dependency
+# class (no runtime deps — the shipped binaries still link only libc/libm).
+bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # Python rules for the oracle / dataset scripts (py_binary, py_test). These run
