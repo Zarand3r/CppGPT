@@ -83,6 +83,11 @@ void write_text(const std::string& path, std::string_view body) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Line-buffer stdout. Redirected to a file or a pipe it is block-buffered by
+    // default, so a long run emits nothing until 4 KB accumulates: progress is
+    // invisible to `tail -f` and a working run is indistinguishable from a hung
+    // one. Found by running a real training job, not by any test.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv, {"val-frac", "vocab"});
     
     if (args.positional().size() != 2) {

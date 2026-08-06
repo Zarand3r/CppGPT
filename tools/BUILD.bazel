@@ -1,9 +1,10 @@
-# CLI tools: train (train + checkpoint), prepare (corpus -> uint16 .bin +
-# .vocab), generate (train + sample text). Fixture verification is a test
-# (//tests/integration:parity_test), not a tool.
+# CLI tools: prepare (corpus -> uint16 .bin + .vocab), train (train/resume/
+# fine-tune + checkpoint), generate (load a checkpoint and sample). Fixture
+# verification is a test (//tests/integration:parity_test), not a tool.
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
-package(default_visibility = ["//visibility:private"])
+# Binaries are private except to //tests, which runs them end to end.
+package(default_visibility = ["//tests:__subpackages__"])
 
 # Shared argv parsing for the CLI tools. Three tools take flags; the load-bearing
 # behavior is reject_unknown() — a mistyped flag must be an error, never a silent

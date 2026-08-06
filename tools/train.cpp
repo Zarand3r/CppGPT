@@ -87,6 +87,11 @@ float evaluate(GPT2& model, DataLoader& val, int batches) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Line-buffer stdout. Redirected to a file or a pipe it is block-buffered by
+    // default, so a long run emits nothing until 4 KB accumulates: progress is
+    // invisible to `tail -f` and a working run is indistinguishable from a hung
+    // one. Found by running a real training job, not by any test.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"data", "val", "vocab", "ckpt", "layers", "heads", "embd", "ctx", "batch",
                           "steps", "lr", "min-lr", "warmup", "clip", "seed", "eval-interval",

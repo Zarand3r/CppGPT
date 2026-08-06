@@ -128,6 +128,24 @@ Against an fp32 logit error of ~1e-4, that is only **7–70× headroom at the wo
 why the M3 gate prompt must be chosen by *measured* margin, not by taste. See
 `docs/M3_INFERENCE_PLAN.md` §M3-S5.
 
+## M-8 · Toy example — char-level Shakespeare end to end
+
+`examples/shakespeare/run.sh`, `--config=release`, L4 H4 C128, ctx 64, batch 32,
+lr 3e-3, 900 steps over TinyShakespeare (1,115,394 chars, vocab 65, 10% val split).
+
+| | |
+|---|---|
+| wall time | **634 s** (10.6 min) |
+| throughput | **2908 tok/s** (1.84 M tokens) |
+| peak RSS | **204 MB** |
+| val loss | 2.42 → 2.15 → 2.03 → 1.95 → 1.86 → **1.81** (steps 150…900) |
+
+Monotonic across all six evaluations. Reaching the nanoGPT char-Shakespeare
+reference (~1.47) needs roughly 10× more tokens; nothing about the model or the
+pipeline changes, only `--steps`.
+
+**Reproduce:** `examples/shakespeare/run.sh`
+
 ## M-7 · Test suite
 
 25 targets (20 unit + 4 integration + 1 py_test), green under `--config=dev` (ASan/UBSan) and
