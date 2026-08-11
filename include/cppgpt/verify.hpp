@@ -76,7 +76,15 @@ struct ParityFixture {
 // Max absolute difference over n elements.
 [[nodiscard]] inline float max_abs_diff(const float* a, const float* b, std::size_t n) {
     float m = 0.0f;
-    for (std::size_t i = 0; i < n; ++i) m = std::fmax(m, std::fabs(a[i] - b[i]));
+    for (std::size_t i = 0; i < n; ++i) {
+        const float d = std::fabs(a[i] - b[i]);
+        // NOT fmax: std::fmax(x, NaN) returns x BY DEFINITION, so every NaN
+        // difference was silently discarded and the parity gate passed on
+        // all-NaN gradients. Propagating the NaN makes every downstream
+        // `err < tol` comparison false, which fails the gate loudly.
+        if (std::isnan(d)) return d;
+        if (d > m) m = d;
+    }
     return m;
 }
 

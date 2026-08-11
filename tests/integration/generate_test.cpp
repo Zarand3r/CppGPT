@@ -149,6 +149,26 @@ int main() {
         const auto ga = generate_absolute(m, prompt, 20, 1.0f, 0, a);  // past the context
         const auto gb = generate_absolute(m, prompt, 20, 1.0f, 0, b);
         CHECK(ga.size() == 20 && ga == gb);
+
+        // The contract above is about generate_absolute, so assert it AGAINST
+        // generate_absolute. Independent oracle: a separate model built at
+        // T == prompt length cannot pad at all, so its argmax is what an
+        // unpadded forward predicts. A left-padding or position-shifting
+        // implementation disagrees here — and previously survived the whole
+        // suite, which is the bug lesson L7 exists to prevent.
+        {
+            Generator w(5ULL);
+            GPT2 tight(cfg, 1, static_cast<int>(prompt.size()));
+            tight.init_weights(w);  // same cfg + seed => same weights as m
+            tight.forward(prompt.data(), nullptr);
+            const int expect =
+                argmax(tight.acts().logits +
+                           static_cast<std::size_t>(prompt.size() - 1) * cfg.vocab_size,
+                       cfg.vocab_size);
+            Generator g1(1ULL);
+            const auto one = generate_absolute(m, prompt, 1, 1.0f, 1, g1);  // greedy
+            CHECK(one.size() == 1 && one[0] == expect);
+        }
         bool in_range = true;
         for (int t : ga) in_range = in_range && (t >= 0 && t < cfg.vocab_size);
         CHECK(in_range);

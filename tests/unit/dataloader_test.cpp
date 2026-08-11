@@ -91,6 +91,36 @@ int main() {
         CHECK(each_once);  // 12 batches * B=2 == 24 examples, the whole set, once each
     }
 
+    // ---- shuffle must actually permute ----
+    // "every example exactly once" holds for the identity permutation, and the
+    // determinism check below uses the SAME seed on both loaders — so deleting
+    // the Fisher-Yates body passed the whole suite. Two different seeds must
+    // disagree, and one epoch must not be in ascending order.
+    {
+        auto ra = DataLoader::open(path.c_str(), B, T, 1ULL);
+        auto rb = DataLoader::open(path.c_str(), B, T, 999ULL);
+        CHECK(ra.has_value() && rb.has_value());
+        ra->next_batch();
+        rb->next_batch();
+        bool differ = false;
+        for (int i = 0; i < B * T; ++i) differ = differ || (ra->inputs()[i] != rb->inputs()[i]);
+        CHECK(differ);  // different seeds => different first batch
+
+        auto rc = DataLoader::open(path.c_str(), B, T, 4242ULL);
+        CHECK(rc.has_value());
+        bool ascending = true;
+        int prev = -1;
+        for (std::size_t k = 0; k < rc->batches_per_epoch(); ++k) {
+            rc->next_batch();
+            for (int b = 0; b < B; ++b) {
+                const int ex = rc->inputs()[b * T] / T;
+                ascending = ascending && (ex == prev + 1);
+                prev = ex;
+            }
+        }
+        CHECK(!ascending);  // identity permutation would be 0,1,2,...
+    }
+
     // ---- determinism: same seed ⇒ identical batch stream ----
     {
         auto ra = DataLoader::open(path.c_str(), B, T, 999ULL);

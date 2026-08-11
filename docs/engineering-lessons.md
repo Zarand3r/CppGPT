@@ -193,3 +193,45 @@ nothing about reading it suggested a problem.
 specific way the gate exists to prevent and watch it go red — cheap (one `sed`, one test run) and the
 only evidence that distinguishes a strict test from a strict-looking one. This applies *most* to
 tests written deliberately to be rigorous, because those are the ones nobody re-examines.
+
+## L15 — Sweep a codified lesson across the whole tree, not just its incident site
+
+**Incident (2026-08, four sites at once).** A three-axis review found four *recurrences* of already-codified
+lessons at places the original fix never visited:
+
+- **L2 (NaN guards)** — `max_abs_diff` in `verify.hpp` used `std::fmax`, which returns `x` for
+  `fmax(x, NaN)` **by definition**. So the M1 parity gate — the flagship numerical-correctness gate and a
+  `constitution.md` deal-breaker — **passed with all 2024 gradients set to NaN**, exit 0.
+- **L2 again** — `sample()`'s `top_k == 1` fast path returned before the finite guard that L2 added, so
+  greedy decoding returned token 0 forever on a NaN model. The *L4* fix (route `top_k==1` to `argmax`)
+  reopened the *L2* defect on that branch. Two lessons' remedies collided and nothing tested the seam.
+- **L5 (atomic writes)** — `prepare` wrote its `.vocab` with plain `ofstream(trunc)`, while the `.bin`
+  files beside it went through tmp→fsync→rename. Demonstrated end to end: a torn write yields a
+  *size-matched but semantically wrong* vocabulary that `train` accepts and `generate` decodes against.
+- **L3 (bounded allocation)** — applied to checkpoint *sizing* but not to the `std::vector` that holds
+  the payload, inside a `noexcept` function.
+
+Each original fix was correct. Each was applied only where the bug was found.
+
+**Rule.** When a lesson is codified, immediately grep the tree for its *signature* and fix every site in
+the same change: `fmax(`/`fmin(` used as a guard, `>`/`<` on a value that can be NaN, `ofstream(...trunc)`
+on a file another tool reads, container construction inside `noexcept`. Record the sweep in
+`docs/review-audit.md`. A lesson applied at one site is a bug fix; applied across the tree it is a lesson.
+**Corollary:** when two lessons touch the same function, add a test at their intersection — that is where
+the next defect lives.
+
+## L16 — An automated edit must assert its anchor matched
+
+**Incident (2026-08, twice in one session).** A scripted edit added a prompt UI to `viewer.html` and wired
+its button handler; the HTML replacement matched, the JavaScript one did not (the anchor comment had been
+reworded in an earlier commit). `str.replace` returns the input unchanged on no match, so the button
+rendered and did nothing, and the script *looked* correct. Diagnosed by cross-referencing every `$('#id')`
+against every `id=` in the file.
+
+Then the same failure corrupted a mutation-testing run: three mutants reported GREEN (survived). Re-running
+with an anchor assertion showed one was an **anchor miss** — the mutation never applied — and the test had
+been catching it all along. Unverified negative results are worse than no results.
+
+**Rule.** Every scripted edit asserts the anchor exists before replacing and asserts the intended text is
+present afterwards. For mutation testing specifically, a mutant that reports "survived" without proof the
+file changed is not evidence — verify the diff, then run.

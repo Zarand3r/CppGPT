@@ -44,12 +44,14 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// The .vocab goes through the SAME atomic path as the .bin files. It is the file
+// every downstream tool derives the id->byte mapping from, and it has no length
+// and no checksum -- so a torn write yields a size-matched but semantically wrong
+// vocabulary that train accepts and generate decodes against, confidently.
 void write_text(const std::string& path, std::string_view body) {
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    f.write(body.data(), static_cast<std::streamsize>(body.size()));
-    f.close();  // close before checking: a small write may not have flushed yet
-    if (!f) {
-        std::fprintf(stderr, "prepare: writing '%s' failed\n", path.c_str());
+    if (const auto r = write_file_atomic(path.c_str(), body); !r) {
+        std::fprintf(stderr, "prepare: writing '%s' failed: %s\n", path.c_str(),
+                     describe(r.error()));
         std::exit(1);
     }
 }
@@ -140,6 +142,7 @@ int main(int argc, char** argv) {
 
     const std::string train_path = stem + ".train.bin";
     const std::string vocab_path = stem + ".vocab";
+    write_text(vocab_path, vocab);  // vocab first: a failure leaves no orphan bins
     if (const auto r = write_token_bin(train_path.c_str(),
                                        std::span<const int>(ids.data(), n_train));
         !r) {
@@ -157,7 +160,6 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    write_text(vocab_path, vocab);
 
     std::printf("prepare: %zu chars -> %zu tokens (train %zu, val %zu), vocab %d\n", corpus.size(),
                 ids.size(), n_train, n_val, tok.vocab_size());

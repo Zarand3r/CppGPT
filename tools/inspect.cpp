@@ -15,6 +15,7 @@
 //           [--layers 0,2] [--heads 0,1] [--top-k K] [--max-mb N]
 #include <cstddef>
 #include <cstdio>
+#include <charconv>
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
@@ -61,7 +62,14 @@ std::vector<int> parse_selection(std::string_view spec, int n, const char* what)
     std::string item;
     while (std::getline(ss, item, ',')) {
         if (item.empty()) continue;
-        const int v = std::atoi(item.c_str());
+        int v = 0;
+        const auto* first = item.data();
+        const auto res = std::from_chars(first, first + item.size(), v);
+        if (res.ec != std::errc{} || res.ptr != first + item.size()) {
+            std::fprintf(stderr, "inspect: --%s expects comma-separated integers, got '%s'\n",
+                         what, item.c_str());
+            std::exit(2);
+        }
         if (v < 0 || v >= n) {
             std::fprintf(stderr, "inspect: --%s index %d out of range [0,%d)\n", what, v, n);
             std::exit(2);
@@ -316,7 +324,11 @@ int main(int argc, char** argv) {
                 js += "[";
                 for (int k = 0; k < n_pos; ++k) {
                     if (k) js += ", ";
-                    append_float(js, att_h[static_cast<std::size_t>(q) * T + k]);
+                    // Emit 0 above the diagonal rather than reading it:
+                    // attention_forward only writes t2 <= t, and the activation
+                    // arena is never zeroed, so those cells are uninitialised
+                    // memory -- which we were drawing as attention weights.
+                    append_float(js, k <= q ? att_h[static_cast<std::size_t>(q) * T + k] : 0.0f);
                 }
                 js += "]";
             }

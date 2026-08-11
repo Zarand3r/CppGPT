@@ -26,7 +26,14 @@ int sample(const float* logits, int V, float temperature, int top_k, Generator& 
     // below: that keeps every logit >= the k-th largest, so a TIED maximum would
     // leave several tokens eligible and softmax would spread over them. argmax
     // breaks ties by lowest index, which is what greedy decoding must mean.
-    if (top_k == 1) return argmax(logits, V);
+    if (top_k == 1) {
+        const int best = argmax(logits, V);
+        // Hoisted above the early return: argmax compares with `>`, false for NaN,
+        // so without this greedy decoding returns token 0 forever on a broken
+        // model -- the L2 incident, reintroduced on this branch by the L4 fix.
+        ASSERT_MSG(std::isfinite(logits[best]), "sample: logits are not a finite distribution");
+        return best;
+    }
 
     // top-k threshold: only logits >= the k-th largest are eligible.
     float thresh = kNegInf;

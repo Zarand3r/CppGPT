@@ -2,6 +2,9 @@
 
 #include <type_traits>
 
+#include "cppgpt/verify.hpp"
+#include <cmath>
+#include <limits>
 #include "tests/check.hpp"
 
 using cppgpt::ErrorCode;
@@ -93,5 +96,17 @@ int main() {
         CHECK(cppgpt::describe(ErrorCode::Ok)[0] != '\0');
         CHECK(cppgpt::describe(ErrorCode::ParseError)[0] != '\0');
     }
+    // max_abs_diff must propagate NaN. std::fmax(x, NaN) returns x by definition,
+    // so the original implementation discarded every NaN difference — and the M1
+    // parity gate passed on all-NaN gradients, exit 0. This is that regression.
+    {
+        const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+        float b[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+        CHECK(cppgpt::max_abs_diff(a, b, 4) == 0.0f);
+        b[2] = std::numeric_limits<float>::quiet_NaN();
+        CHECK(std::isnan(cppgpt::max_abs_diff(a, b, 4)));      // NOT 0.0f
+        CHECK(!(cppgpt::max_abs_diff(a, b, 4) < 1e-3f));       // so every gate comparison fails
+    }
+
     return cppgpt::test::summary();
 }

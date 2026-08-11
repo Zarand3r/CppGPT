@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstddef>
 #include <vector>
 
 #include "cppgpt/random.hpp"
@@ -16,7 +17,65 @@ using namespace cppgpt;
 using cppgpt::test::grad_check;
 using cppgpt::test::rel_close;
 
+namespace {
+// Sample standard deviation of n floats (mean is ~0 by construction here).
+double stddev(const float* p, std::size_t n) {
+    double m = 0.0;
+    for (std::size_t i = 0; i < n; ++i) m += p[i];
+    m /= static_cast<double>(n);
+    double v = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = p[i] - m;
+        v += d * d;
+    }
+    return std::sqrt(v / static_cast<double>(n));
+}
+}  // namespace
+
+// init_weights: the canonical GPT-2 scheme is a constitution-level claim, and it
+// had no test at all — the parity gate overwrites the weights it would check.
+// Dropping the residual-projection 1/sqrt(2L) scaling, a 10x weight std, and
+// lnfw = 0.5 were all GREEN across the whole suite before this.
+static void test_init_weights() {
+    Config c{};
+    c.max_seq_len = 16; c.vocab_size = 32; c.n_layer = 4; c.n_head = 2; c.n_embd = 64;
+    Generator g(4242ULL);
+    GPT2 m(c, 1, 8);
+    m.init_weights(g);
+    const auto C = static_cast<std::size_t>(c.n_embd);
+    const auto L = static_cast<std::size_t>(c.n_layer);
+    const ParamTensors& p = m.params();
+
+    // LayerNorm gains are exactly 1, shifts and every bias exactly 0.
+    bool gains = true, zeros = true;
+    for (std::size_t i = 0; i < L * C; ++i) gains = gains && (p.ln1w[i] == 1.0f) && (p.ln2w[i] == 1.0f);
+    for (std::size_t i = 0; i < C; ++i) gains = gains && (p.lnfw[i] == 1.0f);
+    CHECK(gains);
+    for (std::size_t i = 0; i < L * C; ++i)
+        zeros = zeros && (p.ln1b[i] == 0.0f) && (p.ln2b[i] == 0.0f) && (p.attprojb[i] == 0.0f) &&
+                (p.fcprojb[i] == 0.0f);
+    for (std::size_t i = 0; i < C; ++i) zeros = zeros && (p.lnfb[i] == 0.0f);
+    for (std::size_t i = 0; i < L * 3 * C; ++i) zeros = zeros && (p.qkvb[i] == 0.0f);
+    CHECK(zeros);
+
+    // Plain weights ~ N(0, 0.02); a 10x error is 900% off and cannot hide.
+    const double s_wte = stddev(p.wte, static_cast<std::size_t>(c.vocab_size) * C);
+    const double s_qkv = stddev(p.qkvw, L * 3 * C * C);
+    CHECK(s_wte > 0.017 && s_wte < 0.023);
+    CHECK(s_qkv > 0.018 && s_qkv < 0.022);
+
+    // Residual projections carry the extra 1/sqrt(2L) — the whole point of the
+    // GPT-2 init, and the term whose removal was previously invisible.
+    const double expect = 0.02 / std::sqrt(2.0 * static_cast<double>(c.n_layer));
+    const double s_proj = stddev(p.attprojw, L * C * C);
+    const double s_fcp = stddev(p.fcprojw, L * C * 4 * C);
+    CHECK(s_proj > 0.9 * expect && s_proj < 1.1 * expect);
+    CHECK(s_fcp > 0.9 * expect && s_fcp < 1.1 * expect);
+    CHECK(s_proj < 0.6 * s_qkv);  // strictly smaller than the unscaled weights
+}
+
 int main() {
+    test_init_weights();
     Config cfg{};
     cfg.max_seq_len = 8;
     cfg.vocab_size = 8;

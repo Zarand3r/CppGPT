@@ -100,5 +100,16 @@ int main() {
         CHECK_DIES(IGNORE(sample(inf_logits, 3, 1.0f, 0, g)));
     }
 
+    // Greedy decoding must hit the finite guard too. top_k == 1 returns via
+    // argmax, whose `>` comparison is false for NaN, so it returned token 0
+    // forever on a broken model — the L2 incident, reopened on this branch by
+    // the L4 fix. The two lessons' remedies collided and nothing tested the seam.
+    {
+        const float nan3[3] = {std::nanf(""), std::nanf(""), std::nanf("")};
+        Generator g(9ULL);
+        CHECK_DIES(IGNORE(sample(nan3, 3, 1.0f, 1, g)));   // greedy path
+        CHECK_DIES(IGNORE(sample(nan3, 3, 1.0f, 0, g)));   // sampling path
+    }
+
     return cppgpt::test::summary();
 }
