@@ -152,3 +152,44 @@ after a `WeightsOnly` load an AdamW step with **zero gradients** leaves the weig
 the same probe that caught the original stale-moment bug.
 End to end: fine-tuning a base checkpoint onto a different corpus moved val loss on that corpus from
 **2.3775 → 0.5398** in 150 steps.
+
+---
+
+## D4 — Interpretability ships as a dump + static viewer, not a server or a WASM build
+
+**Date:** 2026-08-11 · **Status:** adopted
+
+### Decision
+`tools/inspect` runs one forward and writes a schema-versioned JSON file. A single self-contained
+`viewer.html` renders it, opened from `file://`, making no external requests. No server, no new
+toolchain.
+
+### Why not the alternatives
+- **Hand-rolled local HTTP server** (~150 lines of std-only sockets) would give live prompt editing
+  without a refresh. Rejected: it adds a socket-accept and request-parsing surface to a codebase that
+  currently has neither, for what is a convenience rather than a capability. Parsing untrusted bytes
+  off a socket is the highest-risk code in most programs, and this repo's whole failure model is
+  built around trusted local files. If the refresh loop becomes genuinely painful, this is the first
+  thing to revisit — the JSON schema is already the wire format it would serve.
+- **Emscripten / WASM**, as Transformer Explainer does. Genuinely the nicest end state: one
+  implementation of the model, fully interactive, shareable as a static page. Rejected *for now*
+  because it introduces a second toolchain into a repo whose defining property is a single hermetic
+  pinned one (`MODULE.bazel` pins clang, Python and every ruleset precisely so builds are
+  reproducible). The cost is not writing the code, it is owning that toolchain forever.
+- **Python/Gradio front end.** Fastest to build, and rejected hardest: it would either reimplement
+  the model in Python — creating exactly the second implementation that `docs/engineering-lessons.md`
+  and the one-tokenizer rule exist to prevent — or just read our dumps, in which case it is option A
+  with a dependency stack bolted on.
+
+### What this costs
+Changing the prompt means re-running `inspect` and refreshing the page, rather than typing live.
+That is the whole cost, and it buys zero new dependencies, zero new toolchains, and a viewer that
+still opens in five years.
+
+### How we will know it was right
+- The JSON schema survives unchanged if a server or WASM build is added later (it is the same wire
+  format). If the first attempt at either forces a schema redesign, this decision was wrong about
+  reusability.
+- Dump size stays inside what a browser opens comfortably at the scales we actually use. The plan
+  already records the failure point: 1.2 GB at GPT-2 scale, which is why selection flags exist from
+  the first commit rather than being retrofitted.
