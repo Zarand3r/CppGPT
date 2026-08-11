@@ -6,3 +6,16 @@
 
 # MODULE.bazel.lock IS committed (pins transitive deps + registry hashes for
 # reproducible resolution) — do not ignore it.
+
+# Python notebook environment (uv-managed venv for notebooks/; machine-local).
+# Reproduced from notebooks/requirements.txt — never checked in.
+/.venv/
+
+# Jupyter checkpoint scratch
+**/.ipynb_checkpoints/
+
+# Editor settings with machine-local absolute paths (interpreter location).
+.vscode/
+
+# Corpora, tokenized splits and checkpoints are local artifacts, never committed.
+/data/

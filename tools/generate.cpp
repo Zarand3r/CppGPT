@@ -47,6 +47,11 @@ std::string read_file(const std::string& path, const char* what) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Line-buffer stdout. Redirected to a file or a pipe it is block-buffered by
+    // default, so a long run emits nothing until 4 KB accumulates: progress is
+    // invisible to `tail -f` and a working run is indistinguishable from a hung
+    // one. Found by running a real training job, not by any test.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(
         argc, argv, {"checkpoint", "vocab", "prompt", "n", "temperature", "top-k", "seed"});
 
