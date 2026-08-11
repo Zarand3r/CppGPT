@@ -56,6 +56,7 @@ sh_test(
     srcs = ["e2e_pipeline_test.sh"],
     data = [
         "//tools:generate",
+        "//tools:inspect",
         "//tools:prepare",
         "//tools:train",
     ],

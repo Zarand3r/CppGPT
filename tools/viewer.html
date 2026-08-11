@@ -1,0 +1,237 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cppgpt — inside the model</title>
+<!--
+  Self-contained viewer for a tools/inspect dump. No external requests, no build
+  step: open it from file:// and pick a run.json. Browsers block fetch() of local
+  files from file://, which is why this takes a file picker rather than loading a
+  path — it keeps the whole thing a single artifact with no server.
+-->
+<style>
+  :root {
+    --bg:#fbfbfd; --fg:#1a1a22; --dim:#6b6b7b; --line:#e2e2ea; --panel:#fff;
+    --accent:#3b5bdb; --warm:#e8590c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14141a; --fg:#e8e8ef; --dim:#9a9aab; --line:#2a2a36; --panel:#1c1c25;
+            --accent:#748ffc; --warm:#ff922b; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; padding:28px; background:var(--bg); color:var(--fg);
+         font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif }
+  h1 { font-size:19px; margin:0 0 4px }
+  h2 { font-size:14px; margin:0 0 10px; letter-spacing:.02em; text-transform:uppercase;
+       color:var(--dim); font-weight:600 }
+  .sub { color:var(--dim); margin:0 0 22px }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:18px; margin-bottom:18px }
+  .row { display:flex; gap:18px; flex-wrap:wrap }
+  .row > .panel { flex:1 1 340px; min-width:0 }
+  code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
+  .tok { display:inline-block; padding:3px 6px; margin:2px; border-radius:5px;
+         background:var(--bg); border:1px solid var(--line); font-family:ui-monospace,monospace;
+         font-size:13px; cursor:pointer }
+  .tok.sel { background:var(--accent); color:#fff; border-color:var(--accent) }
+  table { border-collapse:collapse; width:100% }
+  th,td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); font-size:13px }
+  th { color:var(--dim); font-weight:600 }
+  .bar { height:9px; background:var(--accent); border-radius:2px; display:inline-block;
+         vertical-align:middle }
+  .note { font-size:12.5px; color:var(--dim); border-left:3px solid var(--warm);
+          padding:8px 12px; margin-top:12px; background:var(--bg); border-radius:0 6px 6px 0 }
+  .grid { overflow-x:auto }
+  canvas { image-rendering:pixelated; border:1px solid var(--line); border-radius:3px;
+           display:block; cursor:crosshair }
+  .cellcap { font-size:11px; color:var(--dim); text-align:center; margin-top:3px }
+  select,input[type=file],button { font:inherit; padding:5px 8px; border-radius:6px;
+           border:1px solid var(--line); background:var(--panel); color:var(--fg) }
+  #drop { border:2px dashed var(--line); border-radius:10px; padding:44px; text-align:center;
+          color:var(--dim) }
+  #drop.hot { border-color:var(--accent); color:var(--accent) }
+  .kv { color:var(--dim) }
+</style>
+
+<h1>Inside the model</h1>
+<p class="sub">A forward pass from <code>tools/inspect</code>, laid open.</p>
+
+<div class="panel" id="loader">
+  <div id="drop">
+    <p><strong>Drop a <code>run.json</code> here</strong>, or <input type="file" id="file" accept=".json"></p>
+    <p style="font-size:12.5px">
+      <code>bazel run //tools:inspect --config=release -- --checkpoint … --vocab … --prompt "…" --out run.json</code>
+    </p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <div class="panel">
+    <h2>Prompt</h2>
+    <div id="tokens"></div>
+    <p class="kv" id="meta" style="margin:12px 0 0; font-size:12.5px"></p>
+  </div>
+
+  <div class="row">
+    <div class="panel">
+      <h2>Logit lens — where the prediction forms</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        The residual stream at each layer, read through the final layernorm and the tied
+        unembedding: <em>what would the model predict if it stopped here?</em>
+      </p>
+      <div id="lens"></div>
+      <div class="note">
+        The lens borrows the <em>final</em> layernorm for every layer, but each layer's residual
+        has its own scale, so early layers are distorted. Belrose et al.'s tuned lens fixes this
+        with a learned per-layer probe; this is the plain lens, so read early layers as
+        indicative, not quantitative.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Residual stream norm</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        ‖residual‖ per layer at the selected position. Flat segments are layers that barely
+        move the representation.
+      </p>
+      <canvas id="norms" width="420" height="200" style="width:100%;height:200px"></canvas>
+      <p class="kv" id="normcap" style="font-size:12.5px"></p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Attention</h2>
+    <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+      Each cell is one head: rows are query positions, columns are keys. Lower-triangular by
+      construction — a token can only attend to itself and its past.
+    </p>
+    <div class="grid" id="attn"></div>
+    <div class="note">
+      <strong>Attention is routing, not explanation.</strong> A bright cell means information moved,
+      not that it mattered. Jain &amp; Wallace (2019) and Wiegreffe &amp; Pinter (2019) both show
+      attention weights can be altered substantially without changing the prediction. Reading a
+      story off these maps is the classic mistake; use them to form hypotheses that a causal
+      method — ablation, patching — then has to confirm.
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let D = null, pos = 0;
+
+function show(data) {
+  D = data; pos = data.n_positions - 1;
+  $('#loader').hidden = true; $('#app').hidden = false;
+  const c = data.config;
+  $('#meta').textContent =
+    `schema ${data.schema} · ${c.n_layer} layers × ${c.n_head} heads · n_embd ${c.n_embd} · ` +
+    `vocab ${c.vocab_size} · context ${c.max_seq_len}`;
+  drawTokens(); render();
+}
+
+function esc(t) { return t === ' ' ? '␣' : t === '\n' ? '⏎' : t === '\t' ? '⇥' : t; }
+
+function drawTokens() {
+  $('#tokens').innerHTML = '';
+  D.tokens.forEach((t, i) => {
+    const b = document.createElement('span');
+    b.className = 'tok' + (i === pos ? ' sel' : '');
+    b.textContent = esc(t.text);
+    b.title = `position ${i} · id ${t.id}`;
+    b.onclick = () => { pos = i; drawTokens(); render(); };
+    $('#tokens').appendChild(b);
+  });
+}
+
+function render() { drawLens(); drawNorms(); drawAttn(); }
+
+// The lens is dumped at the LAST position only, so it is meaningful just there.
+function drawLens() {
+  const last = D.n_positions - 1;
+  const rows = D.logit_lens.map(e => {
+    const cells = e.top.slice(0, 5).map(t =>
+      `<td class="mono">${esc(t.text)}</td>` +
+      `<td><span class="bar" style="width:${Math.max(2, t.p * 90)}px"></span> ` +
+      `<span class="kv">${(t.p * 100).toFixed(1)}%</span></td>`).join('');
+    return `<tr><th>layer ${e.layer}</th>${cells}</tr>`;
+  }).join('');
+  const fin = D.final_top.slice(0, 5).map(t =>
+    `<td class="mono">${esc(t.text)}</td><td><span class="bar" style="width:${Math.max(2, t.p * 90)}px"></span> ` +
+    `<span class="kv">${(t.p * 100).toFixed(1)}%</span></td>`).join('');
+  $('#lens').innerHTML =
+    `<table>${rows}<tr><th style="color:var(--accent)">output</th>${fin}</tr></table>` +
+    (pos !== last ? `<p class="kv" style="font-size:12.5px;margin:10px 0 0">
+       Lens is recorded at the final position (${last}) only; you have position ${pos} selected.</p>` : '');
+}
+
+function drawNorms() {
+  const cv = $('#norms'), g = cv.getContext('2d');
+  const W = cv.width, H = cv.height, pad = 26;
+  g.clearRect(0, 0, W, H);
+  const series = D.residual_norms.map(l => l[pos]);
+  const mx = Math.max(...series, 1e-6);
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue('--accent').trim();
+  g.fillStyle = g.strokeStyle; g.lineWidth = 2; g.beginPath();
+  series.forEach((v, i) => {
+    const x = pad + i * (W - 2 * pad) / Math.max(1, series.length - 1);
+    const y = H - pad - (v / mx) * (H - 2 * pad);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+  series.forEach((v, i) => {
+    const x = pad + i * (W - 2 * pad) / Math.max(1, series.length - 1);
+    const y = H - pad - (v / mx) * (H - 2 * pad);
+    g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill();
+  });
+  $('#normcap').textContent =
+    `position ${pos} — ` + series.map((v, i) => `L${i}: ${v.toFixed(1)}`).join('  ');
+}
+
+function drawAttn() {
+  const A = D.attention, n = D.n_positions, box = Math.max(3, Math.min(11, Math.floor(300 / n)));
+  const wrap = document.createElement('div');
+  wrap.style.display = 'grid';
+  wrap.style.gap = '10px';
+  wrap.style.gridTemplateColumns = `repeat(${A.heads.length}, max-content)`;
+  A.layers.forEach((L, li) => A.heads.forEach((Hd, hi) => {
+    const cell = document.createElement('div');
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = n * box;
+    const g = cv.getContext('2d');
+    const M = A.data[li][hi];
+    for (let q = 0; q < n; q++) for (let k = 0; k < n; k++) {
+      const v = M[q][k];
+      // sqrt keeps low-but-nonzero weights visible; attention is heavy-tailed.
+      g.fillStyle = `rgba(59,91,219,${Math.sqrt(Math.max(0, v))})`;
+      g.fillRect(k * box, q * box, box, box);
+    }
+    cv.title = `layer ${L}, head ${Hd}`;
+    cell.appendChild(cv);
+    const cap = document.createElement('div');
+    cap.className = 'cellcap'; cap.textContent = `L${L}·H${Hd}`;
+    cell.appendChild(cap);
+    wrap.appendChild(cell);
+  }));
+  $('#attn').innerHTML = ''; $('#attn').appendChild(wrap);
+}
+
+function load(f) {
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const d = JSON.parse(r.result);
+      if (d.schema !== 1) alert(`This viewer reads schema 1; the file says ${d.schema}.`);
+      show(d);
+    } catch (e) { alert('Could not parse that file as an inspect dump: ' + e.message); }
+  };
+  r.readAsText(f);
+}
+$('#file').onchange = e => e.target.files[0] && load(e.target.files[0]);
+const drop = $('#drop');
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('hot'); };
+drop.ondragleave = () => drop.classList.remove('hot');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('hot');
+  e.dataTransfer.files[0] && load(e.dataTransfer.files[0]);
+};
+</script>

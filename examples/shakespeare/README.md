@@ -133,6 +133,33 @@ that would train the model on text that differs from the file on disk.
 fine-tuning wants; `--ckpt` on an existing file resumes a run and deliberately restores
 the optimizer state instead. The difference and why it matters is `docs/DECISIONS.md` D3.
 
+## Look inside the model
+
+```sh
+# dump one forward pass
+bazel run //tools:inspect --config=release -- \
+    --checkpoint "$PWD/data/shakespeare.ckpt" --vocab "$PWD/data/shakespeare.vocab" \
+    --prompt $'ROMEO:\nWhat ' --out "$PWD/data/run.json" --top-k 6
+
+# then open tools/viewer.html in a browser and drop run.json onto it
+```
+
+The viewer shows three things:
+
+- **The logit lens** — the residual stream at each layer read through the final layernorm and the
+  tied unembedding: *what would the model predict if it stopped here?* On the 900-step checkpoint
+  the top-1 moves `w → n → t → s` across the four layers and never settles early, which is a
+  legible symptom of an undertrained model rather than a bug.
+- **Residual-stream norms** — which layers move the representation and which are near-identity.
+- **Attention maps**, per layer per head — lower-triangular by construction.
+
+The viewer is one HTML file with no external requests; it opens from `file://` and takes the dump
+through a file picker, because browsers block reading local paths from `file://`.
+
+`--layers`/`--heads`/`--max-mb` exist because attention is `O(L·NH·T²)`: about 0.5 MB of JSON at this
+toy's scale, but ~1.2 GB at GPT-2 scale. `inspect` refuses to write a dump past the ceiling instead
+of producing a file no browser can open.
+
 ## Things worth knowing
 
 - **`--top-k 1` is greedy and fully deterministic** — same checkpoint, same prompt,

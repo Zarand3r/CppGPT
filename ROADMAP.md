@@ -129,13 +129,13 @@ backward, so `GPT2::acts()` exposes the whole forward pass with nothing to instr
       *Gate:* at the last layer the lens **is** the model's own final computation, so it must equal
       `acts().logits` bit-identically — a non-circular check that catches a wrong layernorm, stride,
       or transposed unembedding.
-- [ ] **M5-S2** `tools/inspect` — one forward → schema-versioned JSON (tokens, selected attention,
+- [x] **M5-S2** `tools/inspect` — one forward → schema-versioned JSON (tokens, selected attention,
       residual norms, per-layer lens top-k). Selection flags exist from the first commit: attention is
       `O(L·NH·T²)`, which is 0.5 MB at toy scale and **1.2 GB** at GPT-2 scale.
-- [ ] **M5-S3** `viewer.html` — self-contained, `file://`-openable, no external requests. Token strip,
+- [x] **M5-S3** `viewer.html` — self-contained, `file://`-openable, no external requests. Token strip,
       attention grid, logit-lens ladder, residual-norm chart. States the attention-is-not-explanation
       caveat *in the UI*.
-- [ ] **M5-S4** Wire an inspect step into `examples/shakespeare`.
+- [x] **M5-S4** Wire an inspect step into `examples/shakespeare`.
 - [ ] **Gate:** using only the viewer, answer — at which layer does the model commit to its top-1?
       which layers are near-identity? does any head show an interpretable pattern? (The last may be
       *no* for a 4-layer model at 900 steps; recording that honestly is a result.)
