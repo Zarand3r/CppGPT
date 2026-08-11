@@ -12,39 +12,26 @@
 
 namespace cppgpt {
 
-Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcept {
-    ASSERT(path != nullptr);
-    // Pack to little-endian uint16 in one buffer, then a single write.
-    std::vector<std::uint16_t> u16(ids.size());
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-        const int v = ids[i];
-        if (v < 0 || v > 0xFFFF) return err(ErrorCode::OutOfRange);
-        u16[i] = static_cast<std::uint16_t>(v);
-    }
-    // Write to a temp file and rename, like the checkpoint writer: writing the
-    // destination in place would leave a TRUNCATED .bin behind on a partial
-    // write, and a short token file is silently loadable (no length, no
-    // checksum) — the trainer would just train on less data than intended.
+namespace {
+
+// tmp -> write -> fsync -> rename -> fsync(dir); unlink the temp on any failure.
+[[nodiscard]] Result<void> write_atomic(const char* path, const void* data,
+                                        std::size_t nbytes) noexcept {
     const std::string tmp = std::string(path) + ".tmp";
     const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return err(ErrorCode::IoError);
-    const std::byte* p = reinterpret_cast<const std::byte*>(u16.data());
-    std::size_t n = u16.size() * sizeof(std::uint16_t);
+    const auto* p = static_cast<const std::byte*>(data);
+    std::size_t n = nbytes;
     bool ok = true;
     while (ok && n > 0) {
         const ssize_t w = ::write(fd, p, n);
-        if (w < 0) {
-            ok = false;
+        if (w <= 0) {
+            ok = false;  // w == 0 would otherwise spin forever
         } else {
             p += w;
             n -= static_cast<std::size_t>(w);
         }
     }
-    // fsync before rename, and fsync the directory after: without the first the
-    // bytes may not be on disk, without the second the rename itself is not
-    // durable. docs/engineering-lessons.md L5 mandates both -- and its incident
-    // IS this function, so omitting them here was the rule unimplemented at its
-    // own incident site.
     if (ok) ok = (::fsync(fd) == 0);
     if (::close(fd) != 0) ok = false;
     if (!ok || ::rename(tmp.c_str(), path) != 0) {
@@ -60,6 +47,25 @@ Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcep
         ::close(dfd);
     }
     return {};
+}
+
+}  // namespace
+
+Result<void> write_file_atomic(const char* path, std::string_view bytes) noexcept {
+    ASSERT(path != nullptr);
+    return write_atomic(path, bytes.data(), bytes.size());
+}
+
+Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcept {
+    ASSERT(path != nullptr);
+    // Pack to little-endian uint16 in one buffer, then a single write.
+    std::vector<std::uint16_t> u16(ids.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const int v = ids[i];
+        if (v < 0 || v > 0xFFFF) return err(ErrorCode::OutOfRange);
+        u16[i] = static_cast<std::uint16_t>(v);
+    }
+    return write_atomic(path, u16.data(), u16.size() * sizeof(std::uint16_t));
 }
 
 Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_t seed) noexcept {

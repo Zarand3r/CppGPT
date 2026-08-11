@@ -30,14 +30,14 @@ int main() {
     load_init();
     model.forward(fx.tokens.data(), fx.targets.data());
     const float logit_err = max_abs_diff(model.acts().logits, fx.logits.data(), fx.logits.size());
-    CHECK(logit_err < 1e-4f);
-    CHECK(std::fabs(model.mean_loss() - fx.losses[0]) < 1e-3f);
+    CHECK(logit_err < 1e-5f);
+    CHECK(std::fabs(model.mean_loss() - fx.losses[0]) < 1e-5f);
 
     // ---- backward parity ----
     model.zero_grads();
     model.backward(fx.tokens.data(), fx.targets.data());
     const float grad_err = max_abs_diff(model.grads().wte, fx.grads.data(), fx.n_params);
-    CHECK(grad_err < 1e-3f);
+    CHECK(grad_err < 1e-5f);
 
     // ---- 10-step AdamW trajectory parity ----
     load_init();  // restore PyTorch's initial weights; moments are still fresh (no update() yet)
@@ -50,9 +50,9 @@ int main() {
         model.backward(fx.tokens.data(), fx.targets.data());
         model.update(opt);
     }
-    CHECK(loss_err < 1e-3f);
+    CHECK(loss_err < 1e-5f);
 
-    std::printf("parity: logit err %.2e (<1e-4), grad err %.2e (<1e-3), loss err %.2e (<1e-3)\n",
+    std::printf("parity: logit err %.2e (<1e-5), grad err %.2e (<1e-5), loss err %.2e (<1e-5)\n",
                 static_cast<double>(logit_err), static_cast<double>(grad_err),
                 static_cast<double>(loss_err));
     return cppgpt::test::summary();

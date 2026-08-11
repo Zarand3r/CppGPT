@@ -275,6 +275,10 @@ int main() {
         for (int i = 0; i < 5; ++i) step(base, in, tg);  // build real moments
         const std::string p = tmp_path("finetune_base.ckpt");
         CHECK(base.save_checkpoint(p.c_str()).has_value());  // full: weights + m/v
+        // Snapshot AT the save point: `base` is stepped again below, so it is no
+        // longer a valid reference for what the file contains.
+        const std::vector<float> saved_w(base.params().wte,
+                                         base.params().wte + base.param_count());
 
         // Full load reproduces the base trajectory ...
         GPT2 full(cfg, B, T);
@@ -290,6 +294,13 @@ int main() {
         Generator gw(2ULL);
         wo.init_weights(gw);
         CHECK(wo.load_checkpoint(p.c_str(), GPT2::LoadMode::WeightsOnly).has_value());
+        // WeightsOnly must still restore the WEIGHTS. The zero-gradient check
+        // below only proves the optimizer was reset, so skipping the weight
+        // memcpy entirely used to pass the whole suite.
+        bool w_restored = true;
+        for (std::size_t i = 0; i < wo.param_count(); ++i)
+            w_restored = w_restored && (wo.params().wte[i] == saved_w[i]);
+        CHECK(w_restored);
         const std::vector<float> before(wo.params().wte, wo.params().wte + wo.param_count());
         wo.zero_grads();
         wo.update(AdamW{.lr = 1e-2f});  // zero grads + zero moments => no movement

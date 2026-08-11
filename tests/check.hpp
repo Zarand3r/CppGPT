@@ -24,6 +24,7 @@ template <class F>
 [[nodiscard]] inline bool dies(F&& fn) {
     std::fflush(nullptr);
     const pid_t pid = ::fork();
+    if (pid < 0) return false;  // never fall through to waitpid(-1, ...) and reap a stranger
     if (pid == 0) {
         (void)std::freopen("/dev/null", "w", stderr);
         fn();
@@ -36,9 +37,14 @@ template <class F>
 
 // Returns a process exit code: 0 = all passed, 1 = at least one failure.
 [[nodiscard]] inline int summary() {
-    std::printf("[ %s ] %d checks, %d failure%s\n", g_failures == 0 ? "PASS" : "FAIL", g_checks,
-                g_failures, g_failures == 1 ? "" : "s");
-    return g_failures == 0 ? 0 : 1;
+    // A file that ran zero checks is a FAILURE, not a pass. Deleting every CHECK
+    // from a test used to print "[ PASS ] 0 checks" and exit 0 — the cheapest
+    // possible way for a refactor to silently drop coverage.
+    const bool ok = g_failures == 0 && g_checks > 0;
+    if (g_checks == 0) std::fprintf(stderr, "  no checks ran — a test must assert something\n");
+    std::printf("[ %s ] %d checks, %d failure%s\n", ok ? "PASS" : "FAIL", g_checks, g_failures,
+                g_failures == 1 ? "" : "s");
+    return ok ? 0 : 1;
 }
 
 }  // namespace cppgpt::test

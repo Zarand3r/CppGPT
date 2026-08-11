@@ -239,12 +239,42 @@ function load(f) {
   };
   r.readAsText(f);
 }
-// When served over HTTP, load a co-located run.json automatically. From file://
-// browsers block this, so we fall through to the picker — which is why there is
-// exactly one viewer file rather than a "hosted" copy that would drift.
+// Resolve sibling URLs against the DIRECTORY of the current page. Without this,
+// '/cppgpt' (no trailing slash) resolves 'run.json' against '/', a different
+// route entirely — which is what made the auto-load silently fall back to the
+// file picker.
+const base = location.href.split(/[?#]/)[0].replace(/\/[^/]*$/, '') + '/';
+
+async function ask(prompt) {
+  const st = $('#status'), btn = $('#go');
+  btn.disabled = true;
+  st.textContent = 'running the model…';
+  try {
+    const r = await fetch(base + 'api/inspect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt})
+    });
+    const d = await r.json();
+    if (!r.ok) { st.textContent = d.error || ('error ' + r.status); return; }
+    show(d);
+    st.textContent = d.n_positions + ' tokens · ' + d.config.n_layer + ' layers × ' +
+                     d.config.n_head + ' heads';
+  } catch (e) {
+    st.textContent = 'could not reach the model: ' + e.message +
+                     ' (is tools/serve_viewer.py running?)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('#go').onclick = () => ask($('#prompt').value);
+$('#prompt').onkeydown = e => { if (e.key === 'Enter') ask($('#prompt').value); };
+
+// Seed with a precomputed dump so the page shows something before you type.
+// Blocked by the browser on file://, where the picker is the path instead.
 if (location.protocol !== 'file:') {
-  fetch('run.json').then(r => r.ok ? r.json() : null)
-    .then(d => { if (d) show(d); }).catch(() => {});
+  fetch(base + 'run.json').then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && $('#app').hidden) show(d); }).catch(() => {});
 }
 $('#file').onchange = e => e.target.files[0] && load(e.target.files[0]);
 const drop = $('#drop');

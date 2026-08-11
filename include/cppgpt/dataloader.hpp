@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "cppgpt/core.hpp"
@@ -38,6 +39,15 @@ namespace cppgpt {
 // that range is OutOfRange. Returns IoError on write failure. Used by
 // tools/prepare to serialize a tokenized corpus.
 [[nodiscard]] Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcept;
+
+// Write `bytes` to `path` atomically: temp file, fsync, rename, fsync the
+// directory, unlink the temp on any error. Same protocol as write_token_bin and
+// the checkpoint writer. Exposed because tools/prepare's .vocab sidecar needs it:
+// it carries the id->byte mapping every downstream tool derives meaning from, and
+// like the token files it has no length and no checksum, so a torn write is
+// undetectable -- a size-matched but semantically wrong vocab trains and decodes
+// confidently against the wrong alphabet.
+[[nodiscard]] Result<void> write_file_atomic(const char* path, std::string_view bytes) noexcept;
 
 class DataLoader {
 public:
