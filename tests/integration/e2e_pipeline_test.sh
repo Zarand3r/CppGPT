@@ -18,6 +18,7 @@ set -euo pipefail
 PREPARE="$TEST_SRCDIR/_main/tools/prepare"
 TRAIN="$TEST_SRCDIR/_main/tools/train"
 GENERATE="$TEST_SRCDIR/_main/tools/generate"
+INSPECT="$TEST_SRCDIR/_main/tools/inspect"
 WORK="$TEST_TMPDIR/work"
 mkdir -p "$WORK"
 
@@ -78,6 +79,42 @@ cmp -s "$WORK/gen_a.txt" "$WORK/gen_b.txt" || fail "greedy generation is not det
 # Output must decode within the corpus alphabet — a wrong vocab or a bad decode
 # shows up as bytes that were never in the training text.
 LC_ALL=C grep -qE '^[a-z ]+$' "$WORK/gen_a.txt" || fail "generated text escaped the corpus alphabet"
+
+# ---------- inspect: the interpretability dump ----------
+# Architecture again comes only from the checkpoint header — no --layers/--embd.
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --out "$WORK/run.json" --top-k 4 > "$WORK/inspect.log"
+[ -s "$WORK/run.json" ] || fail "inspect wrote no dump"
+
+# The dump's contract, checked rather than assumed: valid JSON, attention that is
+# a causal distribution, and a last-layer lens that agrees with the model's own
+# output. That last one is the non-circular check — at the final layer the lens IS
+# the model's final computation, so disagreement means the lens is wired wrong.
+python3 - "$WORK/run.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["schema"] == 1, f"unexpected schema {d['schema']}"
+n = d["n_positions"]
+assert n == len(d["tokens"]) > 0, "token count disagrees with n_positions"
+assert len(d["residual_norms"]) == d["config"]["n_layer"], "residual_norms has wrong layer count"
+for li, L in enumerate(d["attention"]["data"]):
+    for hi, H in enumerate(L):
+        assert len(H) == n, "attention is not n_positions square"
+        for q, row in enumerate(H):
+            assert abs(sum(row[:q+1]) - 1.0) <= 1e-3, f"attention row {q} does not sum to 1"
+            assert all(v == 0 for v in row[q+1:]), f"attention row {q} attends to the future"
+assert d["logit_lens"][-1]["top"][0]["id"] == d["final_top"][0]["id"], \
+    "last-layer logit lens disagrees with the model's own top-1"
+print("  dump contract ok")
+PYEOF
+
+# A selection that would be enormous must be refused, not written.
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+              --prompt "alpha be" --out "$WORK/huge.json" --max-mb 0.000001 \
+              > "$WORK/huge.log" 2>&1; then
+  fail "inspect ignored its size ceiling"
+fi
+grep -q "max-mb" "$WORK/huge.log" || fail "size-ceiling error does not say how to fix it"
 
 # ---------- fine-tune: vocab reuse then --init-from ----------
 python3 - "$WORK/target.txt" <<'PY'

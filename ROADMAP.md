@@ -116,6 +116,35 @@ The three verbs. Each box is wiring over code that already exists and is tested.
 
 ---
 
+## M5 — Interpretability: see inside the model
+
+Type a prompt, watch it travel through the transformer, see the prediction form. Detail, prior art
+and gates: [`docs/M5_INTERPRETABILITY_PLAN.md`](docs/M5_INTERPRETABILITY_PLAN.md).
+
+Unusually cheap here because **every activation is already retained** — the arena keeps them for
+backward, so `GPT2::acts()` exposes the whole forward pass with nothing to instrument.
+
+- [x] **M5-S1** `logit_lens(model, layer, out)` — final layernorm over `residual3[layer]` through the
+      tied unembedding: "what would the model predict if it stopped here?"
+      *Gate:* at the last layer the lens **is** the model's own final computation, so it must equal
+      `acts().logits` bit-identically — a non-circular check that catches a wrong layernorm, stride,
+      or transposed unembedding.
+- [x] **M5-S2** `tools/inspect` — one forward → schema-versioned JSON (tokens, selected attention,
+      residual norms, per-layer lens top-k). Selection flags exist from the first commit: attention is
+      `O(L·NH·T²)`, which is 0.5 MB at toy scale and **1.2 GB** at GPT-2 scale.
+- [x] **M5-S3** `viewer.html` — self-contained, `file://`-openable, no external requests. Token strip,
+      attention grid, logit-lens ladder, residual-norm chart. States the attention-is-not-explanation
+      caveat *in the UI*.
+- [x] **M5-S4** Wire an inspect step into `examples/shakespeare`.
+- [ ] **Gate:** using only the viewer, answer — at which layer does the model commit to its top-1?
+      which layers are near-identity? does any head show an interpretable pattern? (The last may be
+      *no* for a 4-layer model at 900 steps; recording that honestly is a result.)
+
+**Out of scope:** activation patching, ablation, attribution. Those are *causal* analyses; M5 builds
+the *observation* layer they sit on.
+
+---
+
 ## Debt & deferred fixes
 
 **Every outstanding item in the repo is listed here.** Other documents record *why* (`PLAN.md`),

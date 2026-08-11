@@ -175,3 +175,21 @@ conclusion drawn from it was not.
 not a deduction — benchmark both ways before building a plan on it. Reasoning correctly about a
 bottleneck does not license an untested claim about what does or does not affect it. Record the
 numbers in `docs/measurements.md` with a reproduce command.
+
+## L14 — Mutation-test a new gate before trusting it, especially one you wrote to be strict
+
+**Incident (2026-08, `tests/unit/interpret_test.cpp`).** A check written specifically to enforce
+`logit_lens`'s read-only contract — snapshot the activation arena, lens every layer, assert nothing
+changed — **passed against a mutant that deliberately scribbled into `lnf_mean`/`lnf_rstd`.** The
+loop ran layers in ascending order and therefore *ended* on the last layer, where the lens recomputes
+the model's own final layernorm and writes back byte-identical values. The violation was real and
+the assertion was correct; the traversal order made it unobservable. Reversing the loop so it ends on
+layer 0 catches the mutant immediately.
+
+Two of the four checks in that file caught their mutants on the first try. This one did not, and
+nothing about reading it suggested a problem.
+
+**Rule.** A new gate is a hypothesis until a mutant kills it. Break the implementation in the
+specific way the gate exists to prevent and watch it go red — cheap (one `sed`, one test run) and the
+only evidence that distinguishes a strict test from a strict-looking one. This applies *most* to
+tests written deliberately to be rigorous, because those are the ones nobody re-examines.
