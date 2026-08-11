@@ -193,3 +193,51 @@ still opens in five years.
 - Dump size stays inside what a browser opens comfortably at the scales we actually use. The plan
   already records the failure point: 1.2 GB at GPT-2 scale, which is why selection flags exist from
   the first commit rather than being retrofitted.
+
+---
+
+## D5 — A dev-only Python front door for interactive prompting, revising D4
+
+**Date:** 2026-08-11 · **Status:** adopted · **Revises:** D4
+
+### What changed
+D4 chose "dump + static viewer" and deferred interactivity, reasoning that live prompting was a
+convenience rather than a capability. Using it proved that wrong: a viewer you can only feed by
+re-running a CLI and re-picking a file is a *file inspector*, not a way to explore a model. The
+question "what does it do if I phrase it this way instead?" is the entire point, and D4's shape
+made that question expensive to ask.
+
+`tools/serve_viewer.py` now serves the viewer and exposes `POST /api/inspect`, which runs
+`//tools:inspect` on a submitted prompt and returns the dump.
+
+### Why Python, when D4 rejected a Python front end
+D4 rejected Python because it would either duplicate the model (the second-implementation hazard the
+one-tokenizer rule exists to prevent) or be option A with a dependency stack. This is neither: it
+**shells out to the same C++ binary**, so there remains exactly one implementation of the model, and
+it is dev tooling — the shipped binaries still link only libc/libm, leaving the no-runtime-dependency
+invariant untouched. What actually changed is that a hand-rolled C++ HTTP server is no longer the
+only way to get interactivity, and it was the socket-and-parser surface that D4 was avoiding.
+
+### What this costs, stated plainly
+This endpoint is exposed to the public internet via Tailscale Funnel, so it is the first untrusted
+input this project has ever accepted. Mitigations, each verified by running an attack rather than
+asserted:
+- **No shell.** `subprocess.run` with a list argument; the prompt is one argv element. Verified:
+  `a; touch PWNED3 &` was tokenized as 17 characters of text and created no file.
+- **Vocabulary validation before exec.** Out-of-vocab bytes are rejected with an explanation. This is
+  not cosmetic: `CharTokenizer::encode`'s contract is to *abort* on an unknown byte, so without this
+  every prompt containing an emoji would crash the process. Verified with `hello 🚀`.
+- Prompt length capped, concurrency bounded to 2, each run wall-clock bounded, output path chosen by
+  the server, and no client control over layer selection or size ceilings.
+
+### How we will know it was right
+- If the endpoint is still trivially safe once someone asks for generation (not just inspection),
+  the boundary was drawn in the right place. Generation takes an `n` and a temperature, which are
+  *numeric* knobs — if adding them requires new validation categories, revisit.
+- If the C++ side ever needs to change to support the front end, this decision failed: the whole
+  point is that the front door is replaceable and the model is not.
+
+### Note
+D4's static path still works unchanged — `viewer.html` opens from `file://` and takes a dump through
+the file picker with no server at all. The server is additive, not a replacement, which is why the
+viewer remains a single file rather than forking into hosted and local variants.

@@ -54,13 +54,26 @@
 <h1>Inside the model</h1>
 <p class="sub">A forward pass from <code>tools/inspect</code>, laid open.</p>
 
-<div class="panel" id="loader">
-  <div id="drop">
-    <p><strong>Drop a <code>run.json</code> here</strong>, or <input type="file" id="file" accept=".json"></p>
-    <p style="font-size:12.5px">
-      <code>bazel run //tools:inspect --config=release -- --checkpoint … --vocab … --prompt "…" --out run.json</code>
-    </p>
+<div class="panel" id="ask">
+  <h2>Prompt the model</h2>
+  <div style="display:flex; gap:8px; flex-wrap:wrap">
+    <input id="prompt" type="text" value="ROMEO:" spellcheck="false"
+           style="flex:1 1 340px; min-width:0; font-family:ui-monospace,monospace; font-size:14px;
+                  padding:8px 10px; border:1px solid var(--line); border-radius:7px;
+                  background:var(--bg); color:var(--fg)">
+    <button id="go" style="padding:8px 18px; background:var(--accent); color:#fff;
+                           border-color:var(--accent); font-weight:600">Run</button>
   </div>
+  <p class="kv" id="status" style="margin:10px 0 0; font-size:12.5px">
+    A character-level model: it only knows characters its training corpus contained.
+  </p>
+  <details style="margin-top:10px">
+    <summary class="kv" style="font-size:12.5px; cursor:pointer">or load a dump from disk</summary>
+    <div id="drop" style="margin-top:10px; padding:20px">
+      <p style="margin:0"><strong>Drop a <code>run.json</code></strong>, or
+        <input type="file" id="file" accept=".json"></p>
+    </div>
+  </details>
 </div>
 
 <div id="app" hidden>
@@ -120,7 +133,7 @@ let D = null, pos = 0;
 
 function show(data) {
   D = data; pos = data.n_positions - 1;
-  $('#loader').hidden = true; $('#app').hidden = false;
+  $('#app').hidden = false;
   const c = data.config;
   $('#meta').textContent =
     `schema ${data.schema} · ${c.n_layer} layers × ${c.n_head} heads · n_embd ${c.n_embd} · ` +
