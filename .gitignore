@@ -19,3 +19,6 @@
 
 # Corpora, tokenized splits and checkpoints are local artifacts, never committed.
 /data/
+
+# Generated static site for local/Funnel serving (tools/make-site.sh).
+/site/

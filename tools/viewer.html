@@ -226,6 +226,13 @@ function load(f) {
   };
   r.readAsText(f);
 }
+// When served over HTTP, load a co-located run.json automatically. From file://
+// browsers block this, so we fall through to the picker — which is why there is
+// exactly one viewer file rather than a "hosted" copy that would drift.
+if (location.protocol !== 'file:') {
+  fetch('run.json').then(r => r.ok ? r.json() : null)
+    .then(d => { if (d) show(d); }).catch(() => {});
+}
 $('#file').onchange = e => e.target.files[0] && load(e.target.files[0]);
 const drop = $('#drop');
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('hot'); };
