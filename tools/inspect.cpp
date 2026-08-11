@@ -219,6 +219,7 @@ int main(int argc, char** argv) {
     model.forward(buf.data(), nullptr);
 
     const ActTensors& a = model.acts();
+    const int B_dim = model.batch();
     std::string js;
     js.reserve(1 << 20);
     js += "{\n  \"schema\": ";
@@ -248,7 +249,10 @@ int main(int argc, char** argv) {
     for (int l = 0; l < cfg.n_layer; ++l) {
         if (l) js += ", ";
         js += "[";
-        const float* res = a.residual3 + static_cast<std::size_t>(l) * T * C;
+        // [L, B, T, C] — the B factor is required. It was missing here, correct
+        // only because this tool happens to build with B == 1; a third
+        // re-derivation of a stride the model already knows.
+        const float* res = a.residual3 + static_cast<std::size_t>(l) * B_dim * T * C;
         for (int t = 0; t < n_pos; ++t) {
             if (t) js += ", ";
             double ss = 0.0;

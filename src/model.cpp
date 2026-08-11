@@ -10,34 +10,21 @@
 #include "cppgpt/core.hpp"
 #include "cppgpt/log.hpp"
 #include "cppgpt/ops.hpp"
+#include "cppgpt/tensors.hpp"
 
 namespace cppgpt {
 namespace {
 
-// Parameter tensor sizes in declaration / .bin order; returns the total.
+// Parameter tensor sizes, derived from the table in tensors.hpp. The table is
+// the single source of truth; tensors_test proves it reproduces the layout this
+// function used to hard-code.
 std::size_t param_sizes(const Config& c, std::size_t s[kNumParamTensors]) {
-    const std::size_t V = static_cast<std::size_t>(c.vocab_size);
-    const std::size_t C = static_cast<std::size_t>(c.n_embd);
-    const std::size_t L = static_cast<std::size_t>(c.n_layer);
-    const std::size_t maxT = static_cast<std::size_t>(c.max_seq_len);
-    s[0] = V * C;          // wte
-    s[1] = maxT * C;       // wpe
-    s[2] = L * C;          // ln1w
-    s[3] = L * C;          // ln1b
-    s[4] = L * 3 * C * C;  // qkvw
-    s[5] = L * 3 * C;      // qkvb
-    s[6] = L * C * C;      // attprojw
-    s[7] = L * C;          // attprojb
-    s[8] = L * C;          // ln2w
-    s[9] = L * C;          // ln2b
-    s[10] = L * 4 * C * C;  // fcw
-    s[11] = L * 4 * C;      // fcb
-    s[12] = L * C * 4 * C;  // fcprojw
-    s[13] = L * C;          // fcprojb
-    s[14] = C;              // lnfw
-    s[15] = C;              // lnfb
+    static_assert(kNumParams == kNumParamTensors, "table and ParamTensors disagree");
     std::size_t tot = 0;
-    for (int i = 0; i < kNumParamTensors; ++i) tot += s[i];
+    for (int i = 0; i < kNumParams; ++i) {
+        s[i] = param_total(kParamSpecs[i], c);
+        tot += s[i];
+    }
     return tot;
 }
 
@@ -157,28 +144,27 @@ void GPT2::zero_grads() noexcept {
 }
 
 void GPT2::init_weights(Generator& gen) {
-    const int C = cfg_.n_embd, L = cfg_.n_layer, V = cfg_.vocab_size, maxT = cfg_.max_seq_len;
-    const auto Cz = static_cast<std::size_t>(C);
-    const auto Lz = static_cast<std::size_t>(L);
+    // Canonical GPT-2 init, driven by the table's Init column: weights N(0,0.02),
+    // residual projections N(0, 0.02/sqrt(2L)), LayerNorm gains 1, biases 0.
+    // Previously a hand-written list that had to stay in step with param_sizes,
+    // point_params and kDecay by eye.
     const float w_std = 0.02f;
-    const float proj_std = 0.02f / std::sqrt(2.0f * static_cast<float>(L));
-    const ParamTensors& p = params_;
-    fill_normal(p.wte, static_cast<std::size_t>(V) * Cz, w_std, gen);
-    fill_normal(p.wpe, static_cast<std::size_t>(maxT) * Cz, w_std, gen);
-    fill_const(p.ln1w, Lz * Cz, 1.0f);
-    fill_const(p.ln1b, Lz * Cz, 0.0f);
-    fill_normal(p.qkvw, Lz * 3 * Cz * Cz, w_std, gen);
-    fill_const(p.qkvb, Lz * 3 * Cz, 0.0f);
-    fill_normal(p.attprojw, Lz * Cz * Cz, proj_std, gen);
-    fill_const(p.attprojb, Lz * Cz, 0.0f);
-    fill_const(p.ln2w, Lz * Cz, 1.0f);
-    fill_const(p.ln2b, Lz * Cz, 0.0f);
-    fill_normal(p.fcw, Lz * 4 * Cz * Cz, w_std, gen);
-    fill_const(p.fcb, Lz * 4 * Cz, 0.0f);
-    fill_normal(p.fcprojw, Lz * Cz * 4 * Cz, proj_std, gen);
-    fill_const(p.fcprojb, Lz * Cz, 0.0f);
-    fill_const(p.lnfw, Cz, 1.0f);
-    fill_const(p.lnfb, Cz, 0.0f);
+    const float proj_std =
+        0.02f / std::sqrt(2.0f * static_cast<float>(cfg_.n_layer > 0 ? cfg_.n_layer : 1));
+    std::size_t ps[kNumParamTensors];
+    param_sizes(cfg_, ps);
+    float* p = params_.wte;  // base of the contiguous arena, in .bin order
+    std::size_t off = 0;
+    for (int i = 0; i < kNumParams; ++i) {
+        const std::size_t n = ps[i];
+        switch (kParamSpecs[i].init) {
+            case Init::Normal:     fill_normal(p + off, n, w_std, gen); break;
+            case Init::NormalProj: fill_normal(p + off, n, proj_std, gen); break;
+            case Init::Zero:       fill_const(p + off, n, 0.0f); break;
+            case Init::One:        fill_const(p + off, n, 1.0f); break;
+        }
+        off += n;
+    }
 }
 
 void GPT2::forward(const int* tokens, const int* targets) {
@@ -360,33 +346,14 @@ void GPT2::update(const AdamW& opt) noexcept {
     ensure_moment_arenas();  // lazily allocate m/v on the first step (zeroed)
     ++adam_step_;
 
-    // Canonical GPT-2 2-group weight decay: only weight matrices and embeddings
-    // (dim ≥ 2 in PyTorch) decay; biases and LayerNorm gains/shifts do not. In
-    // .bin/declaration order: wte, wpe, qkvw, attprojw, fcw, fcprojw.
-    static constexpr bool kDecay[kNumParamTensors] = {
-        true,   // wte
-        true,   // wpe
-        false,  // ln1w
-        false,  // ln1b
-        true,   // qkvw
-        false,  // qkvb
-        true,   // attprojw
-        false,  // attprojb
-        false,  // ln2w
-        false,  // ln2b
-        true,   // fcw
-        false,  // fcb
-        true,   // fcprojw
-        false,  // fcprojb
-        false,  // lnfw
-        false,  // lnfb
-    };
+    // 2-group weight decay comes from the table's `decay` column — one place,
+    // not a 16-entry bool array that had to line up with everything else by eye.
     // params_, grads_, m_, v_ share one contiguous layout; walk them by offset.
     float* param = params_.wte;
     const float* grad = grads_.wte;
     std::size_t off = 0;
     for (int i = 0; i < kNumParamTensors; ++i) {
-        const float wd = kDecay[i] ? opt.weight_decay : 0.0f;
+        const float wd = kParamSpecs[i].decay ? opt.weight_decay : 0.0f;
         adamw_update(param + off, grad + off, m_ + off, v_ + off, static_cast<int>(ps[i]), opt.lr,
                      opt.beta1, opt.beta2, opt.eps, wd, adam_step_);
         off += ps[i];

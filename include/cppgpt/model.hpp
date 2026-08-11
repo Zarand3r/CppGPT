@@ -13,19 +13,15 @@
 
 #include <cstddef>
 
+#include "cppgpt/model_config.hpp"
 #include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/storage.hpp"
 
 namespace cppgpt {
 
-struct Config {
-    int max_seq_len;  // maximum context length (rows of wpe)
-    int vocab_size;   // V
-    int n_layer;      // L
-    int n_head;       // NH (must divide n_embd)
-    int n_embd;       // C
-};
+// Config lives in model_config.hpp so tensors.hpp can use it without
+// depending on this header.
 
 // Non-owning pointers into the parameter buffer, in llm.c .bin order. Per-layer
 // tensors are stored contiguously as [L, ...].
