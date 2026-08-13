@@ -130,7 +130,10 @@ struct TopK {
 TopK top_k_of(const float* logits, int V, int k) {
     std::vector<int> idx(static_cast<std::size_t>(V));
     std::iota(idx.begin(), idx.end(), 0);
-    const int kk = std::min(k, V);
+    // Clamp, not min: a negative k put partial_sort's middle iterator BEFORE
+    // begin, which ASan reports as a heap-buffer-overflow and the release build
+    // silently reads out of bounds and exits 0.
+    const int kk = std::clamp(k, 0, V);
     std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(),
                       [&](int a, int b) { return logits[a] > logits[b]; });
     const float mx = *std::max_element(logits, logits + V);

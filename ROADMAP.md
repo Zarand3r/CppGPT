@@ -230,6 +230,40 @@ in a side document because `ROADMAP.md` is the single source of truth for outsta
 
 ---
 
+## Deferred from the 3-axis review (2026-08-13)
+
+Triaged, not dropped. Each has a named reason for waiting.
+
+- [ ] **`noexcept load_checkpoint` terminates on `bad_alloc`** — reproduced at `RLIMIT_AS=25 MB`. The
+      size *is* bounded by our own model, so checkpoint.hpp's stated defense holds; what fails is the
+      repo's nothrow idiom, which `Storage` follows and this one allocation does not. Fix: nothrow +
+      `ASSERT_MSG`, matching `Storage`.
+- [ ] **Activation-side `int` overflow is unguarded.** `GPT2::GPT2` explicitly guards the *parameter*
+      arena against `INT_MAX` with a comment naming the hazard; the identical cast on the activation
+      side (`static_cast<int>(BTC) * 4`) has no guard and wraps negative at `B=128,T=1024,C=4096`.
+      Unreachable at our memory scale — the *asymmetry with the documented guard* is the defect.
+- [ ] **`parse_selection` returns a multiset.** `--layers 0,0,0,0,0` dumps layer 0 five times and
+      inflates the size estimate past the ceiling's intent. CLI-only.
+- [ ] **`Device`: 17 signatures, 17 tautological asserts, zero callers.** `ops.hpp` additionally
+      claims each op "dispatches on it"; there is no dispatch. Pure deletion, ~40 lines.
+- [ ] **Dead code**: `DCHECK`/`UNREACHABLE`/`MUST`/`TRY_OR_CONTINUE` (0 uses, and the last is the sole
+      consumer of `detail::warn`), 4 unreachable `ErrorCode` values, `Storage::reset()` (documented as
+      the per-step mechanism, never called), the 249-line logging subsystem serving 2 call sites.
+- [ ] **`verify.hpp` is test-only code shipped as public library API**, and it sizes six allocations
+      directly from unvalidated file-header ints — an L3 violation inside the fixture loader the
+      constitution's parity promise depends on. Move to `tests/` and bound the sizes.
+- [ ] **~92 lines of tool duplication**; the atomic-write copy has already diverged (only one of the
+      two writers checked `close()` — now fixed, but the duplication remains).
+- [ ] **e2e hermeticity**: the `sh_test` shells out to 8 undeclared host binaries (`python3`, GNU
+      `stat -c%s`, `cmp`, `sed`, `grep`). `//scripts` already pins a hermetic Python toolchain.
+- [ ] **10 of 14 CLI flags can be ignored** and the e2e stays green — including `--clip` (clipping
+      silently disabled) and `--top-k` (greedy silently becomes sampling).
+- [ ] **9 `CHECK_DIES` for 96 `ASSERT` sites**, incl. the `INT_MAX` guard and the lens layer bound.
+- [ ] **The document-ownership rule is violated by every document it governs** — measurements appear
+      in `DECISIONS.md`, `PLAN.md`, `ROADMAP.md`, both example READMEs and both milestone plans.
+
+---
+
 ## Debt & deferred fixes
 
 **Every outstanding item in the repo is listed here.** Other documents record *why* (`PLAN.md`),

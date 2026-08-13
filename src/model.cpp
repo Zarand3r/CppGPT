@@ -20,6 +20,11 @@ namespace {
 // function used to hard-code.
 std::size_t param_sizes(const Config& c, std::size_t s[kNumParamTensors]) {
     static_assert(kNumParams == kNumParamTensors, "table and ParamTensors disagree");
+    // ...and tie that literal to the STRUCT, not just to itself. Without this,
+    // adding a field to ParamTensors without touching the table or the literal
+    // compiled clean and left the new pointer null.
+    static_assert(sizeof(ParamTensors) == kNumParamTensors * sizeof(float*),
+                  "ParamTensors field count does not match kNumParamTensors");
     std::size_t tot = 0;
     for (int i = 0; i < kNumParams; ++i) {
         s[i] = param_total(kParamSpecs[i], c);
@@ -44,6 +49,8 @@ void point_params(ParamTensors& p, float* base, const std::size_t s[kNumParamTen
 // Activation tensor sizes, derived from the table in tensors.hpp.
 std::size_t act_sizes(const Config& c, int B, int T, std::size_t s[kNumActTensors]) {
     static_assert(kNumActs == kNumActTensors, "activation table and ActTensors disagree");
+    static_assert(sizeof(ActTensors) == kNumActTensors * sizeof(float*),
+                  "ActTensors field count does not match kNumActTensors");
     std::size_t tot = 0;
     for (int i = 0; i < kNumActs; ++i) {
         s[i] = act_total(kActSpecs[i], c, B, T);

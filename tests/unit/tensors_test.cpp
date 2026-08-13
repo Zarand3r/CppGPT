@@ -147,6 +147,20 @@ int main() {
         CHECK(decaying == 6);
     }
 
+    // Same for activations: swapping preatt<->att, ln1_mean<->ln1_rstd or
+    // ln1<->atty previously passed everything, because sizes alone cannot tell
+    // same-shaped tensors apart and the name column had no assertion.
+    {
+        const std::vector<std::string> act_order = {
+            "encoded", "ln1", "ln1_mean", "ln1_rstd", "qkv", "atty", "preatt", "att",
+            "attproj", "residual2", "ln2", "ln2_mean", "ln2_rstd", "fch", "fch_gelu",
+            "fcproj", "residual3", "lnf", "lnf_mean", "lnf_rstd", "logits", "probs", "losses"};
+        bool order_ok = act_order.size() == static_cast<std::size_t>(kNumActs);
+        for (int i = 0; order_ok && i < kNumActs; ++i)
+            order_ok = order_ok && (act_order[static_cast<std::size_t>(i)] == kActSpecs[i].name);
+        CHECK(order_ok);
+    }
+
     // Names must match ParamTensors field order. Nothing else ties them: the
     // static_asserts compare counts only, and point_params' index->field mapping is
     // hand-written, so a reordered table changes the on-disk format silently.

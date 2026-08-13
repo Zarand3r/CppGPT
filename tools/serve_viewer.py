@@ -31,6 +31,9 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Overridden at startup from the checkpoint's own max_seq_len: a prompt longer
+# than the context cannot be served, and paying a fork/exec + checkpoint load to
+# discover that returned HTTP 500 for what is a client error.
 MAX_PROMPT_CHARS = 256
 MAX_NEW_TOKENS = 0          # inspect does not generate; kept explicit for clarity
 INSPECT_TIMEOUT_S = 30
@@ -83,6 +86,12 @@ def run_inspect(prompt: str) -> tuple[int, dict | str]:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Without this, rfile.read()/readline() block forever and ThreadingHTTPServer
+    # spawns an unbounded thread per connection: 800 half-open POSTs held 801
+    # threads and 804 fds indefinitely. StreamRequestHandler.setup() applies it
+    # to the socket. The Semaphore below bounds model RUNS; this bounds
+    # CONNECTIONS, which is a different resource.
+    timeout = 10
 
     def _send(self, status: int, body: bytes, ctype: str) -> None:
         self.send_response(status)
@@ -133,7 +142,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(status, json.dumps({"error": result}).encode(), "application/json")
 
     def log_message(self, fmt: str, *a) -> None:  # quieter, and no prompt echo
-        print(f"  {self.command} {self.path.split('?')[0]} -> {a[1] if len(a) > 1 else ''}")
+        # getattr, not self.path: log_message is also reached via send_error ->
+        # log_error BEFORE the request line is parsed, so a malformed request
+        # raised AttributeError, killed the response, and flooded the journal
+        # with tracebacks (measured 1867x amplification, no MemoryMax backstop).
+        path = getattr(self, "path", "-").split("?")[0]
+        print(f"  {getattr(self, 'command', '-')} {path} -> {a[1] if len(a) > 1 else ''}")
 
 
 def main() -> int:
@@ -152,6 +166,19 @@ def main() -> int:
             print(f"error: {what} not found at {p}")
             return 1
     VOCAB = set(ARGS.vocab.read_text(encoding="utf-8", errors="replace"))
+
+    # Read max_seq_len straight out of the checkpoint header (offset 8, the third
+    # int32 of the 64-byte header) and cap prompts there, so an over-long prompt
+    # is a 400 before any work happens.
+    global MAX_PROMPT_CHARS
+    try:
+        import struct
+        head = ARGS.checkpoint.read_bytes()[:64]
+        ctx = struct.unpack_from("<i", head, 8)[0]
+        if 0 < ctx < MAX_PROMPT_CHARS:
+            MAX_PROMPT_CHARS = ctx
+    except Exception:
+        pass  # keep the conservative default; the tool re-checks anyway
     print(f"serving {ARGS.site} on 127.0.0.1:{ARGS.port} "
           f"({len(VOCAB)} vocab chars, inspect={shutil.which(str(ARGS.inspect)) or ARGS.inspect})")
     ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler).serve_forever()

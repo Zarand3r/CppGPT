@@ -181,7 +181,20 @@ function show(data) {
   drawTokens(); render();
 }
 
-function esc(t) { return t === ' ' ? '␣' : t === '\n' ? '⏎' : t === '\t' ? '⇥' : t; }
+// Renders a token for display AND escapes it for innerHTML. These must stay
+// together: the previous version only substituted glyphs for whitespace, and its
+// result was interpolated into innerHTML in three places. Harmless while the
+// tokenizer is char-level (one byte per token, so a lone '<' cannot open a tag),
+// but the viewer also accepts an arbitrary dropped dump, and a byte-level BPE
+// token is many bytes — so this is exploitable now via drag-and-drop and would
+// become exploitable through the model itself the moment BPE lands.
+function esc(t) {
+  if (t === ' ') return '␣';
+  if (t === '\n') return '⏎';
+  if (t === '\t') return '⇥';
+  return String(t).replace(/[&<>"']/g, c =>
+    ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
 
 function drawTokens() {
   $('#tokens').innerHTML = '';
