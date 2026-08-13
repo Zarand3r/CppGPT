@@ -81,4 +81,52 @@ inline constexpr int kNumParams = static_cast<int>(sizeof(kParamSpecs) / sizeof(
     return n;
 }
 
+// --- activations -------------------------------------------------------------
+// Same idea for the activation arena, which is sized for a fixed B and T. The
+// per-layer flag means [L, ...] stacking exactly as for parameters.
+struct ActSpec {
+    const char* name;
+    std::size_t (*elems)(const Config&, int B, int T);  // PER LAYER when per_layer
+    bool per_layer;
+};
+
+// THE activation order. Must match ActTensors field order (static_assert'd where
+// they are bound), and act_sizes' original hand-written list.
+inline constexpr ActSpec kActSpecs[] = {
+    {"encoded",   [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, false},
+    {"ln1",       [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"ln1_mean",  [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        true},
+    {"ln1_rstd",  [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        true},
+    {"qkv",       [](const Config& c, int B, int T) { return 3 * detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"atty",      [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"preatt",    [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(c.n_head) * detail::sz(T) * detail::sz(T); }, true},
+    {"att",       [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(c.n_head) * detail::sz(T) * detail::sz(T); }, true},
+    {"attproj",   [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"residual2", [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"ln2",       [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"ln2_mean",  [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        true},
+    {"ln2_rstd",  [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        true},
+    {"fch",       [](const Config& c, int B, int T) { return 4 * detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"fch_gelu",  [](const Config& c, int B, int T) { return 4 * detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"fcproj",    [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"residual3", [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},
+    {"lnf",       [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, false},
+    {"lnf_mean",  [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        false},
+    {"lnf_rstd",  [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        false},
+    {"logits",    [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.vocab_size); }, false},
+    {"probs",     [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.vocab_size); }, false},
+    {"losses",    [](const Config&,   int B, int T) { return detail::sz(B) * detail::sz(T); },                        false},
+};
+inline constexpr int kNumActs = static_cast<int>(sizeof(kActSpecs) / sizeof(kActSpecs[0]));
+
+[[nodiscard]] constexpr std::size_t act_total(const ActSpec& s, const Config& c, int B, int T) {
+    return s.elems(c, B, T) * (s.per_layer ? detail::sz(c.n_layer) : 1);
+}
+
+[[nodiscard]] constexpr std::size_t acts_total(const Config& c, int B, int T) {
+    std::size_t n = 0;
+    for (const ActSpec& s : kActSpecs) n += act_total(s, c, B, T);
+    return n;
+}
+
 }  // namespace cppgpt

@@ -16,8 +16,7 @@ void logit_lens(const GPT2& model, int layer, float* out_logits, float* scratch)
     const ParamTensors& p = model.params();
 
     // residual3 is [L, B, T, C]; take this layer's block.
-    const float* residual =
-        a.residual3 + static_cast<std::size_t>(layer) * B * T * static_cast<std::size_t>(C);
+    const float* residual = layer_slice(a.residual3, layer, B, T, C);
 
     // mean/rstd go in CALLER scratch, not the model's lnf_mean/lnf_rstd: writing
     // those would silently corrupt state a caller may still be inspecting, which

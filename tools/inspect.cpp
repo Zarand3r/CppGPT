@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
         // [L, B, T, C] — the B factor is required. It was missing here, correct
         // only because this tool happens to build with B == 1; a third
         // re-derivation of a stride the model already knows.
-        const float* res = a.residual3 + static_cast<std::size_t>(l) * B_dim * T * C;
+        const float* res = layer_slice(a.residual3, l, B_dim, T, C);
         for (int t = 0; t < n_pos; ++t) {
             if (t) js += ", ";
             double ss = 0.0;

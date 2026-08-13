@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "cppgpt/model.hpp"
@@ -60,6 +61,32 @@ int main() {
             GPT2 m(c, 1, c.max_seq_len < 4 ? c.max_seq_len : 4);
             CHECK(m.param_count() == params_total(c));
         }
+    }
+
+    // Activation table must reproduce the arena the model allocates, at several
+    // (B, T) shapes — the same equivalence proof as for parameters, before
+    // anything downstream depends on it.
+    for (const Config& c : configs) {
+        if (c.n_embd <= 0 || c.vocab_size <= 0) continue;
+        for (const auto [B, T] : {std::pair{1, 4}, std::pair{2, 3}, std::pair{3, 1}}) {
+            if (T > c.max_seq_len) continue;
+            std::size_t tot = 0;
+            for (int i = 0; i < kNumActs; ++i) tot += act_total(kActSpecs[i], c, B, T);
+            CHECK(tot == acts_total(c, B, T));
+            CHECK(tot > 0);
+        }
+    }
+
+    // Activation names are distinct and non-empty too.
+    {
+        bool ok = true;
+        for (int i = 0; i < kNumActs; ++i) {
+            ok = ok && kActSpecs[i].name != nullptr && kActSpecs[i].name[0] != '\0';
+            for (int j = i + 1; j < kNumActs; ++j)
+                ok = ok && std::string(kActSpecs[i].name) != kActSpecs[j].name;
+        }
+        CHECK(ok);
+        CHECK(kNumActs == 23);
     }
 
     // GPT-2 124M's canonical parameter count, as an external anchor.

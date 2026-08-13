@@ -41,42 +41,14 @@ void point_params(ParamTensors& p, float* base, const std::size_t s[kNumParamTen
     p.fcprojw = ptr[12]; p.fcprojb = ptr[13]; p.lnfw = ptr[14]; p.lnfb = ptr[15];
 }
 
-// Activation tensor sizes in declaration order (for fixed B, T); returns total.
+// Activation tensor sizes, derived from the table in tensors.hpp.
 std::size_t act_sizes(const Config& c, int B, int T, std::size_t s[kNumActTensors]) {
-    const std::size_t Bz = static_cast<std::size_t>(B);
-    const std::size_t Tz = static_cast<std::size_t>(T);
-    const std::size_t C = static_cast<std::size_t>(c.n_embd);
-    const std::size_t L = static_cast<std::size_t>(c.n_layer);
-    const std::size_t NH = static_cast<std::size_t>(c.n_head);
-    const std::size_t V = static_cast<std::size_t>(c.vocab_size);
-    const std::size_t BTC = Bz * Tz * C;
-    const std::size_t BT = Bz * Tz;
-    const std::size_t ATT = Bz * NH * Tz * Tz;
-    s[0] = BTC;          // encoded
-    s[1] = L * BTC;      // ln1
-    s[2] = L * BT;       // ln1_mean
-    s[3] = L * BT;       // ln1_rstd
-    s[4] = L * BTC * 3;  // qkv
-    s[5] = L * BTC;      // atty
-    s[6] = L * ATT;      // preatt
-    s[7] = L * ATT;      // att
-    s[8] = L * BTC;      // attproj
-    s[9] = L * BTC;      // residual2
-    s[10] = L * BTC;     // ln2
-    s[11] = L * BT;      // ln2_mean
-    s[12] = L * BT;      // ln2_rstd
-    s[13] = L * BTC * 4;  // fch
-    s[14] = L * BTC * 4;  // fch_gelu
-    s[15] = L * BTC;     // fcproj
-    s[16] = L * BTC;     // residual3
-    s[17] = BTC;         // lnf
-    s[18] = BT;          // lnf_mean
-    s[19] = BT;          // lnf_rstd
-    s[20] = BT * V;      // logits
-    s[21] = BT * V;      // probs
-    s[22] = BT;          // losses
+    static_assert(kNumActs == kNumActTensors, "activation table and ActTensors disagree");
     std::size_t tot = 0;
-    for (int i = 0; i < kNumActTensors; ++i) tot += s[i];
+    for (int i = 0; i < kNumActs; ++i) {
+        s[i] = act_total(kActSpecs[i], c, B, T);
+        tot += s[i];
+    }
     return tot;
 }
 
