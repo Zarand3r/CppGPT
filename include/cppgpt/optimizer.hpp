@@ -2,12 +2,11 @@
 //
 // `AdamW` bundles the training hyperparameters (canonical GPT-2 defaults) so call
 // sites pass one config, not a soup of positional floats. `adamw_update` is the
-// per-tensor kernel — raw pointers + dims like the other ops (the device seam) —
+// per-tensor kernel — raw pointers + dims like the other ops —
 // so it takes the scalars directly; the model unpacks an AdamW into it and applies
 // the 2-group weight-decay split.
 #pragma once
 
-#include "cppgpt/device.hpp"
 
 namespace cppgpt {
 
@@ -26,8 +25,7 @@ struct AdamW {
 // step index (bias correction). Pass weight_decay = 0 for tensors that must not
 // decay (biases, LayerNorm gains).
 void adamw_update(float* param, const float* grad, float* m, float* v, int n, float lr,
-                  float beta1, float beta2, float eps, float weight_decay, int t,
-                  Device dev = Device::CPU) noexcept;
+                  float beta1, float beta2, float eps, float weight_decay, int t) noexcept;
 
 // Global gradient-norm clipping. Computes the total L2 norm over `grad[0..n)`
 // (double accumulation, so it is stable across millions of parameters) and, if it

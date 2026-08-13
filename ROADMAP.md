@@ -232,6 +232,15 @@ in a side document because `ROADMAP.md` is the single source of truth for outsta
 
 ## Deferred from the 3-axis review (2026-08-13)
 
+- [ ] **`ldd` shows `libresolv.so.2` on all five binaries**, which is outside the allow-list
+      `docs/constitution.md` and `PLAN.md` invariant 10 name (libc/libm/libpthread + loader).
+      **Measured inert:** 0 of 137 undefined dynamic symbols are resolver-related, and
+      `-Wl,--as-needed` does not drop it — it comes from the hermetic toolchain's own link line, and
+      it is a glibc component like `libc` itself. So this is a documentation/verification gap, not a
+      third-party dependency. Resolve by either widening the allow-list *with this evidence* or
+      finding the toolchain flag; do not silently widen it. Note the `ldd` gate is still unbuilt, so
+      nothing would have caught this — it was found by checking by hand.
+
 Triaged, not dropped. Each has a named reason for waiting.
 
 - [ ] **`noexcept load_checkpoint` terminates on `bad_alloc`** — reproduced at `RLIMIT_AS=25 MB`. The

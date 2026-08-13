@@ -321,88 +321,73 @@ void cross_entropy_backward_cpu(float* dlogits, const float* probs, const int* t
 }  // namespace
 
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,
-                    int B, int T, int C, int OC, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                    int B, int T, int C, int OC) noexcept {
     ASSERT(out != nullptr && inp != nullptr && weight != nullptr);
     ASSERT(B >= 0 && T >= 0 && C >= 0 && OC >= 0);
     matmul_forward_cpu(out, inp, weight, bias, B, T, C, OC);
 }
 
 void matmul_backward(float* dinp, float* dweight, float* dbias, const float* dout,
-                     const float* inp, const float* weight, int B, int T, int C, int OC,
-                     Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                     const float* inp, const float* weight, int B, int T, int C, int OC) noexcept {
     ASSERT(dinp != nullptr && dweight != nullptr && dout != nullptr && inp != nullptr &&
            weight != nullptr);
     ASSERT(B >= 0 && T >= 0 && C >= 0 && OC >= 0);
     matmul_backward_cpu(dinp, dweight, dbias, dout, inp, weight, B, T, C, OC);
 }
 
-void softmax_forward(float* out, const float* inp, int N, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+void softmax_forward(float* out, const float* inp, int N) noexcept {
     ASSERT(out != nullptr && inp != nullptr);
     ASSERT(N > 0);
     softmax_forward_cpu(out, inp, N);
 }
 
-void softmax_backward(float* dinp, const float* dout, const float* out, int N,
-                      Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+void softmax_backward(float* dinp, const float* dout, const float* out, int N) noexcept {
     ASSERT(dinp != nullptr && dout != nullptr && out != nullptr);
     ASSERT(N > 0);
     softmax_backward_cpu(dinp, dout, out, N);
 }
 
 void attention_forward(float* out, float* preatt, float* att, const float* inp, int B, int T,
-                       int C, int NH, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                       int C, int NH) noexcept {
     ASSERT(out != nullptr && preatt != nullptr && att != nullptr && inp != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0 && NH > 0 && C % NH == 0);
     attention_forward_cpu(out, preatt, att, inp, B, T, C, NH);
 }
 
 void attention_backward(float* dinp, float* datt, float* dpreatt, const float* dout,
-                        const float* inp, const float* att, int B, int T, int C, int NH,
-                        Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                        const float* inp, const float* att, int B, int T, int C, int NH) noexcept {
     ASSERT(dinp != nullptr && datt != nullptr && dpreatt != nullptr && dout != nullptr &&
            inp != nullptr && att != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0 && NH > 0 && C % NH == 0);
     attention_backward_cpu(dinp, datt, dpreatt, dout, inp, att, B, T, C, NH);
 }
 
-void gelu_forward(float* out, const float* inp, int N, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+void gelu_forward(float* out, const float* inp, int N) noexcept {
     ASSERT(out != nullptr && inp != nullptr);
     ASSERT(N >= 0);
     gelu_forward_cpu(out, inp, N);
 }
 
-void gelu_backward(float* dinp, const float* inp, const float* dout, int N, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+void gelu_backward(float* dinp, const float* inp, const float* dout, int N) noexcept {
     ASSERT(dinp != nullptr && inp != nullptr && dout != nullptr);
     ASSERT(N >= 0);
     gelu_backward_cpu(dinp, inp, dout, N);
 }
 
-void residual_forward(float* out, const float* a, const float* b, int N, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+void residual_forward(float* out, const float* a, const float* b, int N) noexcept {
     ASSERT(out != nullptr && a != nullptr && b != nullptr);
     ASSERT(N >= 0);
     residual_forward_cpu(out, a, b, N);
 }
 
-void residual_backward(float* da, float* db, const float* dout, int N, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+void residual_backward(float* da, float* db, const float* dout, int N) noexcept {
     ASSERT(da != nullptr && db != nullptr && dout != nullptr);
     ASSERT(N >= 0);
     residual_backward_cpu(da, db, dout, N);
 }
 
 void layernorm_forward(float* out, float* mean, float* rstd, const float* inp,
-                       const float* weight, const float* bias, int B, int T, int C,
-                       Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                       const float* weight, const float* bias, int B, int T, int C) noexcept {
     ASSERT(out != nullptr && mean != nullptr && rstd != nullptr && inp != nullptr &&
            weight != nullptr && bias != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0);
@@ -411,8 +396,7 @@ void layernorm_forward(float* out, float* mean, float* rstd, const float* inp,
 
 void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* dout,
                         const float* inp, const float* weight, const float* mean,
-                        const float* rstd, int B, int T, int C, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                        const float* rstd, int B, int T, int C) noexcept {
     ASSERT(dinp != nullptr && dweight != nullptr && dbias != nullptr && dout != nullptr &&
            inp != nullptr && weight != nullptr && mean != nullptr && rstd != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0);
@@ -420,32 +404,28 @@ void layernorm_backward(float* dinp, float* dweight, float* dbias, const float* 
 }
 
 void embedding_forward(float* out, const int* tokens, const float* wte, const float* wpe, int B,
-                       int T, int C, int V, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                       int T, int C, int V) noexcept {
     ASSERT(out != nullptr && tokens != nullptr && wte != nullptr && wpe != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
     embedding_forward_cpu(out, tokens, wte, wpe, B, T, C, V);
 }
 
 void embedding_backward(float* dwte, float* dwpe, const int* tokens, const float* dout, int B,
-                        int T, int C, int V, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                        int T, int C, int V) noexcept {
     ASSERT(dwte != nullptr && dwpe != nullptr && tokens != nullptr && dout != nullptr);
     ASSERT(B >= 0 && T >= 0 && C > 0 && V > 0);
     embedding_backward_cpu(dwte, dwpe, tokens, dout, B, T, C, V);
 }
 
 void cross_entropy_forward(float* losses, const float* probs, const int* targets, int B, int T,
-                           int V, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                           int V) noexcept {
     ASSERT(losses != nullptr && probs != nullptr && targets != nullptr);
     ASSERT(B >= 0 && T >= 0 && V > 0);
     cross_entropy_forward_cpu(losses, probs, targets, B, T, V);
 }
 
 void cross_entropy_backward(float* dlogits, const float* probs, const int* targets, int B, int T,
-                            int V, Device dev) noexcept {
-    ASSERT(dev == Device::CPU);
+                            int V) noexcept {
     ASSERT(dlogits != nullptr && probs != nullptr && targets != nullptr);
     ASSERT(B >= 0 && T >= 0 && V > 0);
     cross_entropy_backward_cpu(dlogits, probs, targets, B, T, V);

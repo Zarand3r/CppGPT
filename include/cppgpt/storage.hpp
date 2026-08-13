@@ -18,7 +18,6 @@
 #include <new>
 
 #include "cppgpt/core.hpp"
-#include "cppgpt/device.hpp"
 
 namespace cppgpt {
 
@@ -40,8 +39,8 @@ public:
     // Allocation failure is fatal: there is no degraded path without the arena,
     // so OOM aborts with a message (nothrow new + fail-fast) rather than raising
     // an exception — the ctor is therefore noexcept.
-    explicit Storage(std::size_t capacity_floats, Device dev = Device::CPU) noexcept
-        : dev_(dev), capacity_(detail::round_up(capacity_floats * sizeof(float), kAlign)) {
+    explicit Storage(std::size_t capacity_floats) noexcept
+        : capacity_(detail::round_up(capacity_floats * sizeof(float), kAlign)) {
         if (capacity_ != 0) {
             base_ = static_cast<std::byte*>(
                 ::operator new(capacity_, std::align_val_t{kAlign}, std::nothrow));
@@ -55,7 +54,7 @@ public:
     Storage& operator=(const Storage&) = delete;
 
     Storage(Storage&& o) noexcept
-        : base_(o.base_), dev_(o.dev_), capacity_(o.capacity_), head_(o.head_) {
+        : base_(o.base_), capacity_(o.capacity_), head_(o.head_) {
         o.base_ = nullptr;
         o.capacity_ = 0;
         o.head_ = 0;
@@ -64,7 +63,6 @@ public:
         if (this != &o) {
             ::operator delete(base_, std::align_val_t{kAlign});
             base_ = o.base_;
-            dev_ = o.dev_;
             capacity_ = o.capacity_;
             head_ = o.head_;
             o.base_ = nullptr;
@@ -103,14 +101,11 @@ public:
     void zero() noexcept {
         if (base_ != nullptr) std::memset(base_, 0, head_);
     }
-
-    [[nodiscard]] Device device() const noexcept { return dev_; }
     [[nodiscard]] std::size_t capacity_bytes() const noexcept { return capacity_; }
     [[nodiscard]] std::size_t used_bytes() const noexcept { return head_; }
 
 private:
     std::byte* base_ = nullptr;
-    Device dev_ = Device::CPU;
     std::size_t capacity_ = 0;  // bytes
     std::size_t head_ = 0;      // bytes, bump offset
 };

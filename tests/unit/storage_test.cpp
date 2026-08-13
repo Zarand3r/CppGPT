@@ -18,7 +18,6 @@ bool aligned(const void* p, std::size_t a) {
 int main() {
     // 32 floats = 128 bytes; already a multiple of kAlign (64).
     Storage s(32);
-    CHECK(s.device() == Device::CPU);
     CHECK(s.capacity_bytes() == 128);
     CHECK(s.used_bytes() == 0);
 

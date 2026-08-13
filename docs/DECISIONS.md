@@ -311,3 +311,41 @@ all-NaN gradients). Sequencing them after a period of the tightened gate being g
   both authors having counted to 16 correctly. Until that check exists, the fifth correspondence is
   still manual.
 - If `ops.cpp` ever has to change to accommodate the table, the boundary was drawn wrong.
+
+---
+
+## D7 — `Device` deleted rather than kept as a GPU seam
+
+**Date:** 2026-08-13 · **Status:** adopted · **Supersedes:** `PLAN.md`'s "device seam" premise
+
+### Decision
+`enum class Device { CPU }` and its trailing parameter on all 17 op signatures are removed, along
+with the 17 `ASSERT(dev == Device::CPU)` entry checks and `Storage`'s `dev_` tag.
+
+### Evidence
+Measured before removal: **17 signatures carried it, 17 implementations asserted it, and zero call
+sites anywhere passed it.** The only non-default reference in the tree was a test asserting a
+one-value enum equalled its one value. `ops.hpp`'s header additionally claimed each op "dispatches on
+it" — there was no dispatch; every entry point asserted, then unconditionally called the one `_cpu`
+implementation. That is an L1 violation (a comment describing behaviour the code does not have) that
+survived from M0.
+
+### Why not keep it for the CUDA phase
+`PLAN.md` justified it as "the one forward-looking abstraction we pay for now… cheap, and prevents a
+future rewrite." Two problems. It is not cheap — it is a defaulted parameter on every op, the only
+one in the API, and defaults that hide meaning are exactly what the repo's own rules warn about. And
+it is the **wrong granularity**: a GPU port moves the arenas and the whole step, not a branch inside
+`residual_forward`. When a second backend is real, the seam belongs at the arena that owns the
+memory. Deleting now and re-adding there costs less than carrying 17 signatures until then.
+
+This is the doctrine applied to itself: `CLAUDE.md` forbids speculative abstraction, and this was one,
+protected by having been written early.
+
+### What this costs
+If a CUDA backend arrives, the seam must be reintroduced — at the arena, deliberately, informed by
+what the kernels actually need. That is the intended outcome, not a regression.
+
+### How we will know it was right
+If a GPU port is ever attempted and its first move is to add a per-op device branch, this was wrong.
+If its first move is to swap the arena's allocator and the step driver — which is what every
+CPU→GPU port of this shape does — it was right.
