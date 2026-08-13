@@ -81,6 +81,16 @@ cc_test(
 )
 
 cc_test(
+    name = "tensors_test",
+    size = "small",
+    srcs = ["tensors_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
     name = "interpret_test",
     size = "small",
     srcs = ["interpret_test.cpp"],

@@ -241,3 +241,60 @@ asserted:
 D4's static path still works unchanged — `viewer.html` opens from `file://` and takes a dump through
 the file picker with no server at all. The server is additive, not a replacement, which is why the
 viewer remains a single file rather than forking into hosted and local variants.
+
+---
+
+## D6 — A constexpr tensor table replaces the hand-maintained layout correspondence
+
+**Date:** 2026-08-11 · **Status:** adopted (steps 1–2, 5–6 of 7)
+
+### The problem
+`src/model.cpp` maintained a **five-way correspondence entirely by hand with no compile-time
+enforcement**: `ParamTensors` field order == `param_sizes` index == `point_params` index == `kDecay`
+index == the `.bin` order that `scripts/gen_fixtures.py` reproduces as a *separate Python list*.
+
+That is not merely verbose. **Six of the sixteen parameter tensors have the identical size `L*C`**
+(`ln1w, ln1b, attprojb, ln2w, ln2b, fcprojb`), and two more share `C`. Transposing any two of them
+changes no size, no offset, and no allocation — only meaning. The sole guard was one whole-model
+numeric comparison at one tiny config, which reports "wrong" without saying where. And the layer
+stride was re-derived in three places outside `model.cpp`, one of them (`tools/inspect.cpp`) with the
+`B` factor missing — correct only because that tool happens to build with `B == 1`.
+
+### What was adopted
+`include/cppgpt/tensors.hpp`: one `constexpr` row per tensor carrying its **name**, per-layer element
+count, `[L, ...]` stacking flag, AdamW decay flag, and init scheme. `param_sizes`, `init_weights` and
+the decay mask are now loops over that table; the `kDecay` array and the hand-written size and init
+lists are gone. `Config` moved to `model_config.hpp` so the table need not depend on the model class.
+
+### What it explicitly is NOT
+Not a `Tensor` class. No runtime shapes, strides, dtypes, or dispatch. **`src/ops.cpp` is not touched**,
+the op signatures keep raw `float*` + `int` dims, and the 10-argument shapes that mirror llm.c for
+parity are unchanged. This was the main risk and it was avoided deliberately.
+
+### Evidence it is layout-preserving
+Migration step 1 was a pure equivalence proof *before* any deletion: `tensors_test` asserts
+table-derived per-tensor sizes **and running offsets** equal the hand-written values across 5 configs
+— the unit baby, the parity fixture, the Shakespeare toy, GPT-2 124M, and `L == 0` — plus the external
+anchor `params_total(124M) == 124,439,808`. Then the full suite (29/29, including the M1 PyTorch parity
+gate, which is a byte-order gate on the arena) and an end-to-end `inspect` diff: logit-lens top-1
+sequence, residual norms and final distribution all identical.
+
+### Cost
+| | before | after |
+|---|---|---|
+| edit sites to add a parameter tensor | 8 | **1 table row + 1 name** |
+| `matmul_forward` (mlp_fc) | 5.82 GFLOP/s | 5.68 (within run-to-run noise; `ops.cpp` unmodified) |
+| memory profile | — | byte-identical (same offsets, same arenas) |
+
+Remaining migration steps (3, 4, 7 — `Arena::bind`, `at(tensor, layer)` for the forward/backward block
+bodies, retiring `ParamTensors`) are deliberately **not** taken yet: they rewrite the code the parity
+gate protects, and that gate only became trustworthy in the preceding commit (it had been passing on
+all-NaN gradients). Sequencing them after a period of the tightened gate being green is the point.
+
+### How we will know it was right
+- Adding the next tensor touches one row. If it touches more, the table is not actually the source of
+  truth and this is half-done.
+- `gen_fixtures.py`'s ordering should become checkable **by name** against the table rather than by
+  both authors having counted to 16 correctly. Until that check exists, the fifth correspondence is
+  still manual.
+- If `ops.cpp` ever has to change to accommodate the table, the boundary was drawn wrong.

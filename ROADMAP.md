@@ -136,12 +136,78 @@ backward, so `GPT2::acts()` exposes the whole forward pass with nothing to instr
       attention grid, logit-lens ladder, residual-norm chart. States the attention-is-not-explanation
       caveat *in the UI*.
 - [x] **M5-S4** Wire an inspect step into `examples/shakespeare`.
+- [x] **M5-S5** Per-position logit lens (`lens_grid`), attention rendered over the text, and per-head
+      summary stats (entropy, mean attention distance, mass on position 0). The first is
+      nostalgebraist's original lens form; the second is BertViz's insight that a T×T matrix is far
+      less legible than shading the actual characters; the third turns a wall of heatmaps into
+      something rankable.
+- [x] **M5-S6** Interactive prompting — `tools/serve_viewer.py` + a `systemd --user` unit
+      (`Restart=always`, survives logout). See `docs/DECISIONS.md` D5.
 - [ ] **Gate:** using only the viewer, answer — at which layer does the model commit to its top-1?
       which layers are near-identity? does any head show an interpretable pattern? (The last may be
       *no* for a 4-layer model at 900 steps; recording that honestly is a result.)
 
 **Out of scope:** activation patching, ablation, attribution. Those are *causal* analyses; M5 builds
 the *observation* layer they sit on.
+
+---
+
+## M6 — Interpretability: causal methods and the rest of the viewer
+
+M5 built the **observation** layer. These sit on top of it and are not started. Kept here rather than
+in a side document because `ROADMAP.md` is the single source of truth for outstanding work.
+
+### Not built, and why
+
+- [ ] **Activation patching / causal tracing.** Re-run a forward with one activation replaced by its
+      value from a *different* prompt, and measure how much the output moves. This is the method that
+      turns "attention went here" into "this component caused the prediction" — the caveat the viewer
+      currently prints. **Needs a different API than everything in M5:** every existing feature reads a
+      finished dump, whereas patching must intervene *during* the forward. Expect a
+      `forward_with_patch(layer, tensor, position, replacement)` seam, which is also the natural place
+      a future GPU port would hook.
+- [ ] **Ablation.** Zero a head or an MLP and re-measure. Same seam as patching; cheaper to implement
+      and a good first slice.
+- [ ] **Attribution / direct logit attribution.** Decompose the final logit into per-layer, per-head
+      contributions through the residual stream. Purely a read of existing activations, so no new
+      seam — but it needs care: the residual stream is a sum, and attributing through LayerNorm is
+      where naive implementations go wrong.
+- [ ] **Neuron-level views.** Max-activating positions over `fch_gelu` (`[L,B,T,4C]`, already in the
+      arena). Cheap; deliberately skipped in M5 to keep the first viewer legible.
+- [ ] **Per-layer KL divergence** between consecutive logit-lens distributions — the single cleanest
+      number for "how much did this layer change the prediction", and a better ranking signal than the
+      residual norm currently plotted. Small: two lens calls and a reduction.
+- [ ] **Tuned lens** (Belrose et al. 2023). The plain lens borrows the *final* layernorm for every
+      layer, so early layers are systematically distorted — the viewer says so. Fixing it properly
+      needs a learned affine probe per layer, i.e. a small training loop, which is why it is a
+      milestone and not a patch.
+
+### Frontend improvements
+
+- [ ] **The M5 gate is still unmet.** Its own criterion is answering the three interpretability
+      questions *from the viewer*; they have so far been answered from JSON on the command line, which
+      is not the same claim. Either the viewer needs a summary panel that states them, or the gate
+      should be honestly reworded.
+- [ ] **Compare two prompts side by side.** The single highest-value UI addition: nearly every
+      interpretability question is differential ("what changes when I say X instead of Y").
+- [ ] **Generation, not just inspection.** The viewer shows one forward pass; watching the lens
+      evolve *as tokens are sampled* is the thing people actually want to see. Note this changes the
+      server's threat model — `n` and temperature become client-controlled numeric knobs (D5 flags
+      this as the test of whether that boundary was drawn in the right place).
+- [ ] **Attention aggregated across heads/layers**, and head *clustering* by the summary stats already
+      computed — BertViz's "model view" and AttentionViz's global perspective.
+- [ ] **Streaming / progress** for long prompts; currently the request is atomic.
+- [ ] **Deep-link a run** (prompt in the URL) so a finding can be shared, and an export button.
+- [ ] **Dark-mode canvas colours** are hardcoded `rgba(59,91,219,·)` in the attention drawing rather
+      than reading the theme token, so they do not adapt like the rest of the page.
+
+### Known limitations worth stating in the UI
+
+- [ ] The lens grid shows **top-1 only**; a position where the top two are near-tied looks as
+      confident as one that is certain. Shading encodes probability, but a margin column would be
+      honest.
+- [ ] `head_stats` are computed over the **causal prefix of one prompt** — they characterize this
+      input, not the head in general. Real head characterization needs many inputs.
 
 ---
 

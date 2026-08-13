@@ -111,7 +111,43 @@
   </div>
 
   <div class="panel">
-    <h2>Attention</h2>
+    <h2>The sequence becoming tokens</h2>
+    <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+      Each column is a position, each row a layer: the model's top-1 prediction <em>if it stopped
+      there</em>. Read a column downward to watch one position resolve; read a row across to see what
+      the whole sequence looks like at that depth. Cell shading is confidence.
+    </p>
+    <div class="grid"><table id="lensgrid"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>Attention on the context</h2>
+    <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+      Pick a query position and a head: the text below is shaded by how much that query attended to
+      each earlier character. This is the same data as the matrices, read the way you actually think
+      about it.
+    </p>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px">
+      <label class="kv" style="font-size:12.5px">query <select id="q"></select></label>
+      <label class="kv" style="font-size:12.5px">layer <select id="al"></select></label>
+      <label class="kv" style="font-size:12.5px">head <select id="ah"></select></label>
+    </div>
+    <div id="attntext" class="mono" style="line-height:2.1; font-size:15px"></div>
+    <p class="kv" id="attncap" style="font-size:12.5px; margin-top:10px"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Head summary</h2>
+    <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+      <strong>Entropy</strong> — low means the head focuses on few positions.
+      <strong>Distance</strong> — mean <code>q−k</code> weighted by attention; ≈1 is a
+      previous-token head. <strong>→first</strong> — mass on position 0, the "attention sink".
+    </p>
+    <div class="grid"><table id="heads"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>Attention matrices</h2>
     <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
       Each cell is one head: rows are query positions, columns are keys. Lower-triangular by
       construction — a token can only attend to itself and its past.
@@ -138,6 +174,10 @@ function show(data) {
   $('#meta').textContent =
     `schema ${data.schema} · ${c.n_layer} layers × ${c.n_head} heads · n_embd ${c.n_embd} · ` +
     `vocab ${c.vocab_size} · context ${c.max_seq_len}`;
+  fillSelect($('#q'), data.n_positions, data.n_positions - 1, i => `${i} (${esc(data.tokens[i].text)})`);
+  fillSelect($('#al'), data.attention.layers.length, 0, i => `L${data.attention.layers[i]}`);
+  fillSelect($('#ah'), data.attention.heads.length, 0, i => `H${data.attention.heads[i]}`);
+  for (const id of ['q', 'al', 'ah']) $('#' + id).onchange = drawAttnText;
   drawTokens(); render();
 }
 
@@ -155,7 +195,66 @@ function drawTokens() {
   });
 }
 
-function render() { drawLens(); drawNorms(); drawAttn(); }
+function render() { drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); }
+
+// Layer x position grid of top-1 predictions — the "sequence transforming" view.
+function drawLensGrid() {
+  if (!D.lens_grid) { $('#lensgrid').innerHTML = '<tr><td class="kv">dump predates lens_grid</td></tr>'; return; }
+  const n = D.n_positions;
+  let h = '<tr><th></th>' + D.tokens.map((t, i) =>
+    `<th class="mono" style="text-align:center${i === pos ? ';color:var(--accent)' : ''}">${esc(t.text)}</th>`).join('') + '</tr>';
+  D.lens_grid.forEach((row, l) => {
+    h += `<tr><th>L${l}</th>` + row.map(c =>
+      `<td class="mono" style="text-align:center;background:rgba(59,91,219,${(c.p * 0.85).toFixed(3)})"
+           title="p=${(c.p * 100).toFixed(1)}%">${esc(c.text)}</td>`).join('') + '</tr>';
+  });
+  // The model's actual output, for comparison with the last lens row.
+  h += '<tr><th style="color:var(--accent)">out</th>' + D.tokens.map((t, i) =>
+    `<td class="mono" style="text-align:center">${i < n - 1 ? esc(D.tokens[i + 1].text) : '·'}</td>`).join('') + '</tr>';
+  $('#lensgrid').innerHTML = h;
+}
+
+function drawHeads() {
+  if (!D.head_stats) { $('#heads').innerHTML = ''; return; }
+  const rows = D.head_stats.slice().sort((a, b) => a.entropy - b.entropy);
+  $('#heads').innerHTML =
+    '<tr><th>head</th><th>entropy</th><th>distance</th><th>→first</th></tr>' +
+    rows.map(r => `<tr><td class="mono">L${r.layer}·H${r.head}</td>` +
+      `<td>${r.entropy.toFixed(2)}</td><td>${r.distance.toFixed(2)}</td>` +
+      `<td>${(r.to_first * 100).toFixed(0)}%</td></tr>`).join('');
+}
+
+function fillSelect(el, n, sel, label) {
+  el.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    const o = document.createElement('option');
+    o.value = i; o.textContent = label ? label(i) : i;
+    if (i === sel) o.selected = true;
+    el.appendChild(o);
+  }
+}
+
+// Attention as highlighting over the actual text.
+function drawAttnText() {
+  const A = D.attention;
+  const li = Math.min(+$('#al').value || 0, A.layers.length - 1);
+  const hi = Math.min(+$('#ah').value || 0, A.heads.length - 1);
+  const q = Math.min(+$('#q').value || 0, D.n_positions - 1);
+  const row = A.data[li][hi][q];
+  const mx = Math.max(...row.slice(0, q + 1), 1e-9);
+  $('#attntext').innerHTML = D.tokens.map((t, k) => {
+    if (k > q) return `<span style="opacity:.22">${esc(t.text)}</span>`;  // causally invisible
+    const w = row[k] / mx;
+    const isQ = k === q;
+    return `<span title="${(row[k] * 100).toFixed(1)}%" style="background:rgba(59,91,219,${(w * 0.9).toFixed(3)});` +
+           `padding:2px 1px;border-radius:2px${isQ ? ';outline:2px solid var(--warm)' : ''}">${esc(t.text)}</span>`;
+  }).join('');
+  const top = row.slice(0, q + 1).map((v, k) => [v, k]).sort((a, b) => b[0] - a[0]).slice(0, 3);
+  $('#attncap').textContent =
+    `L${A.layers[li]}·H${A.heads[hi]}, query ${q} (${esc(D.tokens[q].text)}) — strongest: ` +
+    top.map(([v, k]) => `${esc(D.tokens[k].text)}@${k} ${(v * 100).toFixed(0)}%`).join(', ') +
+    '   (outlined = the query itself; faded = future, causally masked)';
+}
 
 // The lens is dumped at the LAST position only, so it is meaningful just there.
 function drawLens() {
@@ -243,7 +342,19 @@ function load(f) {
 // '/cppgpt' (no trailing slash) resolves 'run.json' against '/', a different
 // route entirely — which is what made the auto-load silently fall back to the
 // file picker.
-const base = location.href.split(/[?#]/)[0].replace(/\/[^/]*$/, '') + '/';
+const base = (() => {
+  // The page is reachable at BOTH '/cppgpt' and '/cppgpt/', and sibling requests
+  // must resolve under it either way. Stripping the last segment (the obvious
+  // move) is wrong for the no-trailing-slash form: at '/cppgpt' it yields '/',
+  // so the POST went to a different Funnel route entirely and came back empty.
+  // Only strip when the last segment is a filename.
+  const u = new URL(location.href);
+  let p = u.pathname;
+  const last = p.split('/').pop();
+  if (last.includes('.')) p = p.slice(0, p.length - last.length);   // .../index.html -> .../
+  else if (!p.endsWith('/')) p += '/';                              // /cppgpt -> /cppgpt/
+  return u.origin + p;
+})();
 
 async function ask(prompt) {
   const st = $('#status'), btn = $('#go');
