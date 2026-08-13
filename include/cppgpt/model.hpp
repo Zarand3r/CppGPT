@@ -84,6 +84,18 @@ inline constexpr int kNumActTensors = 23;
                       static_cast<std::size_t>(T) * static_cast<std::size_t>(C);
 }
 
+// Per-(layer, head) slice of an attention tensor shaped [L, B, NH, T, T]. Same
+// reason as above, and the same bug had survived TWICE in tools/inspect.cpp on
+// this shape after the residual one was fixed — announcing the class retired
+// while two instances remained.
+[[nodiscard]] inline const float* head_slice(const float* base, int layer, int head, int B, int NH,
+                                             int T) noexcept {
+    const auto per_head = static_cast<std::size_t>(T) * static_cast<std::size_t>(T);
+    const auto per_layer = static_cast<std::size_t>(B) * static_cast<std::size_t>(NH) * per_head;
+    return base + static_cast<std::size_t>(layer) * per_layer +
+           static_cast<std::size_t>(head) * per_head;
+}
+
 class GPT2 {
 public:
     // Allocates the parameter and activation arenas for `cfg` at batch dims B, T.

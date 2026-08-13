@@ -49,7 +49,7 @@ CLANG=$(find ~/.cache/bazel -path '*llvm_toolchain_llvm/bin/clang++' | head -1)
 $CLANG -O3 -march=native mm.cpp -o mmb && ./mmb
 $CLANG -O3               mm.cpp -o mmb && ./mmb
 ```
-Once `//tools:bench` is merged (currently **branch `m2-bench`, PR #20 — NOT on `main`**):
+Once `//tools:bench` is merged (on `main`):
 ```sh
 bazel run --config=release //tools:bench -- 20
 ```
@@ -148,7 +148,7 @@ pipeline changes, only `--steps`.
 
 ## M-7 · Test suite
 
-25 targets (20 unit + 4 integration + 1 py_test), green under `--config=dev` (ASan/UBSan) and
+29 targets (23 unit + 5 integration + 1 py_test), green under `--config=dev` (ASan/UBSan) and
 `--config=release`, as of 2026-08-03.
 
 **Reproduce:** `bazel test //... --config=dev`

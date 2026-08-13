@@ -59,7 +59,10 @@ Result<void> atomic_write(const char* path, const CheckpointHeader& header, cons
         ok = write_all(fd, sections[i].data, sections[i].size);
     // Durability: the bytes must hit disk before the rename makes them visible.
     if (ok) ok = (::fsync(fd) == 0);
-    ::close(fd);
+    // Check close(): deferred ENOSPC/EIO surface here, and the twin writer in
+    // dataloader.cpp already checks it. Ignoring it silently dropped write errors
+    // in the MORE important of the two.
+    if (::close(fd) != 0) ok = false;
 
     if (!ok || ::rename(tmp.c_str(), path) != 0) {
         ::unlink(tmp.c_str());  // never leave a partial temp behind

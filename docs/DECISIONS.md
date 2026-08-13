@@ -58,7 +58,10 @@ End-to-end: `//tools:train`, 40 steps, 2.10 s → 1.62 s wall.
 ### What this costs
 - **Numerics change.** Removing FMA means each multiply and add rounds separately, so results shift
   very slightly. The canonical-GPT-2 parity gate still passes with ~50× margin: forward logit error
-  moves from 9.54e-07 to **1.91e-06**, against a 1e-4 tolerance (gradients 2.98e-07, loss 9.54e-07).
+  moves from 9.54e-07 to **1.91e-06**, against the **1e-5** tolerance the gate actually enforces —
+  a **5.2x** margin, not the ~50x an earlier version of this entry claimed against a 1e-4 figure that
+  was never the enforced value. A decision justified by a safety factor ten times larger than the real
+  one is worse than no justification, because it is the number the next person reuses (gradients 2.98e-07, loss 9.54e-07).
   Note the direction — contraction *off* is marginally **less** accurate, because FMA rounds once
   instead of twice. Both are far inside the gate.
   *Upside:* results no longer depend on whether the target ISA happens to offer FMA, which makes the
@@ -291,7 +294,7 @@ from `tensors.hpp`; the dead `kDecay` array is removed; and `layer_slice()` repl
 independent re-derivations of the `[L,B,T,C]` stride that produced the `inspect` B-factor bug.
 
 Still outstanding, and now the honest remainder: the **68 hand-written layer-stride expressions inside
-`forward`/`backward` are unchanged**, so `model.cpp` is 460 lines rather than the ~375 the proposal
+`forward`/`backward` are unchanged**, so `model.cpp` is 432 lines rather than the ~375 the proposal
 projected. Those sites are locally correct and covered by the parity gate; collapsing them is a large
 mechanical edit whose benefit is readability rather than correctness, and it is the one part of this
 refactor that touches the numerical path. Tracked in `ROADMAP.md`.

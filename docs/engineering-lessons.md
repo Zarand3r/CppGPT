@@ -235,3 +235,43 @@ been catching it all along. Unverified negative results are worse than no result
 **Rule.** Every scripted edit asserts the anchor exists before replacing and asserts the intended text is
 present afterwards. For mutation testing specifically, a mutant that reports "survived" without proof the
 file changed is not evidence — verify the diff, then run.
+
+## L17 — A self-referential equivalence test is worse than no test, and looks better
+
+**Incident (2026-08, `tests/unit/tensors_test.cpp`).** The parameter half of the tensor-table test
+compared the table against an independently transcribed `reference_sizes()` list and killed its
+mutants. Written an hour later, the *activation* half did this instead:
+
+```cpp
+for (int i = 0; i < kNumActs; ++i) tot += act_total(kActSpecs[i], c, B, T);
+CHECK(tot == acts_total(c, B, T));   // acts_total IS that loop
+```
+
+`acts_total()` is the same summation, so the assertion is `x == x`. Doubling `losses`, doubling
+`fch_gelu`, and flipping `encoded` to per-layer all passed. It reported "60 checks pass", which was
+used as evidence the refactor was layout-preserving.
+
+The failure is not ignorance — the correct pattern existed twenty lines above, written by the same
+hand in the same file. It is that summing the thing under test and comparing to its own sum *reads*
+like verification.
+
+**Rule.** An equivalence test must compare against something the implementation did not produce: a
+transcribed reference, an external oracle, or an invariant derived independently. Before trusting one,
+name the two sides out loud — if both trace back to the same function, there is one side. This is L7
+("a gate a wrong implementation can pass is not a gate") applied to *data* rather than behaviour, and
+it needs its own entry because the shape is different: L7's failure looks circular on inspection;
+this one looks like arithmetic.
+
+## L18 — Counting is not identity
+
+**Incident (2026-08, `tests/unit/tensors_test.cpp`).** The canonical GPT-2 2-group weight-decay split
+— a `docs/constitution.md` claim — was pinned by `CHECK(decaying == 6)`. Swapping `ln1w` to decaying
+and `attprojw` to non-decaying keeps the count at exactly 6 and passed the whole suite. The parity
+gate cannot help: it runs with `weight_decay = 0`.
+
+The count was written *because* the flags had just moved into a table to stop them drifting. It
+measured the wrong property of the thing it was protecting.
+
+**Rule.** When a test guards a set membership — which tensors decay, which flags are set, which files
+are written — assert the *membership by name*, not the cardinality. A count is invariant under every
+permutation, which is precisely the mutation class these tests exist to catch.

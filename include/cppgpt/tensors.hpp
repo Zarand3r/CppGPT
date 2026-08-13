@@ -48,7 +48,9 @@ namespace detail {
 constexpr std::size_t sz(int v) { return static_cast<std::size_t>(v); }
 }  // namespace detail
 
-// THE .bin ORDER. Changing it changes the on-disk checkpoint format.
+// THE .bin ORDER. Changing it changes the on-disk checkpoint format. Same caveat as
+// the activation table below: order is NOT compile-time enforced against
+// ParamTensors, only the count is.
 inline constexpr ParamSpec kParamSpecs[] = {
     {"wte",      [](const Config& c) { return detail::sz(c.vocab_size) * detail::sz(c.n_embd); },      false, true,  Init::Normal},
     {"wpe",      [](const Config& c) { return detail::sz(c.max_seq_len) * detail::sz(c.n_embd); },     false, true,  Init::Normal},
@@ -90,8 +92,15 @@ struct ActSpec {
     bool per_layer;
 };
 
-// THE activation order. Must match ActTensors field order (static_assert'd where
-// they are bound), and act_sizes' original hand-written list.
+// THE activation order. Must match ActTensors field order.
+//
+// NOT enforced: the only static_asserts compare COUNTS (kNumActs == kNumActTensors),
+// not order, and the index->field mapping is still hand-written in point_acts().
+// Reordering rows here silently changes the on-disk format with no compile-time
+// complaint. An earlier version of this comment claimed the order was
+// "static_assert'd where they are bound", which was false -- an L1 violation inside
+// the file introduced to remove exactly this class of hazard. Closing it properly is
+// tracked in ROADMAP.md.
 inline constexpr ActSpec kActSpecs[] = {
     {"encoded",   [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, false},
     {"ln1",       [](const Config& c, int B, int T) { return detail::sz(B) * detail::sz(T) * detail::sz(c.n_embd); }, true},

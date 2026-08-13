@@ -27,6 +27,7 @@
 
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
+#include "cppgpt/dataloader.hpp"
 #include "cppgpt/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
@@ -112,7 +113,11 @@ void append_float(std::string& out, float v) {
     char buf[32];
     // %.5g keeps attention weights and norms readable without bloating the file;
     // this is a visualization artifact, not a numerical one.
-    std::snprintf(buf, sizeof(buf), "%.5g", static_cast<double>(std::isfinite(v) ? v : 0.0f));
+    // A non-finite activation means the numerics broke upstream. Emitting 0 would
+    // draw a confident-looking zero in the viewer -- the silent zero-fill the
+    // constitution names as a deal-breaker. Fail fast instead.
+    ASSERT_MSG(std::isfinite(v), "inspect: activation is not finite");
+    std::snprintf(buf, sizeof(buf), "%.5g", static_cast<double>(v));
     out += buf;
 }
 
@@ -334,12 +339,10 @@ int main(int argc, char** argv) {
     // wall of heatmaps into something you can rank.
     js += "  \"head_stats\": [";
     {
-        const auto NHz = static_cast<std::size_t>(cfg.n_head);
         bool first = true;
         for (int l = 0; l < cfg.n_layer; ++l) {
             for (int h = 0; h < cfg.n_head; ++h) {
-                const float* ah = a.att + (static_cast<std::size_t>(l) * NHz + static_cast<std::size_t>(h)) *
-                                              static_cast<std::size_t>(T) * T;
+                const float* ah = head_slice(a.att, l, h, B_dim, cfg.n_head, T);
                 double ent = 0.0, dist = 0.0, sink = 0.0;
                 for (int q = 0; q < n_pos; ++q) {
                     const float* row = ah + static_cast<std::size_t>(q) * T;
@@ -372,17 +375,15 @@ int main(int argc, char** argv) {
     js += "], \"heads\": [";
     for (std::size_t i = 0; i < heads.size(); ++i) js += (i ? ", " : "") + std::to_string(heads[i]);
     js += "], \"data\": [";
-    const auto NH = static_cast<std::size_t>(cfg.n_head);
     for (std::size_t li = 0; li < layers.size(); ++li) {
         if (li) js += ", ";
         js += "[";
-        const float* att_l =
-            a.att + static_cast<std::size_t>(layers[li]) * NH * static_cast<std::size_t>(T) * T;
+        const float* att_l = head_slice(a.att, layers[li], 0, B_dim, cfg.n_head, T);
         for (std::size_t hi = 0; hi < heads.size(); ++hi) {
             if (hi) js += ", ";
             js += "[";
-            const float* att_h =
-                att_l + static_cast<std::size_t>(heads[hi]) * static_cast<std::size_t>(T) * T;
+            const float* att_h = att_l + static_cast<std::size_t>(heads[hi]) *
+                                            static_cast<std::size_t>(T) * static_cast<std::size_t>(T);
             for (int q = 0; q < n_pos; ++q) {
                 if (q) js += ", ";
                 js += "[";
@@ -402,11 +403,12 @@ int main(int argc, char** argv) {
     }
     js += "]}\n}\n";
 
-    std::ofstream of(out_path, std::ios::binary | std::ios::trunc);
-    of << js;
-    of.close();
-    if (!of) {
-        std::fprintf(stderr, "inspect: writing '%s' failed\n", out_path.c_str());
+    // run.json is consumed by serve_viewer.py and make-site.sh, so it gets the
+    // same atomic write as every other cross-tool file (L5/L15). ofstream(trunc)
+    // here was a recurrence of the signature those lessons already swept.
+    if (const auto r = write_file_atomic(out_path.c_str(), js); !r) {
+        std::fprintf(stderr, "inspect: writing '%s' failed: %s\n", out_path.c_str(),
+                     describe(r.error()));
         return 1;
     }
     std::printf("inspect: %s — %d tokens, %zu layers x %zu heads of attention, %.2f MB\n",

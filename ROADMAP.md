@@ -135,7 +135,9 @@ backward, so `GPT2::acts()` exposes the whole forward pass with nothing to instr
 - [x] **M5-S3** `viewer.html` — self-contained, `file://`-openable, no external requests. Token strip,
       attention grid, logit-lens ladder, residual-norm chart. States the attention-is-not-explanation
       caveat *in the UI*.
-- [x] **M5-S4** Wire an inspect step into `examples/shakespeare`.
+- [ ] **M5-S4** Wire an inspect step into `examples/shakespeare`. *(Was marked done in error: the
+      command appears in the example's README but `run.sh` never invokes `inspect` — the same
+      claimed-but-absent pattern as the `tools/bench` incident that motivated L12.)*
 - [x] **M5-S5** Per-position logit lens (`lens_grid`), attention rendered over the text, and per-head
       summary stats (entropy, mean attention distance, mass on position 0). The first is
       nostalgebraist's original lens form; the second is BertViz's insight that a T×T matrix is far
@@ -159,7 +161,7 @@ removed the stride re-derivations. What remains:
 
 - [ ] **Collapse the 68 hand-written layer-stride expressions** in `forward`/`backward` into loops over
       the table (`at(tensor, layer)` + `LayerParams`/`LayerActs` views). This is the change that takes
-      `model.cpp` from 460 lines toward the projected ~375. Deferred, not abandoned: the sites are
+      `model.cpp` from 432 lines toward the projected ~375. Deferred, not abandoned: the sites are
       locally correct and parity-gated, the benefit is readability rather than correctness, and it is
       the only part of the refactor that touches the numerical path.
 - [ ] **Retire `ParamTensors` / `ActTensors`** if the accessors above prove to be pure indirection.
