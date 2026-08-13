@@ -160,6 +160,27 @@ through a file picker, because browsers block reading local paths from `file://`
 toy's scale, but ~1.2 GB at GPT-2 scale. `inspect` refuses to write a dump past the ceiling instead
 of producing a file no browser can open.
 
+### Interactive: prompt the model in the browser
+
+```sh
+tools/make-site.sh                       # assembles site/ from viewer.html + a dump
+python3 tools/serve_viewer.py \
+    --checkpoint data/shakespeare.ckpt --vocab data/shakespeare.vocab \
+    --inspect bazel-bin/tools/inspect --site site --port 8092
+```
+
+Then open `http://127.0.0.1:8092/`. For a durable service, install the unit:
+
+```sh
+cp tools/cppgpt-viewer.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now cppgpt-viewer
+```
+
+Panels: the logit-lens ladder, a **layer × position grid** of top-1 predictions (watch the sequence
+resolve), **attention shaded over the text** for a chosen query and head, per-head summary stats
+(entropy, mean attention distance, mass on position 0), residual-stream norms, and the raw attention
+matrices. Followup work and unbuilt features are tracked in `ROADMAP.md` → M6.
+
 ## Things worth knowing
 
 - **`--top-k 1` is greedy and fully deterministic** — same checkpoint, same prompt,

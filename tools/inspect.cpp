@@ -270,6 +270,28 @@ int main(int argc, char** argv) {
     {
         std::vector<float> lens(static_cast<std::size_t>(T) * V);
         std::vector<float> scratch(static_cast<std::size_t>(T) * C + 2 * static_cast<std::size_t>(T));
+        // Per-position lens: [layer][position] -> top-1 token and its probability.
+        // This is the "watch the sequence transform" view; bounded by top-1 only
+        // so it stays small even at large T.
+        js += "  \"lens_grid\": [";
+        for (int l = 0; l < cfg.n_layer; ++l) {
+            if (l) js += ", ";
+            logit_lens(model, l, lens.data(), scratch.data());
+            js += "[";
+            for (int t = 0; t < n_pos; ++t) {
+                if (t) js += ", ";
+                const TopK k1 = top_k_of(lens.data() + static_cast<std::size_t>(t) * V, V, 1);
+                const std::vector<int> one{k1.ids[0]};
+                js += "{\"id\": " + std::to_string(k1.ids[0]) + ", \"text\": \"";
+                json_escape(js, tok.decode(one));
+                js += "\", \"p\": ";
+                append_float(js, k1.probs[0]);
+                js += "}";
+            }
+            js += "]";
+        }
+        js += "],\n";
+
         js += "  \"logit_lens\": [";
         for (int l = 0; l < cfg.n_layer; ++l) {
             if (l) js += ", ";
@@ -305,6 +327,44 @@ int main(int argc, char** argv) {
         }
         js += "],\n";
     }
+
+    // Per-head summary: mean entropy (how focused) and mean attention distance
+    // (q-k weighted by attention; ~1 marks a previous-token head, ~q marks a head
+    // that stares at position 0 — the "attention sink"). Cheap, and it turns a
+    // wall of heatmaps into something you can rank.
+    js += "  \"head_stats\": [";
+    {
+        const auto NHz = static_cast<std::size_t>(cfg.n_head);
+        bool first = true;
+        for (int l = 0; l < cfg.n_layer; ++l) {
+            for (int h = 0; h < cfg.n_head; ++h) {
+                const float* ah = a.att + (static_cast<std::size_t>(l) * NHz + static_cast<std::size_t>(h)) *
+                                              static_cast<std::size_t>(T) * T;
+                double ent = 0.0, dist = 0.0, sink = 0.0;
+                for (int q = 0; q < n_pos; ++q) {
+                    const float* row = ah + static_cast<std::size_t>(q) * T;
+                    for (int k = 0; k <= q; ++k) {
+                        const double w = row[k];
+                        if (w > 1e-9) ent += -w * std::log(w);
+                        dist += w * static_cast<double>(q - k);
+                    }
+                    sink += row[0];
+                }
+                const double n = n_pos;
+                if (!first) js += ", ";
+                first = false;
+                js += "{\"layer\": " + std::to_string(l) + ", \"head\": " + std::to_string(h) +
+                      ", \"entropy\": ";
+                append_float(js, static_cast<float>(ent / n));
+                js += ", \"distance\": ";
+                append_float(js, static_cast<float>(dist / n));
+                js += ", \"to_first\": ";
+                append_float(js, static_cast<float>(sink / n));
+                js += "}";
+            }
+        }
+    }
+    js += "],\n";
 
     // attention [selected layers][selected heads][n_pos][n_pos] ------------------
     js += "  \"attention\": {\"layers\": [";
