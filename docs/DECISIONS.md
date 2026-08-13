@@ -286,6 +286,16 @@ sequence, residual norms and final distribution all identical.
 | `matmul_forward` (mlp_fc) | 5.82 GFLOP/s | 5.68 (within run-to-run noise; `ops.cpp` unmodified) |
 | memory profile | — | byte-identical (same offsets, same arenas) |
 
+**Update (second pass).** The activation table now exists too, so *both* arenas derive their sizes
+from `tensors.hpp`; the dead `kDecay` array is removed; and `layer_slice()` replaces the three
+independent re-derivations of the `[L,B,T,C]` stride that produced the `inspect` B-factor bug.
+
+Still outstanding, and now the honest remainder: the **68 hand-written layer-stride expressions inside
+`forward`/`backward` are unchanged**, so `model.cpp` is 460 lines rather than the ~375 the proposal
+projected. Those sites are locally correct and covered by the parity gate; collapsing them is a large
+mechanical edit whose benefit is readability rather than correctness, and it is the one part of this
+refactor that touches the numerical path. Tracked in `ROADMAP.md`.
+
 Remaining migration steps (3, 4, 7 — `Arena::bind`, `at(tensor, layer)` for the forward/backward block
 bodies, retiring `ParamTensors`) are deliberately **not** taken yet: they rewrite the code the parity
 gate protects, and that gate only became trustworthy in the preceding commit (it had been passing on

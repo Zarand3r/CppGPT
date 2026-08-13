@@ -1,0 +1,20 @@
+# Notebook environment for cppgpt (uv-managed venv at repo root, Python 3.12 to
+# match the hermetic rules_python interpreter in MODULE.bazel).
+#
+# Recreate from scratch:
+#   uv venv --python 3.12 .venv
+#   VIRTUAL_ENV=.venv uv pip install -r notebooks/requirements.txt \
+#     --index-strategy unsafe-best-match \
+#     --extra-index-url https://download.pytorch.org/whl/cu128
+#   .venv/bin/python -m ipykernel install --user --name cppgpt \
+#     --display-name "cppgpt (py3.12)"
+#
+# torch resolves to the CUDA (Blackwell sm_120) build from the PyTorch index
+# above; drop the --extra-index-url to get the CPU build instead.
+
+jupyterlab
+ipykernel
+numpy
+torch
+transformers
+matplotlib

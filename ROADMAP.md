@@ -152,6 +152,23 @@ the *observation* layer they sit on.
 
 ---
 
+## Finish the tensor-table refactor (D6, partial)
+
+Both arenas now derive sizes from `include/cppgpt/tensors.hpp`, `kDecay` is gone, and `layer_slice()`
+removed the stride re-derivations. What remains:
+
+- [ ] **Collapse the 68 hand-written layer-stride expressions** in `forward`/`backward` into loops over
+      the table (`at(tensor, layer)` + `LayerParams`/`LayerActs` views). This is the change that takes
+      `model.cpp` from 460 lines toward the projected ~375. Deferred, not abandoned: the sites are
+      locally correct and parity-gated, the benefit is readability rather than correctness, and it is
+      the only part of the refactor that touches the numerical path.
+- [ ] **Retire `ParamTensors` / `ActTensors`** if the accessors above prove to be pure indirection.
+- [ ] **Check `scripts/gen_fixtures.py`'s ordering against the table BY NAME.** This is the fifth
+      correspondence and the only one still maintained by eye — both sides currently agree because two
+      authors counted to 16 correctly, which is not a guarantee.
+
+---
+
 ## M6 — Interpretability: causal methods and the rest of the viewer
 
 M5 built the **observation** layer. These sit on top of it and are not started. Kept here rather than

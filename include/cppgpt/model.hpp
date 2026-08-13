@@ -73,6 +73,17 @@ struct ActTensors {
 };
 inline constexpr int kNumActTensors = 23;
 
+// Per-layer slice of an activation shaped [L, B, T, C]. Consumers outside
+// model.cpp must use this rather than recomputing the stride: tools/inspect.cpp
+// derived it as `layer * T * C` and silently dropped the B factor, which was
+// correct only because that tool happens to build with B == 1. Three separate
+// re-derivations of a stride the model already knows is two too many.
+[[nodiscard]] inline const float* layer_slice(const float* base, int layer, int B, int T,
+                                              int C) noexcept {
+    return base + static_cast<std::size_t>(layer) * static_cast<std::size_t>(B) *
+                      static_cast<std::size_t>(T) * static_cast<std::size_t>(C);
+}
+
 class GPT2 {
 public:
     // Allocates the parameter and activation arenas for `cfg` at batch dims B, T.
