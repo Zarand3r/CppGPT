@@ -312,6 +312,63 @@ int main(int argc, char** argv) {
         js += "],\n";
     }
 
+    // Per-layer KL: how much each layer moved the prediction, in nats.
+    //   step[l]     = KL(P_l || P_{l-1})  -- divergence this layer introduced
+    //   to_final[l] = KL(P_out || P_l)    -- how far this layer still is from the output
+    // The residual norm plotted elsewhere is only a proxy for "did this layer do
+    // work"; this is the quantity itself, and a near-zero step[l] identifies a
+    // layer that is near-identity for this input.
+    {
+        std::vector<float> lens(static_cast<std::size_t>(T) * V);
+        std::vector<float> scratch(static_cast<std::size_t>(T) * C + 2 * static_cast<std::size_t>(T));
+        const auto last = static_cast<std::size_t>(n_pos - 1) * V;
+
+        auto softmax_of = [V](const float* logits) {
+            std::vector<double> p(static_cast<std::size_t>(V));
+            const float mx = *std::max_element(logits, logits + V);
+            double sum = 0.0;
+            for (int i = 0; i < V; ++i) {
+                p[static_cast<std::size_t>(i)] = std::exp(static_cast<double>(logits[i] - mx));
+                sum += p[static_cast<std::size_t>(i)];
+            }
+            for (auto& x : p) x /= sum;
+            return p;
+        };
+        // KL(a || b), guarded: b_i is never 0 after softmax, but clamp anyway so a
+        // denormal cannot produce inf and silently poison the whole series.
+        auto kl = [V](const std::vector<double>& a_, const std::vector<double>& b_) {
+            double d = 0.0;
+            for (int i = 0; i < V; ++i) {
+                const double ai = a_[static_cast<std::size_t>(i)];
+                if (ai > 1e-12)
+                    d += ai * std::log(ai / std::max(b_[static_cast<std::size_t>(i)], 1e-30));
+            }
+            return d;
+        };
+
+        const std::vector<double> p_out = softmax_of(a.logits + last);
+        std::vector<std::vector<double>> per_layer;
+        per_layer.reserve(static_cast<std::size_t>(cfg.n_layer));
+        for (int l = 0; l < cfg.n_layer; ++l) {
+            logit_lens(model, l, lens.data(), scratch.data());
+            per_layer.push_back(softmax_of(lens.data() + last));
+        }
+
+        js += "  \"layer_kl\": [";
+        for (int l = 0; l < cfg.n_layer; ++l) {
+            if (l) js += ", ";
+            const double step = (l == 0) ? 0.0
+                                         : kl(per_layer[static_cast<std::size_t>(l)],
+                                              per_layer[static_cast<std::size_t>(l - 1)]);
+            js += "{\"layer\": " + std::to_string(l) + ", \"step\": ";
+            append_float(js, static_cast<float>(step));
+            js += ", \"to_final\": ";
+            append_float(js, static_cast<float>(kl(p_out, per_layer[static_cast<std::size_t>(l)])));
+            js += "}";
+        }
+        js += "],\n";
+    }
+
     // final distribution at the last position ----------------------------------
     {
         const TopK t = top_k_of(a.logits + static_cast<std::size_t>(n_pos - 1) * V, V, top_k);
