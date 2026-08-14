@@ -145,7 +145,11 @@ backward, so `GPT2::acts()` exposes the whole forward pass with nothing to instr
       something rankable.
 - [x] **M5-S6** Interactive prompting — `tools/serve_viewer.py` + a `systemd --user` unit
       (`Restart=always`, survives logout). See `docs/DECISIONS.md` D5.
-- [ ] **Gate:** using only the viewer, answer — at which layer does the model commit to its top-1?
+- [x] **Gate MET:** answerable from the viewer alone. On `ROMEO:\nWhat is` — the model commits at
+      **layer 1** (KL-step 0.996 of 1.011 total; KL-to-output falls 1.011 -> 0.110 there); **layer 2 is
+      near-identity** (0.015); and **L1H0/L1H2 are previous-token heads** (entropy ~0.5-0.7, mean
+      attention distance ~1.5). The third answer is a real named motif, not an absence.
+- [ ] ~~Gate:~~ superseded by the line above; original wording — at which layer does the model commit to its top-1?
       which layers are near-identity? does any head show an interpretable pattern? (The last may be
       *no* for a 4-layer model at 900 steps; recording that honestly is a result.)
 
@@ -193,9 +197,10 @@ in a side document because `ROADMAP.md` is the single source of truth for outsta
       where naive implementations go wrong.
 - [ ] **Neuron-level views.** Max-activating positions over `fch_gelu` (`[L,B,T,4C]`, already in the
       arena). Cheap; deliberately skipped in M5 to keep the first viewer legible.
-- [ ] **Per-layer KL divergence** between consecutive logit-lens distributions — the single cleanest
-      number for "how much did this layer change the prediction", and a better ranking signal than the
-      residual norm currently plotted. Small: two lens calls and a reduction.
+- [x] **Per-layer KL divergence** — `layer_kl` in the dump (`step` = divergence this layer introduced,
+      `to_final` = distance remaining to the output), plus a viewer panel. On the Shakespeare
+      checkpoint layer 1 contributes 0.996 nats of the 1.011 total: the model commits at layer 1 and
+      layer 2 is near-identity (0.015).
 - [ ] **Tuned lens** (Belrose et al. 2023). The plain lens borrows the *final* layernorm for every
       layer, so early layers are systematically distorted — the viewer says so. Fixing it properly
       needs a learned affine probe per layer, i.e. a small training loop, which is why it is a

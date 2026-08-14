@@ -100,6 +100,17 @@
     </div>
 
     <div class="panel">
+      <h2>Which layer moved the prediction</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        KL divergence in nats, at the final position. <strong>step</strong> = how far this layer moved
+        the prediction from the previous one; <strong>to output</strong> = how far it still is from the
+        model's answer. A near-zero step is a layer that is near-identity <em>for this input</em>.
+        This is the quantity the residual norm below only approximates.
+      </p>
+      <div id="kl"></div>
+    </div>
+
+    <div class="panel">
       <h2>Residual stream norm</h2>
       <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
         ‖residual‖ per layer at the selected position. Flat segments are layers that barely
@@ -208,7 +219,20 @@ function drawTokens() {
   });
 }
 
-function render() { drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); }
+function render() { drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); }
+
+function drawKL() {
+  if (!D.layer_kl) { $('#kl').innerHTML = '<p class="kv">dump predates layer_kl</p>'; return; }
+  const mx = Math.max(...D.layer_kl.map(e => e.step), 1e-9);
+  const mf = Math.max(...D.layer_kl.map(e => e.to_final), 1e-9);
+  $('#kl').innerHTML = '<table><tr><th>layer</th><th>step (nats)</th><th>to output</th></tr>' +
+    D.layer_kl.map(e =>
+      `<tr><th>L${e.layer}</th>` +
+      `<td><span class="bar" style="width:${Math.max(2, (e.step / mx) * 110)}px"></span> ` +
+      `<span class="kv">${e.step.toFixed(3)}</span></td>` +
+      `<td><span class="bar" style="width:${Math.max(2, (e.to_final / mf) * 110)}px;background:var(--warm)"></span> ` +
+      `<span class="kv">${e.to_final.toFixed(3)}</span></td></tr>`).join('') + '</table>';
+}
 
 // Layer x position grid of top-1 predictions — the "sequence transforming" view.
 function drawLensGrid() {
