@@ -93,7 +93,7 @@ LC_ALL=C grep -qE '^[a-z ]+$' "$WORK/gen_a.txt" || fail "generated text escaped 
 python3 - "$WORK/run.json" <<'PYEOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["schema"] == 1, f"unexpected schema {d['schema']}"
+assert d["schema"] == 2, f"unexpected schema {d['schema']}"
 n = d["n_positions"]
 assert n == len(d["tokens"]) > 0, "token count disagrees with n_positions"
 assert len(d["residual_norms"]) == d["config"]["n_layer"], "residual_norms has wrong layer count"
@@ -105,7 +105,41 @@ for li, L in enumerate(d["attention"]["data"]):
             assert all(v == 0 for v in row[q+1:]), f"attention row {q} attends to the future"
 assert d["logit_lens"][-1]["top"][0]["id"] == d["final_top"][0]["id"], \
     "last-layer logit lens disagrees with the model's own top-1"
+
+nl, nh = d["config"]["n_layer"], d["config"]["n_head"]
+
+# Attribution: shaped per head, and aimed at the token the model actually
+# predicted. A decomposition of some OTHER token's logit would look perfectly
+# well-formed here, which is why the target is checked and not just the shape.
+a = d["attribution"]
+assert a["token"]["id"] == d["final_top"][0]["id"], \
+    "attribution explains a different token than the model's top-1"
+assert len(a["heads"]) == nl and all(len(r) == nh for r in a["heads"]), \
+    "attribution head matrix is not n_layer x n_head"
+assert len(a["mlps"]) == nl, "attribution mlp row is not n_layer long"
+
+# Ablation: exhaustive, each component exactly once, and KL is non-negative by
+# definition — a negative value means the two distributions were swapped.
+ab = d["ablation"]
+assert len(ab) == nl * (nh + 2), \
+    f"ablation swept {len(ab)} components, expected {nl * (nh + 2)}"
+assert len({(r["kind"], r["layer"], r["head"]) for r in ab}) == len(ab), \
+    "ablation sweep repeats a component"
+assert all(r["kl"] >= 0 for r in ab), "KL divergence cannot be negative"
+assert {r["kind"] for r in ab} == {"head", "mlp", "attn"}, "ablation missed a component kind"
 print("  dump contract ok")
+PYEOF
+
+# --ablate 0 must skip the sweep, not silently run it anyway: the flag is the
+# only escape hatch on a model where L*(NH+2) forward passes is not free.
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --out "$WORK/noabl.json" --ablate 0 > /dev/null
+python3 - "$WORK/noabl.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ablation"] == [], "--ablate 0 still ran the sweep"
+assert d["attribution"]["heads"], "--ablate 0 should not disable attribution (it costs no forward)"
+print("  --ablate 0 ok")
 PYEOF
 
 # A selection that would be enormous must be refused, not written.

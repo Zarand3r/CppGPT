@@ -2,7 +2,15 @@
 //
 // Runs a prompt through a trained checkpoint and writes everything the viewer
 // needs: tokens, per-layer attention for selected heads, residual-stream norms,
-// and the logit-lens top-k at every layer.
+// the logit-lens top-k at every layer, direct logit attribution per head, and an
+// exhaustive ablation sweep.
+//
+// The two causal views are deliberately both present, because they disagree in
+// an informative way. Attribution is what a component wrote into the output
+// direction, with the final layernorm's scale frozen, and costs no extra forward
+// pass. Ablation is the total downstream effect of silencing it, and costs one
+// forward each. A head with small attribution but large ablation KL is acting
+// through later layers rather than on the logit directly.
 //
 // Size is a first-class constraint, not an afterthought. Attention is
 // O(L * NH * T^2): ~0.5 MB of JSON at toy scale, but ~1.2 GB at GPT-2 scale
@@ -37,7 +45,8 @@
 namespace {
 using namespace cppgpt;
 
-constexpr int kSchemaVersion = 1;
+// 2 adds "attribution" and "ablation"; 1 had neither.
+constexpr int kSchemaVersion = 2;
 
 std::string read_file(const std::string& path, const char* what) {
     std::ifstream f(path, std::ios::binary);
@@ -154,7 +163,7 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb"});
+                          "max-mb", "ablate"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
@@ -164,11 +173,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
                      "               --out run.json [--layers 0,2] [--heads 0,1] [--top-k K]\n"
-                     "               [--max-mb N]\n");
+                     "               [--max-mb N] [--ablate 0|1]\n");
         return 2;
     }
     const int top_k = args.integer("top-k", 8);
     const double max_mb = static_cast<double>(args.real("max-mb", 64.0f));
+    // The sweep costs L·(NH+2) forward passes: milliseconds at toy scale, and the
+    // whole point of the tool. --ablate 0 turns it off for a model where it isn't.
+    const bool do_ablate = args.integer("ablate", 1) != 0;
 
     // Architecture comes from the checkpoint, never from flags.
     auto peek = CheckpointFile::open(ckpt.c_str());
@@ -213,17 +225,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const int T = cfg.max_seq_len, C = cfg.n_embd, V = cfg.vocab_size;
+    // Run at exactly the prompt length rather than the padded context. Attention
+    // is O(T²) and the lens is O(T·C·V), so on a short prompt against a 64-token
+    // context this is the largest saving available here. Causality makes the
+    // padded tail inert, so the short run reproduces the padded one EXACTLY at
+    // every position both contain — pinned by a unit test (interpret_test), not
+    // merely asserted in a comment.
+    const int T = n_pos, C = cfg.n_embd, V = cfg.vocab_size;
     GPT2 model(cfg, /*B=*/1, T);
     if (const auto r = model.load_checkpoint(ckpt.c_str()); !r) {
         std::fprintf(stderr, "inspect: cannot load '%s': %s\n", ckpt.c_str(), describe(r.error()));
         return 1;
     }
 
-    // Right-pad to the fixed context; causality makes the tail inert, so every
-    // value we read at positions [0, n_pos) is what an unpadded forward produces.
-    std::vector<int> buf(static_cast<std::size_t>(T), 0);
-    std::copy(ids.begin(), ids.end(), buf.begin());
+    const std::vector<int> buf(ids.begin(), ids.end());
     model.forward(buf.data(), nullptr);
 
     const ActTensors& a = model.acts();
@@ -236,7 +251,7 @@ int main(int argc, char** argv) {
           ", \"n_head\": " + std::to_string(cfg.n_head) +
           ", \"n_embd\": " + std::to_string(cfg.n_embd) +
           ", \"vocab_size\": " + std::to_string(V) +
-          ", \"max_seq_len\": " + std::to_string(T) + "},\n";
+          ", \"max_seq_len\": " + std::to_string(cfg.max_seq_len) + "},\n";
     js += "  \"prompt\": \"";
     json_escape(js, prompt);
     js += "\",\n  \"n_positions\": " + std::to_string(n_pos) + ",\n";
@@ -274,94 +289,90 @@ int main(int argc, char** argv) {
     }
     js += "],\n";
 
-    // logit lens: top-k at the LAST position, per layer -------------------------
+    // Softmax / KL over a distribution at one position. Shared by the lens series
+    // and the ablation sweep, which must agree on both or their numbers are not
+    // comparable.
+    const auto softmax_of = [V](const float* logits) {
+        std::vector<double> p(static_cast<std::size_t>(V));
+        const float mx = *std::max_element(logits, logits + V);
+        double sum = 0.0;
+        for (int i = 0; i < V; ++i) {
+            p[static_cast<std::size_t>(i)] = std::exp(static_cast<double>(logits[i] - mx));
+            sum += p[static_cast<std::size_t>(i)];
+        }
+        for (auto& x : p) x /= sum;
+        return p;
+    };
+    // KL(a || b), guarded: b_i is never 0 after softmax, but clamp anyway so a
+    // denormal cannot produce inf and silently poison the whole series.
+    const auto kl = [V](const std::vector<double>& a_, const std::vector<double>& b_) {
+        double d = 0.0;
+        for (int i = 0; i < V; ++i) {
+            const double ai = a_[static_cast<std::size_t>(i)];
+            if (ai > 1e-12)
+                d += ai * std::log(ai / std::max(b_[static_cast<std::size_t>(i)], 1e-30));
+        }
+        return d;
+    };
+    const auto last_off = static_cast<std::size_t>(n_pos - 1) * static_cast<std::size_t>(V);
+
+    // Three views of the logit lens — the per-position top-1 grid, the last
+    // position's top-k, and the per-layer KL series — from ONE lens pass per
+    // layer. Each view used to recompute the same [T,V] projection for itself,
+    // so a 4-layer model ran 12 lens passes to produce 4 distinct results.
     {
         std::vector<float> lens(static_cast<std::size_t>(T) * V);
         std::vector<float> scratch(static_cast<std::size_t>(T) * C + 2 * static_cast<std::size_t>(T));
-        // Per-position lens: [layer][position] -> top-1 token and its probability.
-        // This is the "watch the sequence transform" view; bounded by top-1 only
-        // so it stays small even at large T.
-        js += "  \"lens_grid\": [";
-        for (int l = 0; l < cfg.n_layer; ++l) {
-            if (l) js += ", ";
-            logit_lens(model, l, lens.data(), scratch.data());
-            js += "[";
-            for (int t = 0; t < n_pos; ++t) {
-                if (t) js += ", ";
-                const TopK k1 = top_k_of(lens.data() + static_cast<std::size_t>(t) * V, V, 1);
-                const std::vector<int> one{k1.ids[0]};
-                js += "{\"id\": " + std::to_string(k1.ids[0]) + ", \"text\": \"";
-                json_escape(js, tok.decode(one));
-                js += "\", \"p\": ";
-                append_float(js, k1.probs[0]);
-                js += "}";
-            }
-            js += "]";
-        }
-        js += "],\n";
-
-        js += "  \"logit_lens\": [";
-        for (int l = 0; l < cfg.n_layer; ++l) {
-            if (l) js += ", ";
-            logit_lens(model, l, lens.data(), scratch.data());
-            const TopK t = top_k_of(lens.data() + static_cast<std::size_t>(n_pos - 1) * V, V, top_k);
-            js += "{\"layer\": " + std::to_string(l) + ", \"top\": [";
-            for (std::size_t i = 0; i < t.ids.size(); ++i) {
-                if (i) js += ", ";
-                const std::vector<int> one{t.ids[i]};
-                js += "{\"id\": " + std::to_string(t.ids[i]) + ", \"text\": \"";
-                json_escape(js, tok.decode(one));
-                js += "\", \"p\": ";
-                append_float(js, t.probs[i]);
-                js += "}";
-            }
-            js += "]}";
-        }
-        js += "],\n";
-    }
-
-    // Per-layer KL: how much each layer moved the prediction, in nats.
-    //   step[l]     = KL(P_l || P_{l-1})  -- divergence this layer introduced
-    //   to_final[l] = KL(P_out || P_l)    -- how far this layer still is from the output
-    // The residual norm plotted elsewhere is only a proxy for "did this layer do
-    // work"; this is the quantity itself, and a near-zero step[l] identifies a
-    // layer that is near-identity for this input.
-    {
-        std::vector<float> lens(static_cast<std::size_t>(T) * V);
-        std::vector<float> scratch(static_cast<std::size_t>(T) * C + 2 * static_cast<std::size_t>(T));
-        const auto last = static_cast<std::size_t>(n_pos - 1) * V;
-
-        auto softmax_of = [V](const float* logits) {
-            std::vector<double> p(static_cast<std::size_t>(V));
-            const float mx = *std::max_element(logits, logits + V);
-            double sum = 0.0;
-            for (int i = 0; i < V; ++i) {
-                p[static_cast<std::size_t>(i)] = std::exp(static_cast<double>(logits[i] - mx));
-                sum += p[static_cast<std::size_t>(i)];
-            }
-            for (auto& x : p) x /= sum;
-            return p;
-        };
-        // KL(a || b), guarded: b_i is never 0 after softmax, but clamp anyway so a
-        // denormal cannot produce inf and silently poison the whole series.
-        auto kl = [V](const std::vector<double>& a_, const std::vector<double>& b_) {
-            double d = 0.0;
-            for (int i = 0; i < V; ++i) {
-                const double ai = a_[static_cast<std::size_t>(i)];
-                if (ai > 1e-12)
-                    d += ai * std::log(ai / std::max(b_[static_cast<std::size_t>(i)], 1e-30));
-            }
-            return d;
-        };
-
-        const std::vector<double> p_out = softmax_of(a.logits + last);
+        std::string js_grid, js_lens;
         std::vector<std::vector<double>> per_layer;
         per_layer.reserve(static_cast<std::size_t>(cfg.n_layer));
+
         for (int l = 0; l < cfg.n_layer; ++l) {
             logit_lens(model, l, lens.data(), scratch.data());
-            per_layer.push_back(softmax_of(lens.data() + last));
+
+            // Per-position top-1: the "watch the sequence transform" view,
+            // bounded to top-1 so it stays small even at large T.
+            if (l) js_grid += ", ";
+            js_grid += "[";
+            for (int t = 0; t < n_pos; ++t) {
+                if (t) js_grid += ", ";
+                const TopK k1 = top_k_of(lens.data() + static_cast<std::size_t>(t) * V, V, 1);
+                const std::vector<int> one{k1.ids[0]};
+                js_grid += "{\"id\": " + std::to_string(k1.ids[0]) + ", \"text\": \"";
+                json_escape(js_grid, tok.decode(one));
+                js_grid += "\", \"p\": ";
+                append_float(js_grid, k1.probs[0]);
+                js_grid += "}";
+            }
+            js_grid += "]";
+
+            if (l) js_lens += ", ";
+            const TopK tk = top_k_of(lens.data() + last_off, V, top_k);
+            js_lens += "{\"layer\": " + std::to_string(l) + ", \"top\": [";
+            for (std::size_t i = 0; i < tk.ids.size(); ++i) {
+                if (i) js_lens += ", ";
+                const std::vector<int> one{tk.ids[i]};
+                js_lens += "{\"id\": " + std::to_string(tk.ids[i]) + ", \"text\": \"";
+                json_escape(js_lens, tok.decode(one));
+                js_lens += "\", \"p\": ";
+                append_float(js_lens, tk.probs[i]);
+                js_lens += "}";
+            }
+            js_lens += "]}";
+
+            per_layer.push_back(softmax_of(lens.data() + last_off));
         }
 
+        js += "  \"lens_grid\": [" + js_grid + "],\n";
+        js += "  \"logit_lens\": [" + js_lens + "],\n";
+
+        // Per-layer KL: how much each layer moved the prediction, in nats.
+        //   step[l]     = KL(P_l || P_{l-1})  -- divergence this layer introduced
+        //   to_final[l] = KL(P_out || P_l)    -- how far this layer still is from the output
+        // The residual norm plotted elsewhere is only a proxy for "did this layer
+        // do work"; this is the quantity itself, and a near-zero step[l]
+        // identifies a layer that is near-identity for this input.
+        const std::vector<double> p_out = softmax_of(a.logits + last_off);
         js += "  \"layer_kl\": [";
         for (int l = 0; l < cfg.n_layer; ++l) {
             if (l) js += ", ";
@@ -461,7 +472,92 @@ int main(int argc, char** argv) {
         }
         js += "]";
     }
-    js += "]}\n}\n";
+    js += "]},\n";
+
+    // Direct logit attribution for the model's own top-1 prediction: how much
+    // each head, each MLP, the embedding and the biases pushed that token's
+    // logit. This costs NO extra forward pass — it reads activations the forward
+    // already produced — and the parts sum to the logit exactly.
+    const int dla_token = static_cast<int>(
+        std::max_element(a.logits + last_off, a.logits + last_off + V) - (a.logits + last_off));
+    {
+        const auto Lz = static_cast<std::size_t>(cfg.n_layer);
+        const auto NHz = static_cast<std::size_t>(cfg.n_head);
+        std::vector<float> heads(Lz * NHz), mlps(Lz);
+        std::vector<float> dscratch(4 * static_cast<std::size_t>(C));
+        float embed = 0.0f, bias = 0.0f;
+        direct_logit_attribution(model, n_pos - 1, dla_token, heads.data(), mlps.data(), &embed,
+                                 &bias, dscratch.data());
+
+        const std::vector<int> one{dla_token};
+        js += "  \"attribution\": {\"token\": {\"id\": " + std::to_string(dla_token) +
+              ", \"text\": \"";
+        json_escape(js, tok.decode(one));
+        js += "\"}, \"embed\": ";
+        append_float(js, embed);
+        js += ", \"bias\": ";
+        append_float(js, bias);
+        js += ", \"heads\": [";
+        for (std::size_t l = 0; l < Lz; ++l) {
+            if (l) js += ", ";
+            js += "[";
+            for (std::size_t h = 0; h < NHz; ++h) {
+                if (h) js += ", ";
+                append_float(js, heads[l * NHz + h]);
+            }
+            js += "]";
+        }
+        js += "], \"mlps\": [";
+        for (std::size_t l = 0; l < Lz; ++l) {
+            if (l) js += ", ";
+            append_float(js, mlps[l]);
+        }
+        js += "]},\n";
+    }
+
+    // Ablation sweep: silence one component, re-run, and measure how far the
+    // output distribution moved (KL from baseline, in nats) plus what happened to
+    // the baseline's top-1 probability. Every head, every MLP and every attention
+    // block — an exhaustive causal map, infeasible at production scale and only
+    // L·(NH+2) forward passes here.
+    //
+    // Attribution and ablation answer different questions and will disagree:
+    // attribution is the direct write into the output direction with the
+    // layernorm scale frozen, ablation is the total downstream effect including
+    // everything the later layers do differently. A head with small attribution
+    // and large ablation KL acts through later layers, not on the logit.
+    //
+    // This CLOBBERS the activation arena, so it must follow every baseline read.
+    js += "  \"ablation\": [";
+    if (do_ablate) {
+        const std::vector<double> p_base = softmax_of(a.logits + last_off);
+        const auto top_base = static_cast<std::size_t>(dla_token);
+        std::vector<float> saved(ablation_scratch(cfg));
+        bool first = true;
+        const auto sweep = [&](Ablation kind, const char* name, int layer, int head) {
+            save_and_ablate(model, kind, layer, head, saved.data());
+            model.forward(buf.data(), nullptr);
+            const std::vector<double> p = softmax_of(a.logits + last_off);
+            restore_ablation(model, kind, layer, head, saved.data());
+
+            if (!first) js += ", ";
+            first = false;
+            js += "{\"kind\": \"";
+            js += name;
+            js += "\", \"layer\": " + std::to_string(layer) +
+                  ", \"head\": " + std::to_string(head) + ", \"kl\": ";
+            append_float(js, static_cast<float>(kl(p_base, p)));
+            js += ", \"dtop\": ";
+            append_float(js, static_cast<float>(p[top_base] - p_base[top_base]));
+            js += "}";
+        };
+        for (int l = 0; l < cfg.n_layer; ++l) {
+            for (int h = 0; h < cfg.n_head; ++h) sweep(Ablation::Head, "head", l, h);
+            sweep(Ablation::Mlp, "mlp", l, -1);
+            sweep(Ablation::AttnBlock, "attn", l, -1);
+        }
+    }
+    js += "]\n}\n";
 
     // run.json is consumed by serve_viewer.py and make-site.sh, so it gets the
     // same atomic write as every other cross-tool file (L5/L15). ofstream(trunc)
