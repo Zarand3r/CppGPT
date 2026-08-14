@@ -108,9 +108,14 @@ The three verbs. Each box is wiring over code that already exists and is tested.
       `-march=x86-64-v3 -ffp-contract=off`: ~2x on the dominant kernel (2.95 -> 5.82 GFLOP/s), builds no
       longer depend on the build host, parity holds at ~50x margin. See `docs/DECISIONS.md` D1.
 - [x] `tools/bench` — merged (PR #20); `bazel run --config=release //tools:bench -- 20`.
-- [ ] Then reassess. At ~200 tok/s a small model is trainable in minutes-to-hours; blocking/threading
-      only if iteration is actually painful. **No 30 GFLOP/s gate for the MVP** — that target existed
-      to make a TinyShakespeare convergence run finish overnight, which is no longer the goal.
+- [x] Reassessed, and the cheap half turned out to be worth taking: `matmul_forward` now accumulates
+      in 8 independent lanes, **5.71 -> 49.38 GFLOP/s** (8.6x) on the dominant kernel and
+      **2908 -> 6429 tok/s** (2.21x) end-to-end on the toy config. `-ffp-contract=off` stopped the
+      compiler fusing the reduction but also stopped it splitting one — eight fixed lanes break the
+      dependency chain without a fast-math flag, so the order stays deterministic. The parity gate
+      *improved* (logit 1.91e-6 -> 1.43e-6). See `docs/DECISIONS.md` D8, `docs/measurements.md` M-1.
+- [ ] Threading is now the remaining lever (16 cores idle). Still not an MVP gate: it needs its own
+      determinism argument, since a parallel reduction is where reproducibility gets genuinely hard.
 - [ ] *(optional)* Gradient accumulation — only if a batch you want exceeds RAM (measured: B=64 at
       T=256 costs 8.15 GB).
 
@@ -313,7 +318,8 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **GPT-2 medium (350M) inference**, GPU-seam audit, observability CSV, `docs/ARCHITECTURE.md`.
 - [ ] **CI** — one Linux build + `ldd` allow-list + ASan/UBSan. The only genuinely open M0 box; worth
       doing whenever, independent of scope.
-- [ ] **30 GFLOP/s matmul + threading** — revisit only if training speed becomes the binding constraint.
+- [ ] **Threading** — the 30 GFLOP/s matmul half is done (D8: 49.38 GFLOP/s single-thread). Threading
+      remains, and remains gated on a determinism argument rather than on throughput alone.
 
 ---
 

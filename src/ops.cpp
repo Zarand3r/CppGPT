@@ -22,9 +22,22 @@ void matmul_forward_cpu(float* out, const float* inp, const float* weight, const
         float* out_bt = out + bt * OCz;
         for (std::size_t oc = 0; oc < OCz; ++oc) {
             const float* w_oc = weight + oc * Cz;
-            float acc = bias != nullptr ? bias[oc] : 0.0f;
-            for (std::size_t c = 0; c < Cz; ++c) acc += inp_bt[c] * w_oc[c];
-            out_bt[oc] = acc;
+            // Independent accumulator lanes. `acc += inp[c]*w[c]` in one variable
+            // is a serial chain of fp-add latency, and float addition is not
+            // associative, so with -ffp-contract=off the compiler is NOT allowed
+            // to split it — the naive loop measured 5.7 GFLOP/s, ~4% of what this
+            // machine can do. Summing into kLanes separate accumulators and
+            // combining at the end is a different (but fixed, deterministic)
+            // order that vectorises. See docs/DECISIONS.md D8.
+            constexpr int kLanes = 8;  // fp32 lanes in a 256-bit vector
+            float acc[kLanes] = {};
+            std::size_t c = 0;
+            for (; c + kLanes <= Cz; c += kLanes)
+                for (int j = 0; j < kLanes; ++j) acc[j] += inp_bt[c + j] * w_oc[c + j];
+            float s = 0.0f;
+            for (int j = 0; j < kLanes; ++j) s += acc[j];
+            for (; c < Cz; ++c) s += inp_bt[c] * w_oc[c];  // ragged tail
+            out_bt[oc] = bias != nullptr ? bias[oc] + s : s;
         }
     }
 }

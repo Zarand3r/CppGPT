@@ -48,6 +48,17 @@ cc_binary(
     deps = ["//:cppgpt"],
 )
 
+# How long one forward pass takes: the budget for every interactive
+# interpretability question, since ablation and patching each cost one.
+cc_binary(
+    name = "profile",
+    srcs = ["profile.cpp"],
+    deps = [
+        ":cli",
+        "//:cppgpt",
+    ],
+)
+
 cc_binary(
     name = "inspect",
     srcs = ["inspect.cpp"],

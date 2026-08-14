@@ -18,7 +18,10 @@
 // cross-framework .bin fixture comparison; the adjoint law already pins matmul.)
 #include "cppgpt/ops.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <vector>
 
 #include "cppgpt/random.hpp"
@@ -60,6 +63,47 @@ int main() {
         float out[2] = {0, 0};
         matmul_forward(out, inp, w, nullptr, 2, 1, 2, 1);
         CHECK(out[0] == 3.0f && out[1] == 7.0f);
+    }
+
+    // ---- Lane boundary ------------------------------------------------------
+    //
+    // The forward accumulates in 8 independent lanes (D8), so C values on either
+    // side of a multiple of 8 exercise the vector body, the ragged tail, and the
+    // handoff between them. Every fixture above uses C <= 4 and therefore runs
+    // ONLY the tail — the vectorised body had no direct unit coverage until this.
+    //
+    // The reference sums in double. That is deliberate: it is independent of the
+    // kernel's summation order, so this checks the VALUE rather than re-deriving
+    // the same schedule and agreeing with itself.
+    {
+        Generator gen(0xBEEF1234ULL);
+        const int OC = 3, B = 2, T = 2;
+        bool all_ok = true;
+        double worst = 0.0;
+        for (const int C : {1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64}) {
+            const auto n_in = static_cast<std::size_t>(B * T * C);
+            std::vector<float> inp(n_in), w(static_cast<std::size_t>(OC * C)),
+                bias(static_cast<std::size_t>(OC));
+            for (auto& x : inp) x = gen.normal();
+            for (auto& x : w) x = gen.normal();
+            for (auto& x : bias) x = gen.normal();
+            std::vector<float> out(static_cast<std::size_t>(B * T * OC));
+            matmul_forward(out.data(), inp.data(), w.data(), bias.data(), B, T, C, OC);
+
+            for (int bt = 0; bt < B * T; ++bt)
+                for (int oc = 0; oc < OC; ++oc) {
+                    double acc = bias[static_cast<std::size_t>(oc)];
+                    for (int c = 0; c < C; ++c)
+                        acc += static_cast<double>(inp[static_cast<std::size_t>(bt * C + c)]) *
+                               static_cast<double>(w[static_cast<std::size_t>(oc * C + c)]);
+                    const double got = out[static_cast<std::size_t>(bt * OC + oc)];
+                    const double err = std::fabs(got - acc) / std::max(1.0, std::fabs(acc));
+                    worst = std::max(worst, err);
+                    all_ok = all_ok && (err < 1e-6);
+                }
+        }
+        std::printf("  matmul lane sweep: worst relative error %.3e over C in [1,64]\n", worst);
+        CHECK(all_ok);
     }
 
     // ---- Backward: adjoint identities (exact to fp rounding) ----

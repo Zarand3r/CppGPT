@@ -29,6 +29,7 @@ best-of-8 after warmup.
 | `-O3 -march=native -ffp-contract=off` | 5.79 | 2026-08-04 |
 | **`-O3 -march=x86-64-v3 -ffp-contract=off`** — **the current `--config=release`** | **5.82** | 2026-08-04 |
 | `-O3 -march=x86-64-v2 -ffp-contract=off` | 5.63 | 2026-08-04 |
+| **the same, + 8 independent accumulator lanes** (D8) | **49.38** | 2026-08-14 |
 
 > **Resolved — see `docs/DECISIONS.md` D1.** The bottleneck was **FMA contraction, not the ISA**:
 > every `-march` level sits at ~2.9 with contraction on and jumps to ~5.8 with it off, because
@@ -41,6 +42,17 @@ best-of-8 after warmup.
 > The serial-dependency diagnosis stands and the blocked/multi-accumulator rewrite is still the real
 > fix; this was two lines for half of it. **True baseline is now 5.82**, so the gap to a 30 GFLOP/s
 > target is ~5x.
+
+> **Gate met — see `docs/DECISIONS.md` D8.** The multi-accumulator rewrite the note above predicted
+> was done on 2026-08-14: **5.71 → 49.38 GFLOP/s** at this shape (8.6x), and 41–57 across the four
+> projection shapes. `-ffp-contract=off` stopped the compiler *fusing* the reduction, but it also
+> stopped it *splitting* the reduction — float addition is not associative, so one accumulator can
+> only ever be a serial fp-add latency chain. Eight fixed lanes break the chain without a fast-math
+> flag, so the order stays deterministic.
+>
+> The parity gate **improved**: logit err 1.91e-06 → 1.43e-06, grad err 2.98e-07 → 2.38e-07. Eight
+> short chains round less than one long one, and PyTorch sums in blocks too, so this moved toward the
+> reference. Generation from the trained checkpoint is byte-identical (278 bytes, same seed).
 
 **Reproduce** (standalone, isolates codegen from Bazel):
 ```sh
@@ -107,9 +119,13 @@ A *true* inference arena (rolling per-layer buffers, no `preatt`, no `probs`) wo
 
 | Quantity | Gate | Measured |
 |---|---|---|
-| Forward logits | ≤ 1e-4 | **~1.9e-6** |
-| Gradients | ≤ 1e-3 | **~3.0e-7** |
-| 10-step AdamW loss | ≤ 1e-3 | **~9.5e-7** |
+| Forward logits | ≤ 1e-4 | **1.43e-6** |
+| Gradients | ≤ 1e-3 | **2.38e-7** |
+| 10-step AdamW loss | ≤ 1e-3 | **9.54e-7** |
+
+Logit and gradient error *improved* on 2026-08-14 (from 1.91e-6 and 2.98e-7) when `matmul_forward`
+moved to 8 accumulator lanes — shorter summation chains round less, and PyTorch sums in blocks too.
+See D8.
 
 **Reproduce:** `bazel test //tests/integration:parity_test`
 
@@ -155,3 +171,58 @@ pipeline changes, only `--steps`.
 
 > Do not hard-code this count in other documents — it changes with every added test. Say
 > "the full `//...` suite is green."
+
+## M-9 · Forward-pass latency and per-op breakdown
+
+`//tools:profile`, `--config=release`, the toy checkpoint (L4 H4 C128 V65 ctx64), best-of-N after
+warmup. This is the budget for interactive interpretability: ablation and patching each cost exactly
+one forward pass, so the `inspect` sweep is L·(NH+2) = 24 of these.
+
+| B, T | forward | tokens/s | GFLOP/s |
+|---|---|---|---|
+| B=1, T=64 (full context) | **3.37 ms** | 18,982 | 31.4 |
+| B=1, T=14 (typical viewer prompt) | **0.61 ms** | 22,871 | 36.7 |
+
+Adding the loss (softmax + cross-entropy over `[B,T,V]`) costs under 1% at this size — below the
+run-to-run noise floor, which the tool exposes by printing best *and* median rather than hiding it.
+
+Per-op share of a forward pass at B=1, T=64 (each op timed standalone at the model's own shapes, so
+these are independent measurements that do not sum to the end-to-end figure — the tool prints the
+gap, here −12%, instead of implying agreement):
+
+| op | ms/pass | share |
+|---|---|---|
+| matmul fc `[C→4C]` | 0.632 | 21.3% |
+| matmul fcproj `[4C→C]` | 0.624 | 21.1% |
+| attention | 0.505 | 17.0% |
+| matmul qkv `[C→3C]` | 0.491 | 16.6% |
+| **gelu** | 0.455 | **15.4%** |
+| matmul attproj `[C→C]` | 0.164 | 5.5% |
+| layernorm | 0.055 | 1.9% |
+| matmul lm_head `[C→V]` | 0.020 | 0.7% |
+| residual add | 0.017 | 0.6% |
+
+> **Where the next win is.** Matmuls are now 65% and attention 17%, which is the healthy shape. The
+> outlier is **gelu at 15.4%** — absurd for an elementwise op, and it is there because `gelu_new`'s
+> tanh is a scalar libm call that cannot vectorise. It is deliberately left alone (D8): canonical
+> GPT-2 pins the exact formula, and an approximation would trade parity for speed. The real remaining
+> lever is threading — 16 cores sit idle — and that needs its own determinism argument, because a
+> parallel reduction is where reproducibility gets genuinely hard.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:profile -- --checkpoint data/shakespeare.ckpt --seq 64 --reps 100
+```
+
+## M-10 · Training throughput after D8
+
+Same config as M-8 (L4 H4 C128 ctx64, batch 32), `--config=release`.
+
+| | before D8 | after D8 |
+|---|---|---|
+| throughput | 2908 tok/s | **6429 tok/s** |
+| speedup | — | **2.21×** |
+
+Consistent with M-3's breakdown (forward matmul ≈76% of a step): making it ~8.6× faster leaves
+backward and the elementwise ops as the new floor. The M-8 toy run should now take ~290 s rather
+than 634 s.

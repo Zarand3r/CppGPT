@@ -349,3 +349,63 @@ what the kernels actually need. That is the intended outcome, not a regression.
 If a GPU port is ever attempted and its first move is to add a per-op device branch, this was wrong.
 If its first move is to swap the arena's allocator and the step driver — which is what every
 CPU→GPU port of this shape does — it was right.
+
+## D8 — `matmul_forward` accumulates in 8 independent lanes, changing summation order
+
+**Decision.** The innermost dot product of `matmul_forward_cpu` sums into 8 separate accumulators,
+combined at the end, instead of one running `acc`. This changes the floating-point summation *order*.
+It is not a fast-math flag and not an approximation: the new order is fixed, deterministic, and
+identical on every run and every shape.
+
+### Why
+`acc += inp[c] * w_oc[c]` is a serial chain of fp-add latency. Float addition is not associative, so
+under `-ffp-contract=off` (D1) the compiler is **forbidden** from splitting it — the loop cannot
+vectorise, by design, and the design was ours.
+
+Measured, `--config=release`, hermetic clang, AMD Ryzen 9 9950X3D2:
+
+| shape | before | after |
+|---|---|---|
+| `attn_qkv  BT=1024 C=768 OC=2304` | 5.71 | **57.30** |
+| `attn_proj BT=1024 C=768 OC=768`  | 5.70 | **46.48** |
+| `mlp_fc    BT=1024 C=768 OC=3072` | 5.71 | **49.38** |
+| `mlp_proj  BT=1024 C=3072 OC=768` | 5.36 | **41.11** |
+
+GFLOP/s, best of 20. This clears M2's ≥30 GFLOP/s gate, which `docs/measurements.md` recorded as
+unmet for the forward direction (5.82) while already met for backward (~37–42) — backward's inner
+loop carries no reduction and always auto-vectorised. The asymmetry *was* the bug.
+
+End to end: training the M-8 toy config goes **2908 → 6429 tok/s (2.21×)**; one inference forward at
+L4 H4 C128 T=64 is **3.37 ms**, and at T=14 (a typical viewer prompt) **0.61 ms**.
+
+### Why this is safe, with evidence rather than argument
+Reordering a float sum changes the result. Three independent checks say the change is benign here:
+
+1. **The PyTorch parity gate got *better*.** logit err 1.91e-06 → **1.43e-06**, grad err 2.98e-07 →
+   **2.38e-07**, loss err unchanged at 9.54e-07 (tolerance 1e-5). This is the expected direction: a
+   long serial chain accumulates more rounding than 8 short ones, and PyTorch itself sums in blocks,
+   so we moved *toward* the reference rather than away.
+2. **Generation from the trained checkpoint is byte-identical** — 278 bytes, same prompt, same seed,
+   before and after. (Verified with a non-emptiness guard on both files. An earlier version of this
+   check compared two 0-byte files and reported success.)
+3. **29/29 tests pass** in `--config=dev` and `--config=release`, including the T-invariance check
+   that requires exact equality between a padded and an unpadded forward.
+
+### What this costs
+A checkpoint trained before this change and one trained after will not be bit-identical, because the
+training trajectory now sums in a different order. Weights already on disk are unaffected — they are
+data — and inference on them is unchanged to the precision above. Determinism is preserved *within* a
+build; it was never promised *across* builds with different flags (D1 already established that).
+
+### What was deliberately not done
+`gelu` is **15.4%** of a forward pass, measured — enormous for an elementwise op, because the tanh is
+a scalar libm call. It is left alone: canonical GPT-2 semantics pin the exact `gelu_new` formula, and
+a polynomial approximation would trade parity for speed, which is the one trade the constitution
+forbids. Threading is the next real lever (16 cores idle); it belongs in its own decision with its own
+determinism argument, since a parallel reduction is where reproducibility actually gets hard.
+
+### How we will know it was right
+If a future profile shows matmul is no longer the top cost, this was right — that is exactly what
+`tools/profile` now reports (matmuls 65%, attention 17%, gelu 15%). If bit-exact reproducibility
+across builds is ever promised to a user, revisit: this change makes that promise harder, and the
+threading work would make it harder still.
