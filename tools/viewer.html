@@ -121,6 +121,42 @@
     </div>
   </div>
 
+  <div class="row">
+    <div class="panel">
+      <h2>What pushed this prediction</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        Direct logit attribution. Every component writes into the residual stream, and the final
+        layernorm is affine once its scale is fixed — so each component's push on the predicted
+        token's logit is <em>exact</em>, and the parts sum to the whole. Blue raised it, orange
+        lowered it.
+      </p>
+      <div id="attrib"></div>
+      <div class="note">
+        This is the <strong>direct</strong> effect only — what a component wrote into the output
+        direction. A head can matter enormously while attributing near zero, by changing what later
+        layers do. The ablation map beside this measures that total effect; where the two disagree
+        is the interesting part.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Ablate a component</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        Each component silenced in turn, the model re-run, and the new output compared with the
+        baseline (KL divergence, nats). Darker is more load-bearing. <strong>MLP</strong> and
+        <strong>attn</strong> are the whole block rather than a single head. Hover for the effect on
+        the predicted token's probability.
+      </p>
+      <div class="grid" id="ablate"></div>
+      <p class="kv" id="ablcap" style="font-size:12.5px; margin-top:10px"></p>
+      <div class="note">
+        Exhaustive: every head, every MLP, every attention block, each its own forward pass. That is
+        routine at this scale and infeasible at production scale — which is why the literature
+        reaches for gradient approximations that this model does not need.
+      </div>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>The sequence becoming tokens</h2>
     <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
@@ -169,7 +205,7 @@
       not that it mattered. Jain &amp; Wallace (2019) and Wiegreffe &amp; Pinter (2019) both show
       attention weights can be altered substantially without changing the prediction. Reading a
       story off these maps is the classic mistake; use them to form hypotheses that a causal
-      method — ablation, patching — then has to confirm.
+      method then has to confirm — which is exactly what the ablation map above is for.
     </div>
   </div>
 </div>
@@ -219,7 +255,71 @@ function drawTokens() {
   });
 }
 
-function render() { drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); }
+function render() {
+  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL();
+  drawAttrib(); drawAblate();
+}
+
+// Direct logit attribution, ranked by magnitude. Signed: a component can push
+// the predicted token DOWN and still be one of the largest effects, so the sort
+// is on |v| and the sign is carried in the colour.
+function drawAttrib() {
+  const A = D.attribution;
+  if (!A) { $('#attrib').innerHTML = '<p class="kv">dump predates attribution</p>'; return; }
+  const parts = [{name: 'embedding', v: A.embed}];
+  A.heads.forEach((row, l) => row.forEach((v, h) => parts.push({name: `L${l}·H${h}`, v})));
+  A.mlps.forEach((v, l) => parts.push({name: `L${l}·MLP`, v}));
+  parts.push({name: 'biases', v: A.bias});
+  parts.sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+  const mx = Math.max(...parts.map(p => Math.abs(p.v)), 1e-9);
+  const total = parts.reduce((s, p) => s + p.v, 0);
+  $('#attrib').innerHTML =
+    `<p class="kv" style="font-size:12.5px;margin:0 0 10px">predicting ` +
+    `<code>${esc(A.token.text)}</code> — the parts sum to ${total.toFixed(3)}, ` +
+    `which is that token's logit</p><table>` +
+    parts.map(p => {
+      const w = Math.max(1, Math.abs(p.v) / mx * 100);
+      const col = p.v >= 0 ? 'var(--accent)' : 'var(--warm)';
+      return `<tr><td class="mono" style="white-space:nowrap">${p.name}</td>` +
+             `<td style="width:100%"><span class="bar" style="width:${w}px;background:${col}"></span> ` +
+             `<span class="kv">${p.v >= 0 ? '+' : ''}${p.v.toFixed(3)}</span></td></tr>`;
+    }).join('') + '</table>';
+}
+
+// Causal map: layers down, heads across, plus a column each for the whole MLP
+// and the whole attention block.
+function drawAblate() {
+  const AB = D.ablation;
+  if (!AB || !AB.length) {
+    $('#ablate').innerHTML = '<p class="kv">no ablation sweep in this dump (--ablate 0)</p>';
+    $('#ablcap').textContent = '';
+    return;
+  }
+  const nl = D.config.n_layer, nh = D.config.n_head;
+  const at = (kind, l, h) => AB.find(r => r.kind === kind && r.layer === l && r.head === h);
+  const mx = Math.max(...AB.map(r => r.kl), 1e-9);
+  const cell = r => {
+    if (!r) return '<td class="kv" style="text-align:center">·</td>';
+    // sqrt: ablation KL is heavy-tailed, and a linear ramp renders every head but
+    // the top one as blank white.
+    const a = Math.sqrt(Math.max(0, r.kl / mx)) * 0.85;
+    return `<td class="mono" style="text-align:center;background:rgba(232,89,12,${a.toFixed(3)})" ` +
+           `title="KL ${r.kl.toFixed(4)} nats · predicted-token probability ` +
+           `${r.dtop >= 0 ? '+' : ''}${(r.dtop * 100).toFixed(1)} points">${r.kl.toFixed(2)}</td>`;
+  };
+  let h = '<table><tr><th></th>' +
+          Array.from({length: nh}, (_, i) => `<th style="text-align:center">H${i}</th>`).join('') +
+          '<th style="text-align:center">MLP</th><th style="text-align:center">attn</th></tr>';
+  for (let l = 0; l < nl; l++) {
+    h += `<tr><th>L${l}</th>`;
+    for (let i = 0; i < nh; i++) h += cell(at('head', l, i));
+    h += cell(at('mlp', l, -1)) + cell(at('attn', l, -1)) + '</tr>';
+  }
+  $('#ablate').innerHTML = h + '</table>';
+  const top = AB.slice().sort((a, b) => b.kl - a.kl).slice(0, 3);
+  $('#ablcap').textContent = 'most load-bearing: ' + top.map(r =>
+    `${r.kind} L${r.layer}${r.head >= 0 ? '·H' + r.head : ''} (KL ${r.kl.toFixed(2)})`).join(', ');
+}
 
 function drawKL() {
   if (!D.layer_kl) { $('#kl').innerHTML = '<p class="kv">dump predates layer_kl</p>'; return; }
@@ -369,7 +469,10 @@ function load(f) {
   r.onload = () => {
     try {
       const d = JSON.parse(r.result);
-      if (d.schema !== 1) alert(`This viewer reads schema 1; the file says ${d.schema}.`);
+      // Older dumps degrade gracefully — every panel checks for its own key — so
+      // only a dump from the FUTURE is worth interrupting the user for.
+      if (d.schema > 2)
+        alert(`This viewer reads schema 2; the file says ${d.schema}. Newer panels will be missing.`);
       show(d);
     } catch (e) { alert('Could not parse that file as an inspect dump: ' + e.message); }
   };
