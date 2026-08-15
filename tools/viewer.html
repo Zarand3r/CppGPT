@@ -32,6 +32,10 @@
          background:var(--bg); border:1px solid var(--line); font-family:ui-monospace,monospace;
          font-size:13px; cursor:pointer }
   .tok.sel { background:var(--accent); color:#fff; border-color:var(--accent) }
+  /* The model's own continuation, not part of the prompt — dashed so it never
+     reads as a character the user typed. */
+  .tok.pred { background:var(--warm); color:#fff; border-color:var(--warm);
+              border-style:dashed; cursor:default }
   table { border-collapse:collapse; width:100% }
   th,td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); font-size:13px }
   th { color:var(--dim); font-weight:600 }
@@ -167,6 +171,31 @@
     <div class="grid"><table id="lensgrid"></table></div>
   </div>
 
+  <div class="row">
+    <div class="panel">
+      <h2>Positional encoding — how much each position learned</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        GPT-2 <strong>learns</strong> its positional embeddings. <code>wpe</code> is a trained
+        parameter initialised to N(0, 0.02) and updated by gradient descent like any weight — not a
+        fixed sinusoid, so there is something here that training actually shaped.
+      </p>
+      <canvas id="posnorm" width="420" height="170" style="width:100%;height:170px"></canvas>
+      <p class="kv" id="posnormcap" style="font-size:12.5px"></p>
+    </div>
+
+    <div class="panel">
+      <h2>Position similarity</h2>
+      <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+        Cosine similarity between position vectors — blue positive, orange negative. A model that
+        learned locality shows a bright band along the diagonal, because nearby positions end up
+        encoded alike. One that has not still looks like its initialisation, where distinct random
+        rows are near-orthogonal and everything off the diagonal is dark.
+      </p>
+      <div class="grid" id="possim"></div>
+      <p class="kv" id="possimcap" style="font-size:12.5px; margin-top:10px"></p>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>Attention on the context</h2>
     <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
@@ -244,20 +273,110 @@ function esc(t) {
 }
 
 function drawTokens() {
-  $('#tokens').innerHTML = '';
+  const host = $('#tokens');
+  host.innerHTML = '';
   D.tokens.forEach((t, i) => {
     const b = document.createElement('span');
     b.className = 'tok' + (i === pos ? ' sel' : '');
     b.textContent = esc(t.text);
     b.title = `position ${i} · id ${t.id}`;
     b.onclick = () => { pos = i; drawTokens(); render(); };
-    $('#tokens').appendChild(b);
+    host.appendChild(b);
   });
+
+  // The model's own next-token prediction, shown where it belongs: at the end of
+  // the prompt it continues. Everything else in this page explains how this one
+  // character got chosen.
+  const p = D.final_top && D.final_top[0];
+  if (!p) return;
+  const arrow = document.createElement('span');
+  arrow.className = 'kv';
+  arrow.textContent = '→';
+  arrow.style.margin = '0 6px';
+  host.appendChild(arrow);
+
+  const b = document.createElement('span');
+  b.className = 'tok pred';
+  b.textContent = esc(p.text);
+  b.title = `predicted next token · id ${p.id} · ${(p.p * 100).toFixed(1)}%`;
+  host.appendChild(b);
+
+  const cap = document.createElement('span');
+  cap.className = 'kv';
+  cap.style.fontSize = '12.5px';
+  cap.style.marginLeft = '8px';
+  const runner = D.final_top[1];
+  cap.textContent = `${(p.p * 100).toFixed(1)}% confident` +
+    (runner ? `, then ${esc(runner.text)} at ${(runner.p * 100).toFixed(1)}%` : '');
+  host.appendChild(cap);
 }
 
 function render() {
   drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL();
-  drawAttrib(); drawAblate();
+  drawAttrib(); drawAblate(); drawPos();
+}
+
+// Learned positional embeddings — `wpe` is a trained parameter, not a fixed
+// sinusoid, so both views here show something training produced.
+function drawPos() {
+  const P = D.pos_embed;
+  if (!P) {
+    $('#posnormcap').textContent = 'dump predates pos_embed';
+    $('#possim').innerHTML = '';
+    $('#possimcap').textContent = '';
+    return;
+  }
+  const s = P.norms;
+  const cv = $('#posnorm'), g = cv.getContext('2d');
+  const W = cv.width, H = cv.height, pad = 26;
+  g.clearRect(0, 0, W, H);
+  const mx = Math.max(...s, 1e-6);
+  g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--warm').trim();
+  g.fillStyle = g.strokeStyle;
+  g.lineWidth = 2;
+  g.beginPath();
+  s.forEach((v, i) => {
+    const x = pad + i * (W - 2 * pad) / Math.max(1, s.length - 1);
+    const y = H - pad - (v / mx) * (H - 2 * pad);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+  // The initialisation scale is the reference point that makes the numbers mean
+  // something: N(0, 0.02) over C dims gives an expected norm of 0.02*sqrt(C).
+  const init = 0.02 * Math.sqrt(D.config.n_embd);
+  $('#posnormcap').textContent =
+    `‖wpe‖ over ${s.length} positions — min ${Math.min(...s).toFixed(2)}, ` +
+    `max ${Math.max(...s).toFixed(2)}. At initialisation every position sits near ` +
+    `${init.toFixed(2)}; distance from that is how far training moved it.`;
+
+  const n = s.length, box = Math.max(3, Math.min(14, Math.floor(320 / n)));
+  const c2 = document.createElement('canvas');
+  c2.width = c2.height = n * box;
+  const g2 = c2.getContext('2d');
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const v = P.similarity[i][j];
+      const a = Math.min(1, Math.abs(v));
+      g2.fillStyle = v >= 0 ? `rgba(59,91,219,${a})` : `rgba(232,89,12,${a})`;
+      g2.fillRect(j * box, i * box, box, box);
+    }
+  }
+  c2.title = 'cosine similarity between learned position vectors';
+  $('#possim').innerHTML = '';
+  $('#possim').appendChild(c2);
+
+  let off = 0, k = 0, adj = 0, ka = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      off += P.similarity[i][j]; k++;
+      if (Math.abs(i - j) === 1) { adj += P.similarity[i][j]; ka++; }
+    }
+  }
+  $('#possimcap').textContent = k
+    ? `mean cosine: adjacent positions ${(adj / ka).toFixed(3)}, all off-diagonal ` +
+      `${(off / k).toFixed(3)}. Adjacent clearly above the rest is locality being learned.`
+    : 'a single position — nothing to compare it against.';
 }
 
 // Direct logit attribution, ranked by magnitude. Signed: a component can push
@@ -471,8 +590,8 @@ function load(f) {
       const d = JSON.parse(r.result);
       // Older dumps degrade gracefully — every panel checks for its own key — so
       // only a dump from the FUTURE is worth interrupting the user for.
-      if (d.schema > 2)
-        alert(`This viewer reads schema 2; the file says ${d.schema}. Newer panels will be missing.`);
+      if (d.schema > 3)
+        alert(`This viewer reads schema 3; the file says ${d.schema}. Newer panels will be missing.`);
       show(d);
     } catch (e) { alert('Could not parse that file as an inspect dump: ' + e.message); }
   };

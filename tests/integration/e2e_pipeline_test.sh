@@ -93,7 +93,7 @@ LC_ALL=C grep -qE '^[a-z ]+$' "$WORK/gen_a.txt" || fail "generated text escaped 
 python3 - "$WORK/run.json" <<'PYEOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["schema"] == 2, f"unexpected schema {d['schema']}"
+assert d["schema"] == 3, f"unexpected schema {d['schema']}"
 n = d["n_positions"]
 assert n == len(d["tokens"]) > 0, "token count disagrees with n_positions"
 assert len(d["residual_norms"]) == d["config"]["n_layer"], "residual_norms has wrong layer count"
@@ -127,6 +127,20 @@ assert len({(r["kind"], r["layer"], r["head"]) for r in ab}) == len(ab), \
     "ablation sweep repeats a component"
 assert all(r["kl"] >= 0 for r in ab), "KL divergence cannot be negative"
 assert {r["kind"] for r in ab} == {"head", "mlp", "attn"}, "ablation missed a component kind"
+# Positional embeddings: square, symmetric, unit diagonal. wpe is LEARNED, so
+# these are trained values -- but cosine similarity has those properties by
+# construction, which makes them a real check on the emitter rather than on the
+# model. A transposed or mis-strided read breaks symmetry immediately.
+pe = d["pos_embed"]
+assert len(pe["norms"]) == n, "pos_embed norms is not n_positions long"
+assert len(pe["similarity"]) == n and all(len(r) == n for r in pe["similarity"]), \
+    "pos_embed similarity is not n_positions square"
+for i in range(n):
+    assert abs(pe["similarity"][i][i] - 1.0) <= 1e-3, "a position is not similar to itself"
+    for j in range(n):
+        assert abs(pe["similarity"][i][j] - pe["similarity"][j][i]) <= 1e-3, \
+            "cosine similarity is not symmetric"
+        assert -1.001 <= pe["similarity"][i][j] <= 1.001, "cosine outside [-1,1]"
 print("  dump contract ok")
 PYEOF
 

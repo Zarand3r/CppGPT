@@ -45,8 +45,8 @@
 namespace {
 using namespace cppgpt;
 
-// 2 adds "attribution" and "ablation"; 1 had neither.
-constexpr int kSchemaVersion = 2;
+// 3 adds "pos_embed"; 2 added "attribution" and "ablation"; 1 had none of them.
+constexpr int kSchemaVersion = 3;
 
 std::string read_file(const std::string& path, const char* what) {
     std::ifstream f(path, std::ios::binary);
@@ -88,6 +88,15 @@ std::vector<int> parse_selection(std::string_view spec, int n, const char* what)
     }
     if (out.empty()) {
         std::fprintf(stderr, "inspect: --%s selected nothing\n", what);
+        std::exit(2);
+    }
+    // A repeat is a typo, not a request. Honouring it silently dumps the same
+    // matrix twice, doubles the size estimate the --max-mb ceiling is computed
+    // from, and renders duplicate panels that look like two different heads.
+    std::vector<int> sorted = out;
+    std::sort(sorted.begin(), sorted.end());
+    if (const auto dup = std::adjacent_find(sorted.begin(), sorted.end()); dup != sorted.end()) {
+        std::fprintf(stderr, "inspect: --%s lists %d more than once\n", what, *dup);
         std::exit(2);
     }
     return out;
@@ -177,6 +186,15 @@ int main(int argc, char** argv) {
         return 2;
     }
     const int top_k = args.integer("top-k", 8);
+    // top_k_of clamps to [0,V] so a negative value cannot walk off the buffer
+    // (it once did, ASan-confirmed). But clamping a nonsensical request and
+    // reporting success is the silent no-op cli.hpp exists to prevent: --top-k 0
+    // produced an empty prediction list in every panel, which reads as "the model
+    // predicted nothing" rather than "you asked for nothing".
+    if (top_k < 1) {
+        std::fprintf(stderr, "inspect: --top-k must be >= 1 (got %d)\n", top_k);
+        return 2;
+    }
     const double max_mb = static_cast<double>(args.real("max-mb", 64.0f));
     // The sweep costs L·(NH+2) forward passes: milliseconds at toy scale, and the
     // whole point of the tool. --ablate 0 turns it off for a model where it isn't.
@@ -473,6 +491,52 @@ int main(int argc, char** argv) {
         js += "]";
     }
     js += "]},\n";
+
+    // Learned positional embeddings. Canonical GPT-2 learns `wpe` rather than
+    // using fixed sinusoids, so unlike the sinusoidal case there is something to
+    // look at: these values were shaped by training and can be inspected for what
+    // the model discovered about position.
+    //
+    // Cosine similarity between position rows is the informative view. A model
+    // that learned locality shows a bright band along the diagonal (nearby
+    // positions encoded similarly); an undertrained one still looks like the
+    // N(0, 0.02) it was initialised to, where distinct rows are near-orthogonal
+    // and the matrix is dark everywhere off the diagonal. The norms say how far
+    // each position has moved from initialisation at all.
+    {
+        const float* wpe = model.params().wpe;
+        std::vector<double> nrm(static_cast<std::size_t>(n_pos));
+        js += "  \"pos_embed\": {\"norms\": [";
+        for (int t = 0; t < n_pos; ++t) {
+            const float* r = wpe + static_cast<std::size_t>(t) * C;
+            double ss = 0.0;
+            for (int c = 0; c < C; ++c) ss += static_cast<double>(r[c]) * static_cast<double>(r[c]);
+            nrm[static_cast<std::size_t>(t)] = std::sqrt(ss);
+            if (t) js += ", ";
+            append_float(js, static_cast<float>(nrm[static_cast<std::size_t>(t)]));
+        }
+        js += "], \"similarity\": [";
+        for (int i = 0; i < n_pos; ++i) {
+            if (i) js += ", ";
+            js += "[";
+            const float* ri = wpe + static_cast<std::size_t>(i) * C;
+            for (int j = 0; j < n_pos; ++j) {
+                if (j) js += ", ";
+                const float* rj = wpe + static_cast<std::size_t>(j) * C;
+                double d = 0.0;
+                for (int c = 0; c < C; ++c)
+                    d += static_cast<double>(ri[c]) * static_cast<double>(rj[c]);
+                // A zero row would be a division by zero; it also means that
+                // position never trained, which is worth showing as 0 similarity
+                // rather than as a NaN that append_float would abort on.
+                const double den =
+                    nrm[static_cast<std::size_t>(i)] * nrm[static_cast<std::size_t>(j)];
+                append_float(js, static_cast<float>(den > 1e-30 ? d / den : 0.0));
+            }
+            js += "]";
+        }
+        js += "]},\n";
+    }
 
     // Direct logit attribution for the model's own top-1 prediction: how much
     // each head, each MLP, the embedding and the biases pushed that token's
