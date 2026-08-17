@@ -80,8 +80,11 @@ The three verbs. Each box is wiring over code that already exists and is tested.
       split. Until this existed the gate below named a bigram baseline that was implemented nowhere
       and therefore could never be checked.
 - **Gate:** val loss descends and stays below a same-corpus bigram baseline; two runs at the same seed
-  produce bit-identical loss curves. **MET** — 1.820 nats vs a 2.481 bigram baseline, 26.7% better
-  (`docs/measurements.md` M-11). Determinism and the baseline ordering are enforced by
+  produce bit-identical loss curves. **NOT met against an honest baseline.** The model beats a bigram by
+  26.7% but **loses to a 5-gram by 7.9%** (1.820 vs 1.686 nats, `docs/measurements.md` M-11). The
+  gate as written named a bigram, which any model that learns anything will clear; a 5-gram is the
+  bar that separates a language model from a lookup table. Fix is training budget, not architecture
+  — the train/val gap is only 0.17 nats, so this is undertraining, not overfitting. Determinism and the baseline ordering are enforced by
   `//tests/integration:e2e_pipeline_test`, not just measured once.
 
 ### Infer — generate from a checkpoint you trained

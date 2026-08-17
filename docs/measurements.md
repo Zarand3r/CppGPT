@@ -233,35 +233,55 @@ than 634 s.
 TinyShakespeare validation split. Deterministic: sequential non-overlapping windows, 110,592 of
 111,539 tokens scored (947 dropped as a partial trailing batch, and reported rather than hidden).
 
-Baselines are counted on the **training** split and scored on the **validation** split. Counting them
-on the validation split would let them memorise the text they are scored on — flattering the
-baselines and understating the model, which is the wrong direction to be generous in.
+Baselines are Witten-Bell interpolated n-grams counted on the **training** split and scored on the
+**validation** split, with exactly the context the model has: within-window, truncated at the window
+start. Both restrictions matter — counting on val would let the baseline memorise what it is scored
+on, and giving it context the model lacks would be the same dishonesty pointing the other way.
 
 | | nats/token | perplexity | bits/char | vs model |
 |---|---|---|---|---|
 | **model** | **1.8199** | **6.17** | **2.626** | — |
-| bigram baseline | 2.4812 | 11.96 | 3.580 | +36.3% |
-| unigram baseline | 3.3468 | 28.41 | 4.828 | +83.9% |
-| uniform baseline | 4.1744 | 65.00 | 6.022 | +129.4% |
+| 7-gram | 1.7879 | 5.98 | 2.579 | −1.8% |
+| 6-gram | 1.7129 | 5.54 | 2.471 | −5.9% |
+| **5-gram (best)** | **1.6860** | **5.40** | **2.432** | **−7.4%** |
+| 4-gram | 1.7874 | 5.97 | 2.579 | −1.8% |
+| trigram | 2.0544 | 7.80 | 2.964 | +12.9% |
+| bigram | 2.4850 | 12.00 | 3.585 | +36.5% |
+| unigram | 3.3468 | 28.41 | 4.828 | +83.9% |
+| uniform | 4.1744 | 65.00 | 6.022 | +129.4% |
 
-**The model beats one character of context by 0.661 nats (26.7%).** That clears `ROADMAP.md` M2's
-convergence gate, which had never been checkable because no bigram baseline existed.
+> **The model LOSES to a 5-gram counting table by 7.9%.** This is the headline result and it
+> reverses the earlier conclusion drawn from a bigram-only comparison, which the model beat by 26.7%
+> and which flattered it. Beating a bigram is not evidence of having learned anything; a 5-gram is
+> the bar that distinguishes a language model from a lookup table, and this checkpoint is under it.
+> The cause is training budget, not architecture — see M-10 and the context curve below.
 
-Two independent cross-checks: the uniform baseline is 4.1744 = ln(65) exactly, confirming the vocab
-size the comparison is scaled by; and 1.8199 agrees with the 1.81 that `tools/train`'s own eval
-reported in M-8, computed by a different code path (shuffled DataLoader batches rather than
-sequential windows). The e2e test asserts that agreement holds to within 10% — measured spread is
-0.03% there and 0.5% on this corpus.
+Supporting numbers: top-1 accuracy **45.6%**, calibration error **0.024** (well calibrated — the
+model's confidence matches its accuracy, so it is not bluffing, merely weak). Train/val gap is
+1.6474 vs 1.8199 nats, i.e. **0.17 nats**, so this is undertraining rather than memorisation.
 
-> **How good is that, really?** 2.63 bits/char is well clear of a lookup table and well short of the
-> nanoGPT char-Shakespeare reference (~1.47 nats, 2.12 bits/char), which needs roughly 10× more
-> tokens. Nothing about the model or pipeline has to change to close that — only `--steps`.
-> For scale: general-purpose text compressors sit near 2 bits/char, and the best character-level
-> neural models on enwik8-style data reach ~1.0.
+Loss by context length (nats), position *t* predicting with *t*+1 characters:
+
+| chars | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 16 | 64 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| loss | 2.53 | 2.15 | 2.00 | 1.92 | 1.86 | 1.82 | 1.80 | 1.80 | 1.77 | 1.77 |
+
+Most of the gain is in the first ~6 characters; it reaches within 2% of its best by 18. So the model
+does use more than a 5-gram's worth of context — it just uses it *worse* than counting does, which is
+what an undertrained model looks like.
+
+**Two independent cross-checks.** Uniform is 4.1744 = ln(65) exactly, confirming the vocabulary the
+comparison is scaled by. The bigram row (2.4850, Witten-Bell) agrees with an independently written
+add-one-smoothed bigram (2.4812) — the two were implemented separately and agree to 0.15%.
+
+> **A bug this caught.** The first version anchored the n-gram context at the window *base* rather
+> than at the token before the target, so every lookup used text that never precedes the token being
+> predicted. The tell was bigram scoring *worse than uniform* and higher orders degrading
+> monotonically — a baseline that gets worse with more context is broken, not weak.
 
 **Reproduce**
 ```sh
 bazel run --config=release //tools:eval -- \
   --checkpoint $PWD/data/shakespeare.ckpt \
-  --data $PWD/data/shakespeare.val.bin --train $PWD/data/shakespeare.train.bin
+  --data $PWD/data/shakespeare.val.bin --train $PWD/data/shakespeare.train.bin --order 6
 ```
