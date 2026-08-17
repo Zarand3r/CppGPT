@@ -226,3 +226,42 @@ Same config as M-8 (L4 H4 C128 ctx64, batch 32), `--config=release`.
 Consistent with M-3's breakdown (forward matmul ≈76% of a step): making it ~8.6× faster leaves
 backward and the elementwise ops as the new floor. The M-8 toy run should now take ~290 s rather
 than 634 s.
+
+## M-11 · Model quality vs baselines
+
+`//tools:eval`, `--config=release`, the M-8 toy checkpoint (L4 H4 C128 V65 ctx64) over the full
+TinyShakespeare validation split. Deterministic: sequential non-overlapping windows, 110,592 of
+111,539 tokens scored (947 dropped as a partial trailing batch, and reported rather than hidden).
+
+Baselines are counted on the **training** split and scored on the **validation** split. Counting them
+on the validation split would let them memorise the text they are scored on — flattering the
+baselines and understating the model, which is the wrong direction to be generous in.
+
+| | nats/token | perplexity | bits/char | vs model |
+|---|---|---|---|---|
+| **model** | **1.8199** | **6.17** | **2.626** | — |
+| bigram baseline | 2.4812 | 11.96 | 3.580 | +36.3% |
+| unigram baseline | 3.3468 | 28.41 | 4.828 | +83.9% |
+| uniform baseline | 4.1744 | 65.00 | 6.022 | +129.4% |
+
+**The model beats one character of context by 0.661 nats (26.7%).** That clears `ROADMAP.md` M2's
+convergence gate, which had never been checkable because no bigram baseline existed.
+
+Two independent cross-checks: the uniform baseline is 4.1744 = ln(65) exactly, confirming the vocab
+size the comparison is scaled by; and 1.8199 agrees with the 1.81 that `tools/train`'s own eval
+reported in M-8, computed by a different code path (shuffled DataLoader batches rather than
+sequential windows). The e2e test asserts that agreement holds to within 10% — measured spread is
+0.03% there and 0.5% on this corpus.
+
+> **How good is that, really?** 2.63 bits/char is well clear of a lookup table and well short of the
+> nanoGPT char-Shakespeare reference (~1.47 nats, 2.12 bits/char), which needs roughly 10× more
+> tokens. Nothing about the model or pipeline has to change to close that — only `--steps`.
+> For scale: general-purpose text compressors sit near 2 bits/char, and the best character-level
+> neural models on enwik8-style data reach ~1.0.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:eval -- \
+  --checkpoint $PWD/data/shakespeare.ckpt \
+  --data $PWD/data/shakespeare.val.bin --train $PWD/data/shakespeare.train.bin
+```

@@ -48,6 +48,16 @@ cc_binary(
     deps = ["//:cppgpt"],
 )
 
+# How good the model is, against baselines that make the number mean something.
+cc_binary(
+    name = "eval",
+    srcs = ["eval.cpp"],
+    deps = [
+        ":cli",
+        "//:cppgpt",
+    ],
+)
+
 # How long one forward pass takes: the budget for every interactive
 # interpretability question, since ablation and patching each cost one.
 cc_binary(

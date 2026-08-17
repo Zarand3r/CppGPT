@@ -74,8 +74,15 @@ The three verbs. Each box is wiring over code that already exists and is tested.
       (`tools/train.cpp` currently hardcodes L3/H4/C64/T32; only steps and the ckpt path are arguments)
 - [x] Eval loop: `--val <bin> --eval-interval N --eval-batches K` logging **val loss**, tokens/s, elapsed, peak RSS.
       Without a val number you cannot tell training from memorizing.
+- [x] `tools/eval` — the standalone, deterministic evaluation the gate below needs. Full sequential
+      pass (no shuffled subset), reporting nats/token, perplexity and bits/char against uniform,
+      unigram and bigram baselines counted on the **training** split and scored on the **validation**
+      split. Until this existed the gate below named a bigram baseline that was implemented nowhere
+      and therefore could never be checked.
 - **Gate:** val loss descends and stays below a same-corpus bigram baseline; two runs at the same seed
-  produce bit-identical loss curves.
+  produce bit-identical loss curves. **MET** — 1.820 nats vs a 2.481 bigram baseline, 26.7% better
+  (`docs/measurements.md` M-11). Determinism and the baseline ordering are enforced by
+  `//tests/integration:e2e_pipeline_test`, not just measured once.
 
 ### Infer — generate from a checkpoint you trained
 - [x] `generate --checkpoint <ckpt> --vocab <vocab> --prompt "..." --n K [--temperature --top-k --seed]`

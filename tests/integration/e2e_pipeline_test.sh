@@ -19,6 +19,7 @@ PREPARE="$TEST_SRCDIR/_main/tools/prepare"
 TRAIN="$TEST_SRCDIR/_main/tools/train"
 GENERATE="$TEST_SRCDIR/_main/tools/generate"
 INSPECT="$TEST_SRCDIR/_main/tools/inspect"
+EVAL="$TEST_SRCDIR/_main/tools/eval"
 WORK="$TEST_TMPDIR/work"
 mkdir -p "$WORK"
 
@@ -163,6 +164,65 @@ if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
   fail "inspect ignored its size ceiling"
 fi
 grep -q "max-mb" "$WORK/huge.log" || fail "size-ceiling error does not say how to fix it"
+
+# ---------- eval: the number is only meaningful next to a baseline ----------
+"$EVAL" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+        --train "$WORK/base.train.bin" --batch 2 > "$WORK/eval.log" 2>&1 \
+  || fail "eval failed: $(tail -2 "$WORK/eval.log")"
+
+# Determinism is the property that makes eval usable for comparing checkpoints,
+# so it is checked rather than asserted in a comment.
+"$EVAL" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+        --train "$WORK/base.train.bin" --batch 2 > "$WORK/eval2.log" 2>&1
+diff -q "$WORK/eval.log" "$WORK/eval2.log" > /dev/null \
+  || fail "eval is not deterministic across runs"
+
+python3 - "$WORK/eval.log" "$WORK/train.log" <<'PYEOF'
+import math, re, sys
+txt = open(sys.argv[1]).read()
+def row(name):
+    m = re.search(rf"^\s+{name}\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", txt, re.M)
+    assert m, f"eval output has no {name!r} row:\n{txt}"
+    return tuple(float(g) for g in m.groups())
+V = int(re.search(r"V(\d+)", txt).group(1))
+model_n, model_ppl, model_bits = row("model")
+uni_n, _, _ = row("uniform baseline")
+big_n, _, _ = row("bigram baseline")
+
+# Exact, not empirical: uniform cross-entropy over V symbols IS ln(V). If this
+# disagrees the tool is reading the wrong vocab size, which would silently
+# rescale every comparison.
+assert abs(uni_n - math.log(V)) < 1e-3, f"uniform {uni_n} != ln({V})={math.log(V)}"
+# Internal consistency of the three columns.
+assert abs(model_ppl - math.exp(model_n)) < 0.05, "perplexity is not exp(nats)"
+assert abs(model_bits - model_n / math.log(2)) < 1e-2, "bits/char is not nats/ln2"
+# Ordering: more context cannot be worse on a corpus with any structure.
+assert big_n < uni_n, "bigram baseline is not better than uniform - counting is broken"
+# The tail must be declared, never silently dropped.
+assert "tokens scored" in txt, "eval does not report how many tokens it scored"
+
+# External anchor. Every assertion above is SELF-CONSISTENT: perplexity and
+# bits/char are both derived from the same nats figure, so a wrong nats satisfies
+# all three together. A mutation that dropped the B*T weighting (making the loss
+# 128x too small) passed every one of them.
+#
+# train's own eval is a genuinely independent implementation -- shuffled
+# DataLoader batches rather than sequential windows -- so it cannot move in
+# sympathy. The two sample different tokens and will not agree exactly; the point
+# is that a scaling error shows up as orders of magnitude, not percent.
+train_log = open(sys.argv[2]).read()
+m = re.search(r"val loss\s+([\d.]+)", train_log)
+assert m, "train log has no val loss to cross-check against"
+train_val = float(m.group(1))
+# +/-10%. The two agree to 0.03% here and 0.5% on the real corpus, so this is
+# ~20x the observed spread -- loose enough not to flake on subset sampling, tight
+# enough that an off-by-one in the target shift (which scores the model on the
+# WRONG prediction) cannot hide inside it. A +/-50% band let exactly that through.
+assert 0.9 * train_val < model_n < 1.1 * train_val, \
+    f"eval reports {model_n:.4f} nats but train's own eval reports {train_val:.4f}"
+print(f"  eval contract ok (eval {model_n:.4f} vs train's own eval {train_val:.4f} nats, "
+      f"{100*abs(model_n-train_val)/train_val:.1f}% apart)")
+PYEOF
 
 # ---------- fine-tune: vocab reuse then --init-from ----------
 python3 - "$WORK/target.txt" <<'PY'
