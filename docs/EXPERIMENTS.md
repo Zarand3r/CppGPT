@@ -8,6 +8,45 @@ Measured numbers live in [`docs/measurements.md`](measurements.md); this file ow
 the *reasoning*. Raw logs are `data/runs/<name>.{log,csv}` (gitignored — they are
 large, machine-specific, and regenerable).
 
+## Running a tracked experiment
+
+`//tools:train --log-csv` writes an append-only CSV. `tools/wandb_log.py` reads it
+and ships the run to Weights & Biases:
+
+```sh
+.venv/bin/python3 tools/wandb_log.py --project cppgpt --entity <your-entity> \
+  --name run-c-capacity -- \
+  bazel-out/k8-opt/bin/tools/train \
+    --data data/shakespeare.train.bin --val data/shakespeare.val.bin \
+    --layers 4 --heads 4 --embd 128 --ctx 64 --batch 32 \
+    --steps 9000 --lr 3e-3 --eval-interval 250 --sample random \
+    --ckpt data/runs/c.ckpt --ckpt-best data/runs/c-best.ckpt \
+    --log-csv data/runs/c.csv
+```
+
+It prints the run URL immediately, passes training's stdout through unchanged, and
+records the training flags as the run config so two runs are comparable in the UI.
+
+**Why a sidecar and not a flag on `train`.** The C++ binaries link only libc/libm,
+which is a constitution-level invariant; a training loop that opens a network
+connection would be the first runtime dependency in the repo. Training does not
+know W&B exists, cannot be slowed by it, and cannot fail because of it. The CSV is
+the interface, and it remains useful with no network at all.
+
+**Failure model**, chosen so a dashboard can never cost a 40-minute run:
+
+| when | behaviour |
+|---|---|
+| W&B auth/network/project bad | abort **before** training starts — finding out 40 minutes in is the expensive case |
+| `--log-csv` missing from the command | abort; there would be nothing to read, and running unlogged would defeat the wrapper |
+| logging error mid-run | reported on stderr, training continues |
+| training exits non-zero | exit code propagated, run marked failed in W&B |
+
+A re-used CSV path logs only the current run's rows: the wrapper seeks past what
+was already there, and reads the header from line 1 first — the header lives
+inside the skipped region, and without that step every appended row is discarded
+for having nothing to zip against, producing a silently empty dashboard.
+
 ---
 
 ## E-1 · Is the model weak because of a bug, or because of training?
