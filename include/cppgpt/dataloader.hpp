@@ -49,13 +49,32 @@ namespace cppgpt {
 // confidently against the wrong alphabet.
 [[nodiscard]] Result<void> write_file_atomic(const char* path, std::string_view bytes) noexcept;
 
+// How window start offsets are chosen.
+//
+//   Windows — T-aligned, non-overlapping, epoch-shuffled. Example k spans
+//             [k*T, k*T+T], so a corpus yields (n_tokens-1)/T distinct examples
+//             and every token is only ever predicted from ONE alignment. Correct
+//             for GPT-2-scale pretraining, where the corpus is huge and you make
+//             less than one pass over it.
+//   Random  — start offsets drawn uniformly, with replacement. A corpus yields
+//             n_tokens-T distinct windows instead, so each (context, target) pair
+//             is seen at every alignment. This is what a small corpus with many
+//             epochs needs: at T=64 over 1M tokens it is 15,685 examples versus
+//             ~1.0M, and measurably the difference between a model that
+//             generalises and one that memorises (docs/EXPERIMENTS.md E-1).
+//
+// Random has no epoch: it samples with replacement, so batches_per_epoch() is
+// nominal under it and num_examples() reports distinct window starts.
+enum class Sampling { Windows, Random };
+
 class DataLoader {
 public:
-    // Map `path` and prepare epoch-shuffled (B, T) batching seeded by `seed`.
+    // Map `path` and prepare (B, T) batching seeded by `seed`.
     // Returns an error (never throws) if the file cannot be opened/mapped, is not
     // a whole number of uint16 tokens, or is too small to form one B-wide batch.
     [[nodiscard]] static Result<DataLoader> open(const char* path, int B, int T,
-                                                 std::uint64_t seed) noexcept;
+                                                 std::uint64_t seed,
+                                                 Sampling sampling = Sampling::Windows) noexcept;
 
     // Advance to the next batch, filling inputs()/targets() ([B*T] each). At an
     // epoch boundary (fewer than B examples left) it reshuffles and restarts.
@@ -69,9 +88,16 @@ public:
     [[nodiscard]] int batch() const noexcept { return B_; }
     [[nodiscard]] int seq_len() const noexcept { return T_; }
     [[nodiscard]] std::size_t num_tokens() const noexcept { return n_tokens_; }
-    [[nodiscard]] std::size_t num_examples() const noexcept { return order_.size(); }
+    [[nodiscard]] Sampling sampling() const noexcept { return sampling_; }
+    // Distinct windows the corpus can yield. Under Random every token position
+    // can start one, which is the whole point of the mode.
+    [[nodiscard]] std::size_t num_examples() const noexcept {
+        if (sampling_ != Sampling::Random) return order_.size();
+        const auto T = static_cast<std::size_t>(T_);
+        return n_tokens_ > T ? n_tokens_ - T : 0;
+    }
     [[nodiscard]] std::size_t batches_per_epoch() const noexcept {
-        return order_.size() / static_cast<std::size_t>(B_);
+        return B_ > 0 ? num_examples() / static_cast<std::size_t>(B_) : 0;
     }
 
     ~DataLoader();
@@ -95,7 +121,8 @@ private:
     std::size_t cursor_ = 0;          // next position within order_
     std::vector<int> inputs_;         // [B*T], reused each batch
     std::vector<int> targets_;        // [B*T], reused each batch
-    Generator gen_{0};                // owns the shuffle RNG (reseeded in open())
+    Sampling sampling_ = Sampling::Windows;
+    Generator gen_{0};                // owns the shuffle/offset RNG (reseeded in open())
 };
 
 }  // namespace cppgpt

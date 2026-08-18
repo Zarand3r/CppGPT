@@ -2,6 +2,7 @@
 // coverage (every example exactly once), determinism from a seed, epoch wrap,
 // and the error paths — using a temp .bin written with identity tokens so that
 // token value == absolute position, which makes every offset checkable.
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -183,6 +184,105 @@ int main() {
         write_identity_bin(tiny, 4);  // 4 tokens: too few for B=2 examples at T=4
         auto small = DataLoader::open(tiny.c_str(), B, T, 0ULL);
         CHECK(!small.has_value() && small.error() == ErrorCode::OutOfRange);
+    }
+
+    // ---- Sampling::Random -------------------------------------------------
+    //
+    // Identity tokens make this directly checkable: inputs[0] IS the absolute
+    // start offset, so the alignment of the sampled windows is readable rather
+    // than inferred.
+    {
+        const std::string big = tmp_path("ident4000.bin");
+        write_identity_bin(big, 4000);
+        const int RB = 4, RT = 8;
+        const std::size_t n_batches = 200;  // 800 examples: past a Windows epoch (499)
+
+        auto collect = [&](Sampling mode, std::uint64_t seed, std::vector<int>* starts, bool* ok) {
+            auto r = DataLoader::open(big.c_str(), RB, RT, seed, mode);
+            CHECK(r.has_value());
+            DataLoader& dl = *r;
+            for (std::size_t i = 0; i < n_batches; ++i) {
+                dl.next_batch();
+                for (int b = 0; b < RB; ++b) {
+                    const int* in = dl.inputs() + b * RT;
+                    const int* tg = dl.targets() + b * RT;
+                    starts->push_back(in[0]);
+                    // The window is contiguous and the targets are its shift.
+                    // Identity tokens make both exact equalities, not estimates.
+                    // Accumulated into one flag rather than a CHECK per element:
+                    // 800 examples x 2 x RT would report 27k checks and bury every
+                    // other assertion in this file.
+                    for (int t = 0; t < RT; ++t)
+                        *ok = *ok && (in[t] == in[0] + t) && (tg[t] == in[0] + t + 1);
+                    // Never reads past the end: the last target sits at start+RT.
+                    *ok = *ok && in[0] >= 0 && (in[0] + RT) < 4000;
+                }
+            }
+        };
+
+        std::vector<int> win, rnd;
+        bool win_ok = true, rnd_ok = true;
+        collect(Sampling::Windows, 5ULL, &win, &win_ok);
+        collect(Sampling::Random, 5ULL, &rnd, &rnd_ok);
+        CHECK(win_ok);  // contiguity, next-token shift and in-bounds, both modes
+        CHECK(rnd_ok);
+
+        // Windows: every start is T-aligned. That is the defect Random exists to
+        // remove, so it is asserted rather than assumed.
+        bool all_aligned = true;
+        for (int s0 : win) all_aligned = all_aligned && (s0 % RT == 0);
+        CHECK(all_aligned);
+
+        // Random: starts are NOT T-aligned. P(800 uniform draws all landing on a
+        // multiple of 8) is 8^-800, so this is deterministic in practice.
+        bool any_unaligned = false;
+        for (int s0 : rnd) any_unaligned = any_unaligned || (s0 % RT != 0);
+        CHECK(any_unaligned);
+
+        // Diversity is the entire point: Windows can never exceed its example
+        // count however long it runs, Random keeps finding new offsets.
+        auto distinct = [](std::vector<int> v) {
+            std::sort(v.begin(), v.end());
+            return static_cast<std::size_t>(std::unique(v.begin(), v.end()) - v.begin());
+        };
+        const std::size_t dw = distinct(win), dr = distinct(rnd);
+        std::printf("  distinct starts over %zu examples: Windows %zu, Random %zu\n",
+                    win.size(), dw, dr);
+        // Windows can never exceed its example count however long it runs (and
+        // reaches slightly fewer here, since a trailing partial batch is dropped
+        // each epoch). Random exceeds that ceiling outright -- which is the claim,
+        // and it cannot be satisfied by any amount of Windows sampling.
+        const std::size_t ceiling = (4000 - 1) / RT;
+        CHECK(dw <= ceiling);
+        CHECK(dr > ceiling);
+    }
+
+    // ---- Random is reproducible from its seed ---------------------------------
+    {
+        const std::string big = tmp_path("ident4000.bin");
+        const int RB = 4, RT = 8;
+        auto first = [&](std::uint64_t seed) {
+            auto r = DataLoader::open(big.c_str(), RB, RT, seed, Sampling::Random);
+            CHECK(r.has_value());
+            std::vector<int> v;
+            for (int i = 0; i < 20; ++i) {
+                r->next_batch();
+                for (int b = 0; b < RB; ++b) v.push_back(r->inputs()[b * RT]);
+            }
+            return v;
+        };
+        CHECK(first(77ULL) == first(77ULL));   // same seed, same stream
+        CHECK(first(77ULL) != first(78ULL));   // and the seed actually matters
+    }
+
+    // num_examples() must report the distinct windows Random can draw, not the
+    // T-aligned count -- that number is what makes the two modes comparable.
+    {
+        const std::string big = tmp_path("ident4000.bin");
+        auto r = DataLoader::open(big.c_str(), 4, 8, 1ULL, Sampling::Random);
+        CHECK(r.has_value());
+        CHECK(r->num_examples() == 4000 - 8);
+        CHECK(r->sampling() == Sampling::Random);
     }
 
     return cppgpt::test::summary();

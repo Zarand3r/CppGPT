@@ -146,3 +146,47 @@ loss kept falling to 1.1196 — textbook overfitting. Two consequences:
 **Revised understanding.** Both causes were real and they bind in sequence: budget
 was the binding constraint up to ~13 epochs, and example diversity is the binding
 constraint after it. Fixing only one would have left the other hidden.
+
+---
+
+## E-2 · Run B — random-offset sampling
+
+**Change from Run A: one variable.** `--sample random` draws window starts
+uniformly instead of on a T-aligned grid. Same 9000 steps, same everything else.
+
+| | Run A | Run B |
+|---|---|---|
+| sampling | `windows` (T-aligned, non-overlapping) | **`random`** |
+| distinct examples | 15,685 | **1,003,791** |
+| everything else | L4 H4 C128, ctx 64, batch 32, lr 3e-3, 9000 steps | identical |
+
+The **validation** loader stays on `windows` in both runs. Val loss has to measure
+the same thing across runs, and resampling it would make every previous number
+incomparable.
+
+```sh
+bazel-out/k8-opt/bin/tools/train \
+  --data data/shakespeare.train.bin --val data/shakespeare.val.bin \
+  --layers 4 --heads 4 --embd 128 --ctx 64 --batch 32 \
+  --steps 9000 --lr 3e-3 --eval-interval 250 --sample random \
+  --ckpt data/runs/long-b.ckpt --ckpt-best data/runs/long-b-best.ckpt \
+  --log-csv data/runs/long-b.csv
+```
+
+**Predictions, registered before the result.**
+
+1. Best val loss lands **below 1.5514** (Run A's best).
+2. The val curve does **not** turn upward before step 9000 — with 64× the distinct
+   examples, 18.4 epochs of *windows* becomes ~0.3 epochs of distinct *windows*,
+   which is nowhere near the memorisation regime.
+
+**Falsification.** If best val is at or above 1.5514, example diversity was not
+the binding constraint after budget and the remaining gap is something not yet
+identified — capacity (L4 C128 is small), learning-rate schedule, or context
+length. In that case the next test is a capacity sweep, not more sampling work.
+
+**Why this is worth a second 38-minute run.** Run A showed val loss turning upward
+at 12.8 epochs while train loss kept falling: the model had started memorising
+15,685 fixed windows. If that diagnosis is right, removing the alignment
+constraint should move the turn-up out past the horizon rather than merely lower
+the floor a little — so prediction 2 is the sharper test of the two.

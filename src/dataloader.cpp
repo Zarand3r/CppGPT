@@ -68,7 +68,8 @@ Result<void> write_token_bin(const char* path, std::span<const int> ids) noexcep
     return write_atomic(path, u16.data(), u16.size() * sizeof(std::uint16_t));
 }
 
-Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_t seed) noexcept {
+Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_t seed,
+                                    Sampling sampling) noexcept {
     ASSERT(path != nullptr && B >= 1 && T >= 1);
 
     const int fd = ::open(path, O_RDONLY);
@@ -106,11 +107,16 @@ Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_
     dl.B_ = B;
     dl.T_ = T;
     dl.gen_ = Generator(seed);
-    dl.order_.resize(n_examples);
-    for (std::size_t i = 0; i < n_examples; ++i) dl.order_[i] = i;
+    dl.sampling_ = sampling;
+    // Random draws a fresh offset per example, so the permutation is dead weight
+    // — and at 1M tokens it would be a 1M-element vector serving nothing.
+    if (sampling != Sampling::Random) {
+        dl.order_.resize(n_examples);
+        for (std::size_t i = 0; i < n_examples; ++i) dl.order_[i] = i;
+    }
     dl.inputs_.assign(static_cast<std::size_t>(B) * static_cast<std::size_t>(T), 0);
     dl.targets_.assign(static_cast<std::size_t>(B) * static_cast<std::size_t>(T), 0);
-    dl.shuffle();
+    if (sampling != Sampling::Random) dl.shuffle();
     dl.cursor_ = 0;
     return dl;
 }
@@ -118,6 +124,23 @@ Result<DataLoader> DataLoader::open(const char* path, int B, int T, std::uint64_
 void DataLoader::next_batch() noexcept {
     const std::size_t B = static_cast<std::size_t>(B_);
     const std::size_t T = static_cast<std::size_t>(T_);
+    if (sampling_ == Sampling::Random) {
+        // Uniform start offsets, with replacement. `hi` is inclusive and chosen so
+        // start + T + 1 <= n_tokens_: the example needs T inputs plus the one
+        // extra token its last target reads.
+        const std::size_t hi = n_tokens_ - T - 1;
+        for (std::size_t b = 0; b < B; ++b) {
+            const auto start = static_cast<std::size_t>(
+                gen_.uniform_int(0, static_cast<std::int64_t>(hi)));
+            int* in = inputs_.data() + b * T;
+            int* tg = targets_.data() + b * T;
+            for (std::size_t t = 0; t < T; ++t) {
+                in[t] = static_cast<int>(tokens_[start + t]);
+                tg[t] = static_cast<int>(tokens_[start + t + 1]);
+            }
+        }
+        return;
+    }
     if (cursor_ + B > order_.size()) {  // not enough examples left for a full batch
         shuffle();
         cursor_ = 0;
@@ -165,6 +188,7 @@ DataLoader::DataLoader(DataLoader&& o) noexcept
       cursor_(o.cursor_),
       inputs_(std::move(o.inputs_)),
       targets_(std::move(o.targets_)),
+      sampling_(o.sampling_),
       gen_(o.gen_) {
     // Clear ALL state, not just the mapping: leaving B_/T_/n_tokens_ intact
     // would make the moved-from loader's accessors report a live-looking config
@@ -176,6 +200,7 @@ DataLoader::DataLoader(DataLoader&& o) noexcept
     o.B_ = 0;
     o.T_ = 0;
     o.cursor_ = 0;
+    o.sampling_ = Sampling::Windows;
 }
 
 DataLoader& DataLoader::operator=(DataLoader&& o) noexcept {
@@ -189,6 +214,7 @@ DataLoader& DataLoader::operator=(DataLoader&& o) noexcept {
         T_ = o.T_;
         order_ = std::move(o.order_);
         cursor_ = o.cursor_;
+        sampling_ = o.sampling_;
         inputs_ = std::move(o.inputs_);
         targets_ = std::move(o.targets_);
         gen_ = o.gen_;
@@ -199,6 +225,7 @@ DataLoader& DataLoader::operator=(DataLoader&& o) noexcept {
         o.B_ = 0;
         o.T_ = 0;
         o.cursor_ = 0;
+        o.sampling_ = Sampling::Windows;
     }
     return *this;
 }

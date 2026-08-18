@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     const cli::Args args(argc, argv,
                          {"data", "val", "vocab", "ckpt", "layers", "heads", "embd", "ctx", "batch",
                           "steps", "lr", "min-lr", "warmup", "clip", "seed", "eval-interval",
-                          "eval-batches", "init-from", "log-csv", "ckpt-best"});
+                          "eval-batches", "init-from", "log-csv", "ckpt-best", "sample"});
 
     const std::string data_path(args.str("data", ""));
     if (data_path.empty()) {
@@ -139,7 +139,21 @@ int main(int argc, char** argv) {
             return 1;
         }
         cfg.vocab_size = CharTokenizer(vocab).vocab_size();
-        auto r = DataLoader::open(data_path.c_str(), B, T, seed);
+        // Training-set sampling. Default stays `windows` so existing runs remain
+        // bit-reproducible; `random` is opt-in until it has earned the default.
+        // The VALIDATION loader deliberately stays on windows either way: val loss
+        // must measure the same thing across runs, and changing how it is sampled
+        // would make every previous number incomparable.
+        const std::string sample(args.str("sample", "windows"));
+        Sampling sampling = Sampling::Windows;
+        if (sample == "random") {
+            sampling = Sampling::Random;
+        } else if (sample != "windows") {
+            std::fprintf(stderr, "train: --sample must be 'windows' or 'random' (got '%s')\n",
+                         sample.c_str());
+            return 2;
+        }
+        auto r = DataLoader::open(data_path.c_str(), B, T, seed, sampling);
         if (!r) {
             std::fprintf(stderr, "train: cannot open '%s': %s\n", data_path.c_str(),
                          describe(r.error()));
