@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
     const cli::Args args(argc, argv,
                          {"data", "val", "vocab", "ckpt", "layers", "heads", "embd", "ctx", "batch",
                           "steps", "lr", "min-lr", "warmup", "clip", "seed", "eval-interval",
-                          "eval-batches", "init-from"});
+                          "eval-batches", "init-from", "log-csv"});
 
     const std::string data_path(args.str("data", ""));
     if (data_path.empty()) {
@@ -203,6 +203,27 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Append-only CSV run log. Deliberately a local file and not a hosted
+    // experiment tracker: the C++ binaries link only libc/libm, and a training
+    // loop that phones home would be the first runtime dependency in the repo.
+    // A CSV is greppable, plottable, diffable, survives with the checkpoint, and
+    // can be shipped to any dashboard later by a script that is not this binary's
+    // problem. Appending (not truncating) means a resumed or repeated run adds to
+    // the record rather than destroying it.
+    const std::string csv_path(args.str("log-csv", ""));
+    std::FILE* csv = nullptr;
+    if (!csv_path.empty()) {
+        csv = std::fopen(csv_path.c_str(), "a");
+        if (csv == nullptr) {
+            // Fail fast: a run whose log silently went nowhere is a run you cannot
+            // report, and you would not find out until it finished.
+            std::fprintf(stderr, "train: cannot open --log-csv '%s'\n", csv_path.c_str());
+            return 1;
+        }
+        if (std::ftell(csv) == 0)
+            std::fprintf(csv, "step,loss,val_loss,lr,grad_norm,tokens,elapsed_s,tok_per_s\n");
+    }
+
     std::printf("train: %zu tokens, vocab %d | L%d H%d C%d | B%d T%d | %d steps, lr %.2e\n",
                 from_bin ? loader->num_tokens() : data.size(), cfg.vocab_size, cfg.n_layer,
                 cfg.n_head, cfg.n_embd, B, T, steps, static_cast<double>(max_lr));
@@ -244,16 +265,30 @@ int main(int argc, char** argv) {
         tokens_seen += static_cast<std::int64_t>(B) * T;
 
         const double elapsed = std::chrono::duration<double>(Clock::now() - t_start).count();
-        if (step % 10 == 0 || step == 1 || step == steps)
+        const double tok_s = static_cast<double>(tokens_seen) / std::max(1e-9, elapsed);
+        const bool logged = (step % 10 == 0 || step == 1 || step == steps);
+        if (logged)
             std::printf("step %5d/%d  loss %.4f  lr %.2e  |g| %.3f  %.0f tok/s  %.1fs\n", step,
                         steps, static_cast<double>(loss), static_cast<double>(opt.lr),
-                        static_cast<double>(gnorm),
-                        static_cast<double>(tokens_seen) / std::max(1e-9, elapsed), elapsed);
+                        static_cast<double>(gnorm), tok_s, elapsed);
 
+        bool did_eval = false;
+        float vl = 0.0f;
         if (val_loader && eval_interval > 0 && (step % eval_interval == 0 || step == steps)) {
-            const float vl = evaluate(model, *val_loader, eval_batches);
+            vl = evaluate(model, *val_loader, eval_batches);
+            did_eval = true;
             std::printf("  [eval] step %d  val loss %.4f  peak RSS %.0f MB\n", step,
                         static_cast<double>(vl), peak_rss_mb());
+        }
+        // val_loss is empty on steps where no evaluation ran, rather than carrying
+        // the last value forward: a repeated number would read as a flat curve.
+        if (csv != nullptr && (logged || did_eval)) {
+            std::fprintf(csv, "%d,%.6f,", step, static_cast<double>(loss));
+            if (did_eval) std::fprintf(csv, "%.6f", static_cast<double>(vl));
+            std::fprintf(csv, ",%.6e,%.6f,%lld,%.3f,%.1f\n", static_cast<double>(opt.lr),
+                         static_cast<double>(gnorm), static_cast<long long>(tokens_seen), elapsed,
+                         tok_s);
+            std::fflush(csv);  // a killed run must leave a usable log behind
         }
 
         if (!ckpt.empty() && (step % 500 == 0 || step == steps)) {
@@ -265,6 +300,7 @@ int main(int argc, char** argv) {
     }
 
     const double total = std::chrono::duration<double>(Clock::now() - t_start).count();
+    if (csv != nullptr) std::fclose(csv);
     std::printf("train: done — %lld tokens in %.1fs (%.0f tok/s), peak RSS %.0f MB\n",
                 static_cast<long long>(tokens_seen), total,
                 static_cast<double>(tokens_seen) / std::max(1e-9, total), peak_rss_mb());
