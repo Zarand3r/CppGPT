@@ -190,3 +190,53 @@ at 12.8 epochs while train loss kept falling: the model had started memorising
 15,685 fixed windows. If that diagnosis is right, removing the alignment
 constraint should move the turn-up out past the horizon rather than merely lower
 the floor a little — so prediction 2 is the sharper test of the two.
+
+### Run B — result: prediction 1 confirmed, prediction 2 was badly specified
+
+**Prediction 1 — best val below 1.5514. Result: 1.5288 at step 7750. Confirmed.**
+
+**Prediction 2 — "the val curve does not turn upward before step 9000."** As
+written this reads as falsified: best was 1.5288 at step 7750 and the final eval
+was 1.5526, so the curve *did* rise after its minimum.
+
+**But that criterion was wrong, and it is worth recording why.** For *any* noisy
+series, the final point is above the minimum — the minimum is by definition the
+luckiest sample. "final > best" is therefore satisfied by pure noise and proves
+nothing. The statistic that answers the question is the **trend**:
+
+| | trend over the last 13 evals | scatter (sd) | train/val gap |
+|---|---|---|---|
+| Run A (`windows`) | **+0.0154** nats / 1k steps | 0.0194 | 0.495 |
+| Run B (`random`) | **−0.0022** nats / 1k steps | 0.0111 | 0.360 |
+
+Run A degraded systematically over its last 3000 steps. Run B is flat — very
+slightly still improving — with lower scatter and a train/val gap 27% smaller.
+**Measured properly, prediction 2 holds: Run B is not overfitting.** The lesson is
+about the test, not the model: a falsification criterion has to be a statistic
+that noise cannot satisfy.
+
+**Scale of the effect, stated honestly.** Sampling was worth **0.023 nats**
+(1.5514 → 1.5288, ~1.5%). Budget was worth **0.207 nats** (1.8199 → 1.6133, ~11%).
+Both were real, but 64× more distinct examples bought roughly a seventh of what
+10× more steps did. Diversity was the *second* binding constraint, and it binds
+much less tightly than the first — worth knowing before spending effort on
+sampling refinements that cannot pay for themselves.
+
+### Where the model stands
+
+Scored by `//tools:eval` on the full validation split (Run B's **best**
+checkpoint, which `--ckpt-best` preserved and which the final checkpoint is 0.016
+nats worse than):
+
+| | M-8 | Run A | **Run B (best)** |
+|---|---|---|---|
+| val loss (nats) | 1.8199 | 1.6133 | **1.5364** |
+| bits/char | 2.626 | 2.328 | **2.217** |
+| top-1 accuracy | 45.6% | 54.1% | **55.0%** |
+| context used | 18 chars | 38 chars | **54 chars** |
+| vs best n-gram | **loses** 7.9% | beats 4.3% | **beats 8.9%** |
+
+The context figure is the one that matters most: the model has gone from using a
+5-gram's worth of the sequence to using 54 of its 64 available characters. It is
+now within ~4.5% of the nanoGPT char-Shakespeare reference (~1.47 nats), on a
+model with no architectural change from the one that lost to a lookup table.

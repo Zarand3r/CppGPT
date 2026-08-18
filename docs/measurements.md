@@ -310,3 +310,27 @@ Only the final checkpoint was saved, so the best model was lost; `--ckpt-best` n
 
 Cross-check: the training loop's own eval reported 1.6151 and `//tools:eval` reported 1.6133 — 0.1%
 apart, from independent implementations (shuffled subset vs full sequential pass).
+
+## M-13 · Run B — random-offset sampling
+
+`//tools:train --sample random`, otherwise identical to M-12 (L4 H4 C128, ctx 64, batch 32, lr 3e-3,
+9000 steps). 18,432,000 tokens in 2295 s at 8031 tok/s. Scored by `//tools:eval` on the **best**
+checkpoint (step 7750), which `--ckpt-best` preserved. See `docs/EXPERIMENTS.md` E-2.
+
+| | M-8 (900 steps) | M-12 / Run A | **M-13 / Run B (best)** |
+|---|---|---|---|
+| val loss (nats) | 1.8199 | 1.6133 | **1.5364** |
+| bits/char | 2.626 | 2.328 | **2.217** |
+| perplexity | 6.17 | 5.02 | **4.65** |
+| top-1 accuracy | 45.6% | 54.1% | **55.0%** |
+| calibration error | 0.024 | 0.070 | 0.045 |
+| context within 2% of best | 18 chars | 38 chars | **54 chars** |
+| vs 5-gram (1.6860) | **loses** 7.9% | beats 4.3% | **beats 8.9%** |
+
+**Overfitting, measured by trend rather than by final-vs-minimum** (which any noisy series
+satisfies): Run A drifted **+0.0154 nats/1k steps** over its last 13 evals, Run B **−0.0022** — flat.
+Train/val gap 0.495 → 0.360.
+
+**Attribution.** Budget was worth 0.207 nats (1.82 → 1.61); sampling was worth a further 0.023
+(1.5514 → 1.5288 on train\'s own eval). 64× more distinct examples bought about a seventh of what 10×
+more steps did — real, but decisively the second-order effect.
