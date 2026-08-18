@@ -101,3 +101,48 @@ between them is itself a signal.
 Same budget as Run A, sampling window starts uniformly at random rather than on a
 T-aligned grid. Isolates the dataloader change. Run A must complete first:
 changing budget and sampling together would leave neither attributable.
+
+### Run A — result: prediction confirmed, and a second problem exposed
+
+**Prediction was: final val loss below 1.686 nats. Result: 1.6133** (scored by
+`//tools:eval`, which agrees with the training loop's own 1.6151 to 0.1% — two
+independent implementations). **Confirmed.** The budget hypothesis was right: the
+model now **beats the 5-gram by 4.3%**, having lost to it by 7.9%.
+
+| | M-8 (900 steps) | Run A (9000 steps) |
+|---|---|---|
+| val loss (eval) | 1.8199 | **1.6133** |
+| bits/char | 2.626 | **2.328** |
+| vs best n-gram | **loses** by 7.9% | **beats** by 4.3% |
+| top-1 accuracy | 45.6% | **54.1%** |
+| context used (within 2% of best) | 18 chars | **38 chars** |
+
+The context curve moving from 18 to 38 characters is the substantive change: the
+model is not merely fitting better, it is *using more of the sequence*.
+
+**But the run overfit, and we shipped the wrong checkpoint.**
+
+| | |
+|---|---|
+| best val | **1.5514 at step 6250** (12.8 epochs) |
+| final val | 1.6151 at step 9000 |
+| regression after the minimum | **+0.0637 nats** |
+| train/val gap | 0.17 → **0.50 nats** |
+
+Val loss bottomed at 12.8 epochs and rose monotonically-ish thereafter while train
+loss kept falling to 1.1196 — textbook overfitting. Two consequences:
+
+1. **The checkpoint we evaluated is not the best one we trained.** `--ckpt` saves
+   the *latest* every 500 steps, overwriting, so the step-6250 model is gone. We
+   reported 1.6133 for a model whose best form scored ~1.55. That is a tooling
+   defect, not a modelling one, and it would silently corrupt every future
+   comparison. Fixed by `--ckpt-best`.
+2. **The sampling defect now binds.** Overfitting at ~13 epochs is exactly what
+   15,685 distinct examples predicts. At 1.8 epochs (M-8) the model could not
+   reach the memorisation regime, so this was invisible; with budget fixed, it is
+   the limiting factor. Run B is now motivated by measurement rather than by
+   theory.
+
+**Revised understanding.** Both causes were real and they bind in sequence: budget
+was the binding constraint up to ~13 epochs, and example diversity is the binding
+constraint after it. Fixing only one would have left the other hidden.

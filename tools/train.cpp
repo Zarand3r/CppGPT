@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -95,7 +96,7 @@ int main(int argc, char** argv) {
     const cli::Args args(argc, argv,
                          {"data", "val", "vocab", "ckpt", "layers", "heads", "embd", "ctx", "batch",
                           "steps", "lr", "min-lr", "warmup", "clip", "seed", "eval-interval",
-                          "eval-batches", "init-from", "log-csv"});
+                          "eval-batches", "init-from", "log-csv", "ckpt-best"});
 
     const std::string data_path(args.str("data", ""));
     if (data_path.empty()) {
@@ -203,6 +204,23 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Best-val checkpoint, kept separately from --ckpt. --ckpt saves the LATEST
+    // every 500 steps and is what a resume needs; but val loss is not monotone —
+    // Run A bottomed at step 6250 and regressed for the remaining 2750 — so the
+    // latest checkpoint is not the best one, and reporting it understates the
+    // model that was actually trained. Two paths because the two answer different
+    // questions; conflating them would break resume.
+    const std::string ckpt_best(args.str("ckpt-best", ""));
+    if (!ckpt_best.empty() && (!val_loader || eval_interval <= 0)) {
+        // A flag that silently does nothing is worse than one that is absent: the
+        // run looks like it saved a best checkpoint and did not.
+        std::fprintf(stderr,
+                     "train: --ckpt-best needs --val and --eval-interval > 0 (there is no"
+                     " validation loss to select on)\n");
+        return 2;
+    }
+    float best_val = std::numeric_limits<float>::infinity();
+
     // Append-only CSV run log. Deliberately a local file and not a hosted
     // experiment tracker: the C++ binaries link only libc/libm, and a training
     // loop that phones home would be the first runtime dependency in the repo.
@@ -279,6 +297,16 @@ int main(int argc, char** argv) {
             did_eval = true;
             std::printf("  [eval] step %d  val loss %.4f  peak RSS %.0f MB\n", step,
                         static_cast<double>(vl), peak_rss_mb());
+            // Strictly better, so an equal score keeps the earlier (cheaper) model.
+            if (!ckpt_best.empty() && vl < best_val) {
+                best_val = vl;
+                if (const auto r = model.save_checkpoint(ckpt_best.c_str()); !r)
+                    std::fprintf(stderr, "train: best-checkpoint save failed: %s\n",
+                                 describe(r.error()));
+                else
+                    std::printf("  [best] %s  val %.4f\n", ckpt_best.c_str(),
+                                static_cast<double>(vl));
+            }
         }
         // val_loss is empty on steps where no evaluation ran, rather than carrying
         // the last value forward: a repeated number would read as a flat curve.

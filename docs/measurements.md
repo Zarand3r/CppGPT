@@ -285,3 +285,28 @@ bazel run --config=release //tools:eval -- \
   --checkpoint $PWD/data/shakespeare.ckpt \
   --data $PWD/data/shakespeare.val.bin --train $PWD/data/shakespeare.train.bin --order 6
 ```
+
+## M-12 · Run A — controlled 10x scale-up
+
+`//tools:train` at the M-8 config (L4 H4 C128, ctx 64, batch 32, lr 3e-3), 900 -> 9000 steps.
+18,432,000 tokens (18.4 epochs) in 2267 s at 8130 tok/s, peak RSS 203 MB. Scored by `//tools:eval`
+on the full validation split. See `docs/EXPERIMENTS.md` E-1.
+
+| | M-8 | Run A | change |
+|---|---|---|---|
+| val loss (nats) | 1.8199 | **1.6133** | −0.207 |
+| bits/char | 2.626 | **2.328** | −0.298 |
+| perplexity | 6.17 | **5.02** | −1.15 |
+| top-1 accuracy | 45.6% | **54.1%** | +8.5 pts |
+| calibration error | 0.024 | 0.070 | **worse** |
+| vs best n-gram (5-gram, 1.6860) | loses 7.9% | **beats 4.3%** | — |
+
+The calibration regression is the overfitting showing up where the loss alone hides it: the model
+became more confident faster than it became more correct.
+
+**Overfitting.** Best val was **1.5514 at step 6250** (12.8 epochs); by step 9000 it had regressed to
+1.6151 while train loss fell to 1.1196 — a train/val gap of 0.50 nats, up from 0.17 at 900 steps.
+Only the final checkpoint was saved, so the best model was lost; `--ckpt-best` now fixes that.
+
+Cross-check: the training loop's own eval reported 1.6151 and `//tools:eval` reported 1.6133 — 0.1%
+apart, from independent implementations (shuffled subset vs full sequential pass).
