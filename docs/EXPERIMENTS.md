@@ -143,6 +143,8 @@ changing budget and sampling together would leave neither attributable.
 
 ### Run A — result: prediction confirmed, and a second problem exposed
 
+**W&B:** https://wandb.ai/richardbao419-substrate/cppgpt/runs/xphook28
+
 **Prediction was: final val loss below 1.686 nats. Result: 1.6133** (scored by
 `//tools:eval`, which agrees with the training loop's own 1.6151 to 0.1% — two
 independent implementations). **Confirmed.** The budget hypothesis was right: the
@@ -231,6 +233,8 @@ constraint should move the turn-up out past the horizon rather than merely lower
 the floor a little — so prediction 2 is the sharper test of the two.
 
 ### Run B — result: prediction 1 confirmed, prediction 2 was badly specified
+
+**W&B:** https://wandb.ai/richardbao419-substrate/cppgpt/runs/zjris5j7
 
 **Prediction 1 — best val below 1.5514. Result: 1.5288 at step 7750. Confirmed.**
 

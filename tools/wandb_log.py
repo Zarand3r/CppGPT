@@ -24,6 +24,7 @@ Failure model, chosen so a dashboard can never cost you a 40-minute run:
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import subprocess
 import sys
@@ -73,15 +74,74 @@ def row_to_metrics(row: dict[str, str]) -> tuple[int, dict]:
     return step, m
 
 
+def backfill(args) -> int:
+    """Ship a completed run's CSV. Marked in the config so a backfilled run is
+    never mistaken for one that was tracked live."""
+    import wandb
+
+    cfg = {"backfilled": True}
+    for kv in args.config:
+        k, _, v = kv.partition("=")
+        for cast in (int, float):
+            try:
+                cfg[k] = cast(v)
+                break
+            except ValueError:
+                continue
+        else:
+            cfg[k] = v
+
+    with open(args.backfill) as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        print(f"error: {args.backfill} has no rows", file=sys.stderr)
+        return 1
+
+    run = wandb.init(entity=args.entity, project=args.project, name=args.name,
+                     notes=args.notes, config=cfg)
+    best = None
+    last = {}
+    for row in rows:
+        try:
+            step, m = row_to_metrics(row)
+        except (ValueError, KeyError):
+            continue
+        run.log(m, step=step)
+        last = m
+        if "val/loss" in m and (best is None or m["val/loss"] < best):
+            best = m["val/loss"]
+    if best is not None:
+        run.summary["val/best_loss"] = best
+    run.summary["train/final_loss"] = last.get("train/loss")
+    run.summary["train/tokens"] = last.get("train/tokens")
+    print(f"  [wandb] backfilled {len(rows)} rows"
+          + (f", best val {best:.4f}" if best is not None else "")
+          + f" -> {run.url}", flush=True)
+    run.finish()
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", default="cppgpt")
     ap.add_argument("--entity", default=os.environ.get("WANDB_ENTITY") or None)
     ap.add_argument("--name", default=None, help="run name (defaults to W&B's)")
     ap.add_argument("--notes", default=None)
+    ap.add_argument("--backfill", default=None, metavar="CSV",
+                    help="ship an EXISTING csv instead of running training. For runs that "
+                         "finished before this wrapper existed; the alternative is citing a "
+                         "link that does not correspond to the model.")
+    ap.add_argument("--config", action="append", default=[], metavar="K=V",
+                    help="config entry for --backfill, repeatable (the flags cannot be "
+                         "recovered from the CSV)")
     args, rest = ap.parse_known_args()
     if rest and rest[0] == "--":
         rest = rest[1:]
+    # Backfill takes no training command, so it must dispatch BEFORE the guard
+    # that requires one.
+    if args.backfill:
+        return backfill(args)
+
     if not rest:
         print("error: no training command given (put it after `--`)", file=sys.stderr)
         return 2

@@ -288,6 +288,8 @@ bazel run --config=release //tools:eval -- \
 
 ## M-12 · Run A — controlled 10x scale-up
 
+**W&B:** [https://wandb.ai/richardbao419-substrate/cppgpt/runs/xphook28](https://wandb.ai/richardbao419-substrate/cppgpt/runs/xphook28) (backfilled from `data/runs/long-a.csv`)
+
 `//tools:train` at the M-8 config (L4 H4 C128, ctx 64, batch 32, lr 3e-3), 900 -> 9000 steps.
 18,432,000 tokens (18.4 epochs) in 2267 s at 8130 tok/s, peak RSS 203 MB. Scored by `//tools:eval`
 on the full validation split. See `docs/EXPERIMENTS.md` E-1.
@@ -312,6 +314,8 @@ Cross-check: the training loop's own eval reported 1.6151 and `//tools:eval` rep
 apart, from independent implementations (shuffled subset vs full sequential pass).
 
 ## M-13 · Run B — random-offset sampling
+
+**W&B:** [https://wandb.ai/richardbao419-substrate/cppgpt/runs/zjris5j7](https://wandb.ai/richardbao419-substrate/cppgpt/runs/zjris5j7) (backfilled from `data/runs/long-b.csv`)
 
 `//tools:train --sample random`, otherwise identical to M-12 (L4 H4 C128, ctx 64, batch 32, lr 3e-3,
 9000 steps). 18,432,000 tokens in 2295 s at 8031 tok/s. Scored by `//tools:eval` on the **best**
