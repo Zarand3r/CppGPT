@@ -22,3 +22,6 @@
 
 # Generated static site for local/Funnel serving (tools/make-site.sh).
 /site/
+
+# Weights & Biases local run cache (dev tooling; regenerable, never committed).
+/wandb/
