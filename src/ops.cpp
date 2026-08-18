@@ -199,8 +199,21 @@ void attention_forward_cpu(float* out, float* preatt, float* att, const float* i
                 float* att_row = att + ((static_cast<std::size_t>(b) * NH + h) * Tz + t) * Tz;
                 for (int t2 = 0; t2 <= t; ++t2) {  // causal: only keys at t2 <= t
                     const float* k = inp + (static_cast<std::size_t>(b) * Tz + t2) * C3 + Cz + h * hz;
+                    // Independent accumulator lanes, for the same reason as
+                    // matmul_forward (D8): one running `s` is a serial fp-add
+                    // latency chain, and -ffp-contract=off forbids the compiler
+                    // from splitting it because float addition is not
+                    // associative. The weighted-sum loop below needs no such
+                    // treatment — it accumulates into separate out_row[i], which
+                    // already vectorises.
+                    constexpr int kLanes = 8;
+                    float acc[kLanes] = {};
+                    std::size_t i = 0;
+                    for (; i + kLanes <= hz; i += kLanes)
+                        for (int j = 0; j < kLanes; ++j) acc[j] += q[i + j] * k[i + j];
                     float s = 0.0f;
-                    for (std::size_t i = 0; i < hz; ++i) s += q[i] * k[i];
+                    for (int j = 0; j < kLanes; ++j) s += acc[j];
+                    for (; i < hz; ++i) s += q[i] * k[i];  // ragged tail (hs % 8)
                     preatt_row[t2] = s * scale;
                 }
                 softmax_forward_cpu(att_row, preatt_row, t + 1);

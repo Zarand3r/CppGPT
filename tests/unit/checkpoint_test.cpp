@@ -259,7 +259,9 @@ int main() {
         Generator g(2ULL);
         M.init_weights(g);
         M.forward(in.data(), nullptr);  // inference: no probs, no loss
-        CHECK_DIES(M.backward(in.data(), tg.data()));
+        // Message-matched: this is a real model call, so an unrelated failure could
+        // plausibly satisfy a bare death test without the guard ever running.
+        CHECK_DIES_WITH(M.backward(in.data(), tg.data()), "backward");
     }
 
     (void)V;

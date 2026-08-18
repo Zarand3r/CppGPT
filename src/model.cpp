@@ -104,6 +104,14 @@ GPT2::GPT2(const Config& cfg, int B, int T) : cfg_(cfg), B_(B), T_(T) {
     // Activations and their gradients share the same layout.
     std::size_t as[kNumActTensors];
     const std::size_t atot = act_sizes(cfg, B, T, as);
+    // Same guard as the parameters above, and MORE load-bearing: the activation
+    // arena is the larger of the two at any realistic B and T, and the forward
+    // pass narrows element counts to int on every op (`static_cast<int>(BTC)`).
+    // Guarding params but not activations left the bigger arena unchecked. The
+    // total is a conservative bound — every individual tensor is a subset of it,
+    // so if the total fits in int, every per-op count does.
+    ASSERT_MSG(atot <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+               "GPT2: activation count exceeds INT_MAX (reduce batch or context)");
     act_store_ = Storage(atot);
     act_grad_store_ = Storage(atot);
     point_acts(acts_, act_store_.alloc(atot), as);
@@ -200,7 +208,7 @@ void GPT2::forward(const int* tokens, const int* targets) {
         residual_forward(residual2, res, attproj, static_cast<int>(BTC));
         layernorm_forward(ln2, ln2_mean, ln2_rstd, residual2, ln2w, ln2b, B, T, C);
         matmul_forward(fch, ln2, fcw, fcb, B, T, C, 4 * C);
-        gelu_forward(fch_gelu, fch, static_cast<int>(BTC) * 4);
+        gelu_forward(fch_gelu, fch, static_cast<int>(BTC * 4));
         matmul_forward(fcproj, fch_gelu, fcprojw, fcprojb, B, T, 4 * C, C);
         residual_forward(residual3, residual2, fcproj, static_cast<int>(BTC));
     }

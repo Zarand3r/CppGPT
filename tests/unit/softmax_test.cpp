@@ -5,6 +5,8 @@
 // pinned by a finite-difference gradient check of the softmax Jacobian.
 #include "cppgpt/ops.hpp"
 
+#include <cmath>
+
 #include <cstddef>
 #include <vector>
 
@@ -32,6 +34,17 @@ int main() {
         float out2[3] = {0, 0, 0};
         softmax_forward(out2, in2, 3);
         for (int i = 0; i < 3; ++i) CHECK(rel_close(out[i], out2[i], 1e-5));
+
+        // Shift invariance at a magnitude that REQUIRES the max-subtraction.
+        // fp32 exp overflows above ~88.7, so without it exp(200) is inf, the sum
+        // is inf, and every output is inf/inf = NaN. The +10 case above passes
+        // with or without the subtraction — which is exactly why deleting it
+        // survived a mutation test until this was added.
+        const float big[3] = {200.0f, 201.0f, 202.0f};
+        float outb[3] = {0, 0, 0};
+        softmax_forward(outb, big, 3);
+        CHECK(std::isfinite(outb[0]) && std::isfinite(outb[1]) && std::isfinite(outb[2]));
+        for (int i = 0; i < 3; ++i) CHECK(rel_close(out[i], outb[i], 1e-5));
 
         // uniform on equal inputs.
         const float eq[4] = {5, 5, 5, 5};

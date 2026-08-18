@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <string>
 #include <utility>
 
 namespace cppgpt::test {
@@ -33,6 +34,45 @@ template <class F>
     int status = 0;
     (void)::waitpid(pid, &status, 0);
     return !(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+// Like dies(), but also requires the failure message to contain `needle`.
+//
+// A bare death test passes for ANY failure, including one that happens before the
+// code under test is even reached. That is not hypothetical: a test for the
+// activation-arena INT_MAX guard passed with the guard deleted, because the
+// oversized config then died in the allocator instead — the assertion under test
+// never ran, and mutation testing was what exposed it. Matching the message is
+// what makes a death test a test of a SPECIFIC invariant.
+template <class F>
+[[nodiscard]] inline bool dies_with(F&& fn, const char* needle) {
+    std::fflush(nullptr);
+    int fds[2];
+    if (::pipe(fds) != 0) return false;
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        ::close(fds[0]);
+        ::close(fds[1]);
+        return false;  // never fall through to waitpid(-1, ...) and reap a stranger
+    }
+    if (pid == 0) {
+        ::close(fds[0]);
+        (void)::dup2(fds[1], 2);  // stderr -> pipe, so the abort message is capturable
+        ::close(fds[1]);
+        fn();
+        ::_exit(0);  // returned normally => did NOT fail fast
+    }
+    ::close(fds[1]);
+    std::string out;
+    char buf[512];
+    ssize_t n;
+    while ((n = ::read(fds[0], buf, sizeof(buf))) > 0)
+        out.append(buf, static_cast<std::size_t>(n));
+    ::close(fds[0]);
+    int status = 0;
+    (void)::waitpid(pid, &status, 0);
+    const bool died = !(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    return died && out.find(needle) != std::string::npos;
 }
 
 // Returns a process exit code: 0 = all passed, 1 = at least one failure.
@@ -61,3 +101,8 @@ template <class F>
 
 // Assert that `stmt` fails fast (aborts) instead of returning a wrong answer.
 #define CHECK_DIES(stmt) CHECK(::cppgpt::test::dies([&] { stmt; }))
+
+// Assert that `stmt` fails fast AND says why — see dies_with on why the message
+// matters. Prefer this over CHECK_DIES whenever another failure could plausibly
+// occur first.
+#define CHECK_DIES_WITH(stmt, needle) CHECK(::cppgpt::test::dies_with([&] { stmt; }, needle))
