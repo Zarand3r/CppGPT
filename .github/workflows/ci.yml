@@ -1,0 +1,71 @@
+# CI — the one genuinely open M0 item.
+#
+# Every "30/30 green" before this meant "green on one machine, when someone
+# remembered to run it". These four gates are the claims the repo actually makes
+# about itself, each checked rather than asserted.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain is hermetic (pinned LLVM in MODULE.bazel), so the cache is
+      # the only thing standing between this and a very slow job.
+      - name: Cache bazel
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel
+          key: bazel-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelrc') }}
+          restore-keys: bazel-${{ runner.os }}-
+
+      - name: Test (dev)
+        run: bazel test //... --config=dev
+
+      - name: Test (release)
+        run: bazel test //... --config=release
+
+      # The parity gate is the repo's strongest correctness claim, so its numbers
+      # are printed rather than merely passed -- a silent pass hides a margin that
+      # is drifting toward the tolerance.
+      - name: PyTorch parity margins
+        run: bazel test //tests/integration:parity_test --config=release
+             --test_output=all --nocache_test_results | grep -E "parity:|PASS"
+
+      # "The binaries link only libc and libm" is why this repo can claim no
+      # runtime dependencies. A claim nothing checks quietly stops being true.
+      - name: Dynamic-dependency allow-list
+        run: |
+          bazel build //tools:all --config=release
+          tools/check_ldd.sh
+
+      - name: Sanitizers (ASan + UBSan)
+        run: bazel test //tests/... --config=asan --nocache_test_results
+
+      # The viewer is a single self-contained page with no test target: this is
+      # the only thing that checks it is wired up and renders.
+      - name: Viewer wiring and render
+        run: |
+          bazel build //tools:inspect //tools:prepare //tools:train --config=release
+          sudo apt-get install -y nodejs >/dev/null 2>&1 || true
+          python3 tools/check_viewer.py --html tools/viewer.html --dump /dev/null || \
+            python3 - <<'PY'
+          import re
+          h = open('tools/viewer.html').read()
+          used = set(re.findall(r"\$\('#([A-Za-z0-9_-]+)'\)", h))
+          defined = set(re.findall(r'id="([A-Za-z0-9_-]+)"', h))
+          assert used and defined, "extraction found nothing - the check is broken"
+          missing = sorted(used - defined)
+          assert not missing, f"viewer references undefined ids: {missing}"
+          print(f"  viewer ids ok ({len(used)} referenced)")
+          PY

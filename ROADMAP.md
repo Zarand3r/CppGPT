@@ -49,7 +49,8 @@ no new subsystems.
 - [x] `matmul_forward` / `matmul_backward` (CPU, device-dispatched) — `ops.hpp` + `src/ops.cpp`
 - [x] `scripts/gen_fixtures.py` (canonical-GPT-2 PyTorch oracle, tanh GELU) · `verify.hpp` — run in the torch venv; the fixture is committed as `tests/fixtures/gpt2_parity.bin` so the C++ gate (`tests/integration/parity_test`) needs no torch
 - [x] `tests/unit/matmul_test.cpp` — fwd exact fixtures + bwd **adjoint identity** + finite-difference (independent of PyTorch); `storage_test.cpp` covers the arena
-- [ ] CI: one Linux build + `ldd` allow-list + ASan/UBSan
+- [x] CI: `.github/workflows/ci.yml` — build + test in dev and release, printed parity margins,
+      the `ldd` allow-list gate, ASan/UBSan (`--config=asan`), and the viewer wiring check.
 
 ## M1 — Full GPT-2 forward + backward (Slice 0)
 - [x] Ops fwd+bwd, each tested (exact/property fixtures + finite-difference gradcheck — no PyTorch in env): `gelu` (tanh), `residual`, `layernorm`, `softmax`, `attention` (reuses `softmax`), `encoder` (tok+pos), `cross_entropy` (softmax-fused). `classifier` = `matmul` with the tied `wte` (no new op). Full transformer block integration-tested (`tests/integration/transformer_block_test`).
@@ -250,8 +251,10 @@ in a side document because `ROADMAP.md` is the single source of truth for outsta
 
 ## Deferred from the 3-axis review (2026-08-13)
 
-- [x] **`ldd` allow-list.** Resolved: all SEVEN binaries now link only `libc`/`libm`; `libresolv`
-      is gone. The CI gate below can therefore be written as a hard check, not a warning.
+- [x] **`ldd` allow-list.** All SEVEN binaries link only `libc`/`libm`. To be accurate: `libresolv`
+      is gone because **glibc 2.34 merged it into libc**, not because of anything we did — the host
+      here is glibc 2.43. Now enforced by `tools/check_ldd.sh` in CI, verified in both directions
+      (it fails on a binary linking `libz`).
 - [ ] **`noexcept load_checkpoint` terminates on `bad_alloc`** — reproduced at `RLIMIT_AS=25 MB`. The
       size *is* bounded by our own model, so checkpoint.hpp's stated defense holds; what fails is the
       repo's nothrow idiom, which `Storage` follows and this one allocation does not. Fix: nothrow +
@@ -366,7 +369,9 @@ was not. Everything below is on `main`, tested, and measured.
       `check_viewer`. See `tools/README.md`.
 
 ### Still open, and now better understood
-- [ ] **CI** — unchanged in substance, but the `ldd` gate is now writable as a hard check.
+- [x] **CI** — done 2026-08-18. Every gate verified in BOTH directions before being trusted: the
+      `ldd` check fails on a `libz`-linked binary, and `--config=asan` catches a deliberate
+      out-of-bounds read (2 findings). A gate that has never been seen to fail is not a gate.
 - [ ] **Threading.** The single remaining order-of-magnitude: ~8.7k tok/s with 16 cores idle.
 - [ ] **`gelu` is 22.5% of a forward pass**, now the largest single op — but canonical GPT-2 pins
       the formula, so this needs a decision, not an optimisation.

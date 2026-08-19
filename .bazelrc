@@ -50,3 +50,15 @@ test --test_output=errors
 
 # Per-user machine-local overrides (git-ignored), if present.
 try-import %workspace%/user.bazelrc
+
+# Sanitizers. Previously these had to be passed as raw --copt/--linkopt on the
+# command line, which meant every invocation spelled them differently and one
+# run silently reused cached results from a non-sanitized build.
+build:asan --config=dev
+build:asan --copt=-fsanitize=address,undefined --copt=-fno-omit-frame-pointer --copt=-g
+# vptr needs RTTI, which this build does not use; without excluding it the link
+# fails on __ubsan_vptr_type_cache rather than on anything wrong with the code.
+build:asan --copt=-fno-sanitize=vptr --linkopt=-fno-sanitize=vptr
+build:asan --linkopt=-fsanitize=address,undefined
+build:asan --test_env=ASAN_OPTIONS=detect_leaks=0
+build:asan --test_env=UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
