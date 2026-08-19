@@ -24,7 +24,8 @@ also where the subtle bugs live.
 
 ### D-A. BPE parsing: C++ or Python?
 
-GPT-2's tokenizer ships as `encoder.json` + `vocab.bpe`, or HF's `tokenizer.json`.
+GPT-2's tokenizer ships as `vocab.json` + `merges.txt` (HF's names; OpenAI's original
+release called them `encoder.json` + `vocab.bpe`), or as the single nested `tokenizer.json`.
 All are JSON; weights ship as pickle or safetensors.
 
 | option | cost |
@@ -179,3 +180,42 @@ S1–S2 and S3 are independent and can proceed in either order; S4 needs both.
 - **ASCII-only first (S1) or hold for full Unicode (S2)?** S1 is genuinely useful
   and much smaller; it just needs its limitation stated in the tool's output.
 - **Which model?** 124M is the only one that fits the fp32/`B=1` envelope cleanly.
+
+
+---
+
+## Addendum — verified against the real artifacts (2026-08-19)
+
+Fetched from `openai-community/gpt2` rather than recalled. Three corrections and
+one new requirement.
+
+**Filenames.** HF uses `vocab.json` and `merges.txt`. `encoder.json` and
+`vocab.bpe` are OpenAI's original names and appear nowhere in the repo.
+
+**The safetensors header is exactly as D-A assumed, confirmed by reading it:**
+8-byte little-endian length (14,283 bytes here), then flat JSON, depth 2, with
+precisely three fields per tensor — `dtype`, `shape`, `data_offsets` — and every
+tensor `F32`. No nested metadata. The ~150-line C++ estimate holds.
+
+**The Conv1D transpose is confirmed, not theoretical.** `h.0.attn.c_attn.weight`
+has shape **`[768, 2304]`** — that is `[in, out]`. `matmul_forward` requires
+`[OC, C]` = `[2304, 768]`. Every `c_attn`, `c_proj` and `c_fc` must be transposed
+on conversion.
+
+**New requirement the plan missed.** The file holds **160** tensors; we have
+**148** parameters (12 per layer × 12, plus `wte`, `wpe`, `lnfw`, `lnfb`). The
+difference is exactly 12: one `h.{i}.attn.bias` per layer, shape
+`[1, 1, 1024, 1024]`. Those are **causal masks, not parameters** — our attention
+masks in code. The converter must skip them, and the 148/160 reconciliation is
+the cheapest possible check that it mapped everything else.
+
+**`config.json` agrees with our implementation on every field that matters:**
+`n_layer 12, n_head 12, n_embd 768, n_positions 1024, vocab_size 50257,
+activation_function "gelu_new", layer_norm_epsilon 1e-05`. It should be *read and
+validated* against the checkpoint header rather than assumed.
+
+**Files actually needed: three.** `model.safetensors`, `vocab.json`, `merges.txt`
+— plus `config.json` to validate. Everything else in the repo is another
+framework's export (`tf_model.h5`, `flax_model.msgpack`, `rust_model.ot`,
+`*.tflite`, `onnx/`) or redundant (`tokenizer.json` restates vocab+merges in a
+nested form).
