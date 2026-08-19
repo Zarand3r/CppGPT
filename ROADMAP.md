@@ -204,12 +204,10 @@ in a side document because `ROADMAP.md` is the single source of truth for outsta
       finished dump, whereas patching must intervene *during* the forward. Expect a
       `forward_with_patch(layer, tensor, position, replacement)` seam, which is also the natural place
       a future GPU port would hook.
-- [ ] **Ablation.** Zero a head or an MLP and re-measure. Same seam as patching; cheaper to implement
-      and a good first slice.
-- [ ] **Attribution / direct logit attribution.** Decompose the final logit into per-layer, per-head
-      contributions through the residual stream. Purely a read of existing activations, so no new
-      seam — but it needs care: the residual stream is a sum, and attributing through LayerNorm is
-      where naive implementations go wrong.
+- [x] **Ablation.** Done 2026-08-18: `save_and_ablate`/`restore_ablation` zero the weights that
+      carry a component, so no forward hook is needed. `inspect` sweeps all L·(NH+2) components.
+- [x] **Attribution / direct logit attribution.** Done 2026-08-18: exact decomposition (parts sum
+      to the logit, worst error 2.14e-08), zero extra forward passes.
 - [ ] **Neuron-level views.** Max-activating positions over `fch_gelu` (`[L,B,T,4C]`, already in the
       arena). Cheap; deliberately skipped in M5 to keep the first viewer legible.
 - [x] **Per-layer KL divergence** — `layer_kl` in the dump (`step` = divergence this layer introduced,
@@ -252,27 +250,16 @@ in a side document because `ROADMAP.md` is the single source of truth for outsta
 
 ## Deferred from the 3-axis review (2026-08-13)
 
-- [ ] **`ldd` shows `libresolv.so.2` on all five binaries**, which is outside the allow-list
-      `docs/constitution.md` and `PLAN.md` invariant 10 name (libc/libm/libpthread + loader).
-      **Measured inert:** 0 of 137 undefined dynamic symbols are resolver-related, and
-      `-Wl,--as-needed` does not drop it — it comes from the hermetic toolchain's own link line, and
-      it is a glibc component like `libc` itself. So this is a documentation/verification gap, not a
-      third-party dependency. Resolve by either widening the allow-list *with this evidence* or
-      finding the toolchain flag; do not silently widen it. Note the `ldd` gate is still unbuilt, so
-      nothing would have caught this — it was found by checking by hand.
-
-Triaged, not dropped. Each has a named reason for waiting.
-
+- [x] **`ldd` allow-list.** Resolved: all SEVEN binaries now link only `libc`/`libm`; `libresolv`
+      is gone. The CI gate below can therefore be written as a hard check, not a warning.
 - [ ] **`noexcept load_checkpoint` terminates on `bad_alloc`** — reproduced at `RLIMIT_AS=25 MB`. The
       size *is* bounded by our own model, so checkpoint.hpp's stated defense holds; what fails is the
       repo's nothrow idiom, which `Storage` follows and this one allocation does not. Fix: nothrow +
       `ASSERT_MSG`, matching `Storage`.
-- [ ] **Activation-side `int` overflow is unguarded.** `GPT2::GPT2` explicitly guards the *parameter*
-      arena against `INT_MAX` with a comment naming the hazard; the identical cast on the activation
-      side (`static_cast<int>(BTC) * 4`) has no guard and wraps negative at `B=128,T=1024,C=4096`.
-      Unreachable at our memory scale — the *asymmetry with the documented guard* is the defect.
-- [ ] **`parse_selection` returns a multiset.** `--layers 0,0,0,0,0` dumps layer 0 five times and
-      inflates the size estimate past the ceiling's intent. CLI-only.
+- [x] **Activation-side `int` overflow.** Fixed 2026-08-18: `ASSERT_MSG` on `atot`, plus two
+      narrow-before-multiply sites. Pinned by `//tests/unit:act_guard_test` with `CHECK_DIES_WITH`.
+- [x] **`parse_selection` returns a multiset.** Fixed 2026-08-15: duplicates are rejected, as is
+      `--top-k < 1` (it silently produced empty predictions).
 - [ ] **`Device`: 17 signatures, 17 tautological asserts, zero callers.** `ops.hpp` additionally
       claims each op "dispatches on it"; there is no dispatch. Pure deletion, ~40 lines.
 - [ ] **Dead code**: `DCHECK`/`UNREACHABLE`/`MUST`/`TRY_OR_CONTINUE` (0 uses, and the last is the sole
@@ -353,3 +340,42 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **A2 · Reward model.** Pairwise-preference dataset (chosen vs rejected); reward model = LM backbone + scalar head, trained with a Bradley–Terry / pairwise ranking loss. New: the scalar head and the ranking loss (fwd+bwd, gradient-checked).
 - [ ] **A3 · DPO (recommended alignment step).** Direct Preference Optimization — a single offline loss over preference pairs against a frozen reference (the A1 SFT model) with an implicit KL. No reward model, no sampling loop, no value network. Reuses the SFT weights as a second frozen param `Storage`; far more tractable std-only/CPU than PPO.
 - [ ] **A4 · PPO (research, ambitious ceiling).** Full online RLHF: in-loop generation (rollouts via the sampler), reward scoring (A2), value head + GAE, KL-to-reference penalty, clipped policy objective. Needs the sampler inside training and 2–3 resident model copies (policy, reference, reward). GRPO / other critic-free variants noted as simpler alternatives.
+
+
+---
+
+## Reconciliation — work done 2026-08-14..18 that this roadmap did not describe
+
+Recorded because the roadmap is the single source of truth, and for four days it
+was not. Everything below is on `main`, tested, and measured.
+
+### Delivered, and it changed the plan
+- [x] **The model now beats a 5-gram**, having lost to one. 1.8199 -> **1.5364 nats**
+      (2.217 bits/char), top-1 55.0%, using 54 of its 64 context characters.
+      `docs/measurements.md` M-11..M-13, `docs/EXPERIMENTS.md` E-1/E-2.
+- [x] **`//tools:eval`** — the standalone quality gate. M2's convergence gate named a bigram
+      baseline that had no implementation and so could never be checked; it now runs against a
+      Witten-Bell n-gram ladder. **The gate was NOT met against an honest baseline until Run B.**
+- [x] **`//tools:profile`** — forward-pass latency and per-op breakdown.
+- [x] **`--log-csv`, `--ckpt-best`, `--sample random`** on `train`. `--ckpt-best` earned itself
+      immediately: val loss is not monotone and the final checkpoint was 0.016 nats worse.
+- [x] **Attention forward vectorised** — 1.68x on the op, forward 2.502 -> 2.337 ms (D8's sibling).
+- [x] **Positional-encoding panels + next-token prediction** in the viewer (schema 3).
+- [x] **`tools/wandb_log.py`** — W&B as a sidecar reading the CSV, so the binaries stay libc/libm.
+- [x] **`tools/` utility library** — `run_report`, `audit_run`, `corpus_stats`, `mutate.sh`,
+      `check_viewer`. See `tools/README.md`.
+
+### Still open, and now better understood
+- [ ] **CI** — unchanged in substance, but the `ldd` gate is now writable as a hard check.
+- [ ] **Threading.** The single remaining order-of-magnitude: ~8.7k tok/s with 16 cores idle.
+- [ ] **`gelu` is 22.5% of a forward pass**, now the largest single op — but canonical GPT-2 pins
+      the formula, so this needs a decision, not an optimisation.
+- [ ] **Run the `review-codify-loop`.** Required by `CLAUDE.md` after any review with >=3 findings;
+      the 2026-08-18 audit produced five. `docs/engineering-lessons.md` has no entry for this
+      period's dominant failure mode: **six verification checks that passed while measuring nothing**
+      (a zero-ID grep, a fully cached test run, an empty binary path, a DOM stub that discarded
+      output, two 0-byte files, and a death test satisfied by an unrelated failure).
+- [ ] **Capacity sweep (Run C).** With budget and sampling both addressed, the remaining ~4.5% gap
+      to the nanoGPT reference is most likely model size or context length.
+- [ ] **Unit tests for the tool code.** `eval`/`profile`/`wandb_log.py` have e2e and sanitizer
+      coverage only, and `eval`'s n-gram shipped with a real bug caught by output shape, not tests.
