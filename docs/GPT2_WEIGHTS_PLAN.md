@@ -1,6 +1,16 @@
 # Design proposal — byte-level BPE and real GPT-2 weights
 
-**Status: proposal. Nothing here is implemented.** Per `CLAUDE.md`, architecturally
+**Status: IMPLEMENTED 2026-08-19**, except S2 (Unicode pre-tokenizer). Results in
+`docs/measurements.md` M-14/M-15; the C++-vs-Python reversal is recorded as
+`docs/DECISIONS.md` D9. Kept as written so the plan can be compared against what
+actually happened — including where it was wrong.
+
+**Where the plan was wrong.** D-A recommended a Python converter; reading the real
+safetensors header showed C++ was tractable and the plan was revised (D9). The
+filenames were OpenAI's, not HF's. And it missed the 12 causal-mask tensors
+entirely — caught by reconciling 148 against 160 rather than by review.
+
+**Original text follows.** Per `CLAUDE.md`, architecturally
 significant work stops at the roadmap for review.
 
 ## Why this, and what "done" means

@@ -409,3 +409,39 @@ If a future profile shows matmul is no longer the top cost, this was right — t
 `tools/profile` now reports (matmuls 65%, attention 17%, gelu 15%). If bit-exact reproducibility
 across builds is ever promised to a user, revisit: this change makes that promise harder, and the
 threading work would make it harder still.
+
+
+## D9 — The HuggingFace converter is C++, not Python
+
+**Decision.** `//tools:convert_hf` reads `model.safetensors` directly in C++. No Python step, no
+conversion pipeline, no new setup dependency.
+
+### This reverses my own first recommendation
+`docs/GPT2_WEIGHTS_PLAN.md` D-A originally said Python should do the parsing and C++ should read a
+flat binary. That reasoning was too coarse: it lumped every HF artifact together as "JSON" and
+rejected them wholesale. They are not equivalent.
+
+| artifact | what it really is | verdict |
+|---|---|---|
+| `pytorch_model.bin` | Python pickle — a stack VM whose opcodes call arbitrary callables | never parse |
+| `model.safetensors` | 8-byte LE length + **flat** JSON header + raw bytes | ~150 lines |
+| `merges.txt` | **plain text** | trivial |
+| `vocab.json` | **flat** `{"token": id}` | ~200 lines |
+
+Only the first is hostile, and nothing needs it. Verified by reading the actual header before
+committing to this: 14,283 bytes, depth 2, exactly three fields per tensor (`dtype`, `shape`,
+`data_offsets`), every tensor `F32`, no nested metadata.
+
+### Why it was worth the extra ~200 lines
+A Python step would have put the repo's flagship claim — *canonical GPT-2* — behind the one link in
+the chain not covered by the C++ suite, `mutate.sh`, or CI. For a project whose central claim is
+*from scratch, std-only, hermetic*, "std-only except where it matters" is the wrong trade.
+
+### What this costs
+A malformed `data_offsets` in a downloaded file is an out-of-bounds read. That is ordinary bounds
+checking, and a vastly smaller surface than a pickle VM. Every tensor's byte length is checked
+against the expected element count before any read.
+
+### How we will know it was right
+If a future model format needs genuinely nested JSON, this stops scaling and the Python step returns.
+For safetensors — flat by design, because it exists to be read without a framework — it holds.

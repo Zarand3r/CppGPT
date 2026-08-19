@@ -338,3 +338,64 @@ Train/val gap 0.495 → 0.360.
 **Attribution.** Budget was worth 0.207 nats (1.82 → 1.61); sampling was worth a further 0.023
 (1.5514 → 1.5288 on train\'s own eval). 64× more distinct examples bought about a seventh of what 10×
 more steps did — real, but decisively the second-order effect.
+
+## M-14 · GPT-2 124M — real weights, forward parity and generation
+
+`//tools:convert_hf` on `openai-community/gpt2` (`model.safetensors`, 522 MB) ->
+`gpt2-124M.ckpt` (475 MB, 124,439,808 params). Tokenizer: `//include/cppgpt/bpe.hpp`.
+
+### Forward parity — a self-calibrating gate
+
+"Agree with HF fp32 to within X" measures the wrong thing: HF's own fp32 forward misses the true
+answer, so such a gate charges us for their rounding and the only way to pass is to loosen X. The
+gate is instead **max|cppgpt − fp64| ≤ 1.5 × max|HF fp32 − fp64|** — nothing to tune, and the bar
+moves with the reference.
+
+| prompt | cppgpt vs fp64 | HF fp32 vs fp64 | token match | margin headroom |
+|---|---|---|---|---|
+| "The capital of France is" | **8.51e-05** | 1.145e-04 | all 5 | 3643× |
+| "def fibonacci(n):" | **7.25e-05** | 1.016e-04 | all 7 | 198× |
+| "In 1492, Columbus sailed…" | **9.17e-05** | 1.260e-04 | all 14 | 61× |
+| "a a a a a a a a" | 6.88e-05 | 6.84e-05 | all 8 | 2677× |
+
+**We are closer to fp64 truth than HuggingFace is** on three of four prompts and tied on the fourth.
+The 1.83e-04 apparent disagreement with HF fp32 is the sum of two independent fp32 errors, ours the
+smaller. Worst headroom (61×) is consistent with M-6's recorded worst greedy margin of 0.00716.
+
+### Generation — and why threading is now the binding constraint
+
+Greedy decode is **byte-identical to HuggingFace**:
+`The capital of France is the capital of the French Republic, and the capital of the`
+
+| | |
+|---|---|
+| 12 tokens at ctx 1024 | **61 s** (~5.1 s/token) |
+| single-position classifier | **1.87×** faster per step at T=256 (bit-identical) |
+| forward, T=512, no head | 4.34 s (30 GFLOP/s effective) |
+
+5.1 s/token is correct and unusable. `generate_absolute` pays a full `T=1024` forward per step
+regardless of prompt length, and the model is single-threaded on a 16-core box. **This is the
+strongest argument yet for threading**, ahead of any further single-thread work.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:convert_hf -- --model $PWD/data/gpt2/model.safetensors \
+  --config $PWD/data/gpt2/config.json --vocab $PWD/data/gpt2/vocab.json \
+  --merges $PWD/data/gpt2/merges.txt --out $PWD/data/gpt2/gpt2-124M.ckpt
+bazel run --config=release //tools:dump_logits -- <ckpt> <vocab.json> <merges.txt> "prompt" /tmp/o.bin
+.venv/bin/python3 scripts/check_gpt2_parity.py /tmp/o.bin
+```
+
+## M-15 · BPE tokenizer
+
+`//include/cppgpt/bpe.hpp`, differential against tiktoken (OpenAI) **and** transformers (HuggingFace),
+which share no code.
+
+| | |
+|---|---|
+| fixture cases | 40/40 byte-identical, both oracles |
+| full TinyShakespeare (1.1 MB) | **338,025 tokens, byte-identical to both** |
+| `decode(encode(x)) == x` | exact |
+
+The fixture generator refuses to write a case the two oracles disagree on, so the gate is never one
+implementation's opinion.

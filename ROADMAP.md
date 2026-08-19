@@ -368,11 +368,33 @@ was not. Everything below is on `main`, tested, and measured.
 - [x] **`tools/` utility library** — `run_report`, `audit_run`, `corpus_stats`, `mutate.sh`,
       `check_viewer`. See `tools/README.md`.
 
+### BPE + real GPT-2 weights — delivered 2026-08-19
+- [x] **Byte-level BPE tokenizer** reading `vocab.json` + `merges.txt` directly. Differential-gated
+      against tiktoken AND transformers: 40/40 fixture cases and the full 1.1 MB corpus
+      (338,025 tokens) byte-identical to both, round-trip exact. ASCII pre-tokenizer; non-ASCII is
+      REFUSED rather than mis-split. (`docs/measurements.md` M-15.)
+- [x] **`//tools:convert_hf`** — `model.safetensors` -> checkpoint, in C++, no Python
+      (`docs/DECISIONS.md` D9, reversing the plan's first recommendation). Transposes HF's Conv1D
+      `[in, out]`, skips the 12 causal masks, and asserts 148 + 12 == 160 before writing.
+- [x] **Checkpoint v3** records which tokenizer the weights expect (kind + fingerprint), because
+      `vocab_size == vocab_size` is vacuous for BPE. v2 files stay loadable.
+- [x] **Forward parity at 124M** against a **fp64** reference, with a gate that cannot be loosened:
+      we are *closer to truth than HuggingFace* on 3 of 4 prompts, tied on the fourth.
+- [x] **Greedy decode byte-identical to HuggingFace** on real GPT-2 weights.
+- [x] **Single-position classifier** (`forward(..., logits_at)`) — 1.87x per generated step,
+      bit-identical. A position rather than a "last" flag, because the token buffer is right-padded.
+- [ ] **S2: Unicode pre-tokenizer.** ASCII is exact today; `\p{L}`/`\p{N}` need generated property
+      tables. Non-ASCII currently fails loudly, which is correct but limiting.
+
 ### Still open, and now better understood
 - [x] **CI** — done 2026-08-18. Every gate verified in BOTH directions before being trusted: the
       `ldd` check fails on a `libz`-linked binary, and `--config=asan` catches a deliberate
       out-of-bounds read (2 findings). A gate that has never been seen to fail is not a gate.
-- [ ] **Threading.** The single remaining order-of-magnitude: ~8.7k tok/s with 16 cores idle.
+- [ ] **Threading — now the binding constraint, not a nicety.** GPT-2 124M generates at **5.1 s per
+      token** (12 tokens in 61 s at ctx 1024), single-threaded on a 16-core box. Correct and
+      unusable. This outranks any further single-thread work. (`docs/measurements.md` M-14.)
+- [ ] **`generate_absolute` pays a full T=1024 forward per step** regardless of prompt length. A KV
+      cache or a right-sized window is the algorithmic half of the same problem.
 - [ ] **`gelu` is 22.5% of a forward pass**, now the largest single op — but canonical GPT-2 pins
       the formula, so this needs a decision, not an optimisation.
 - [ ] **Run the `review-codify-loop`.** Required by `CLAUDE.md` after any review with >=3 findings;
