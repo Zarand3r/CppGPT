@@ -27,7 +27,17 @@
 namespace cppgpt {
 
 inline constexpr std::uint32_t kCheckpointMagic = 0x54504B43;  // 'CKPT' little-endian
-inline constexpr std::uint32_t kCheckpointVersion = 2;
+// 3 names the tokenizer a checkpoint expects. v2 files remain loadable: they
+// wrote zeros into these two fields, which is exactly kTokenizerChar with no
+// fingerprint, so the meaning is unchanged rather than merely tolerated.
+inline constexpr std::uint32_t kCheckpointVersion = 3;
+inline constexpr std::uint32_t kCheckpointMinVersion = 2;
+
+// Which tokenizer the weights were trained with. This is not metadata: `wte` row
+// i is the trained vector for token i, so a checkpoint loaded under the wrong
+// tokenizer indexes unrelated rows and produces fluent nonsense.
+inline constexpr std::uint32_t kTokenizerChar = 0;
+inline constexpr std::uint32_t kTokenizerGpt2Bpe = 1;
 inline constexpr std::uint32_t kCkptHasMoments = 1u << 0;  // flags: m/v present in payload
 inline constexpr std::uint32_t kCkptKnownFlags = kCkptHasMoments;  // any other bit => corrupt
 
@@ -46,10 +56,12 @@ struct CheckpointHeader {
     std::int32_t n_embd;
     std::int32_t adam_step;  // AdamW step counter (bias correction)
     std::uint32_t flags;     // kCkptHasMoments, ...
-    std::uint32_t reserved0;
+    std::uint32_t tokenizer_kind;  // kTokenizerChar / kTokenizerGpt2Bpe (was reserved0)
     std::uint64_t param_count;  // must equal the model's param_count()
     std::uint64_t checksum;     // over the header (this field zeroed) AND the payload
-    std::uint64_t reserved1;
+    // FNV-1a-64 over the tokenizer's source files. `vocab_size == vocab_size` is
+    // vacuous for BPE -- 50257 == 50257 says nothing about WHICH 50257.
+    std::uint64_t vocab_fingerprint;  // (was reserved1) 0 = unknown
 };
 static_assert(sizeof(CheckpointHeader) == 64, "checkpoint header must be exactly 64 bytes");
 

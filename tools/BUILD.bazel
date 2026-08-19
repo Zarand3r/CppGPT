@@ -42,6 +42,22 @@ cc_binary(
     ],
 )
 
+# HuggingFace safetensors -> a cppgpt checkpoint. No Python, no pickle.
+cc_binary(
+    name = "convert_hf",
+    srcs = ["convert_hf.cpp"],
+    deps = [
+        ":cli",
+        "//:cppgpt",
+    ],
+)
+
+cc_binary(
+    name = "dump_logits",
+    srcs = ["dump_logits.cpp"],
+    deps = ["//:cppgpt"],
+)
+
 cc_binary(
     name = "bench",
     srcs = ["bench.cpp"],

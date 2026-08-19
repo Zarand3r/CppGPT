@@ -361,7 +361,8 @@ void GPT2::ensure_moment_arenas() noexcept {
     v_ = v_store_.alloc_zeroed(param_count_);
 }
 
-Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
+Result<void> GPT2::save_checkpoint(const char* path, std::uint32_t tokenizer_kind,
+                                   std::uint64_t vocab_fingerprint) const noexcept {
     const bool has_m = (m_ != nullptr);
     const std::size_t nbytes = param_count_ * sizeof(float);
 
@@ -375,6 +376,8 @@ Result<void> GPT2::save_checkpoint(const char* path) const noexcept {
     h.n_embd = cfg_.n_embd;
     h.adam_step = adam_step_;
     h.flags = has_m ? kCkptHasMoments : 0u;
+    h.tokenizer_kind = tokenizer_kind;
+    h.vocab_fingerprint = vocab_fingerprint;
     h.param_count = param_count_;
 
     ByteSpan sections[3];

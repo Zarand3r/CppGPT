@@ -120,7 +120,11 @@ Result<CheckpointFile> CheckpointFile::open(const char* path) noexcept {
         ::close(fd);
         return err(ErrorCode::CorruptCheckpoint);
     }
-    if (f.header_.version != kCheckpointVersion) {
+    // A RANGE, not equality: v2 files wrote zeros where v3 keeps tokenizer_kind
+    // and vocab_fingerprint, and zero already means "char tokenizer, unknown
+    // fingerprint". Rejecting them would invalidate every existing checkpoint to
+    // record something they already say.
+    if (f.header_.version < kCheckpointMinVersion || f.header_.version > kCheckpointVersion) {
         ::close(fd);
         return err(ErrorCode::VersionMismatch);
     }

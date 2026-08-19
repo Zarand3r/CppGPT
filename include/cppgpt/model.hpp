@@ -13,6 +13,7 @@
 
 #include <cstddef>
 
+#include "cppgpt/checkpoint.hpp"
 #include "cppgpt/model_config.hpp"
 #include "cppgpt/optimizer.hpp"
 #include "cppgpt/random.hpp"
@@ -143,7 +144,12 @@ public:
     // saved, so a resumed run restores weights and optimizer state exactly but
     // replays the data order and the schedule from step 0 — resume is
     // state-exact, not trajectory-exact. See cppgpt/checkpoint.hpp for the format.
-    [[nodiscard]] Result<void> save_checkpoint(const char* path) const noexcept;
+    // `tokenizer_kind`/`vocab_fingerprint` record which tokenizer these weights
+    // expect (see cppgpt/checkpoint.hpp). They default to the char tokenizer with
+    // no fingerprint, which is what every pre-v3 checkpoint effectively said.
+    [[nodiscard]] Result<void> save_checkpoint(const char* path,
+                                               std::uint32_t tokenizer_kind = kTokenizerChar,
+                                               std::uint64_t vocab_fingerprint = 0) const noexcept;
 
     // How much of a checkpoint to restore.
     //   Full        — weights + AdamW moments + step: resuming an interrupted run.
