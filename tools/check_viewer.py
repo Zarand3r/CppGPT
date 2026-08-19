@@ -58,6 +58,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--html", default="tools/viewer.html")
     ap.add_argument("--dump", default="data/run.json")
+    ap.add_argument("--require-dump", action="store_true",
+                    help="fail if the dump is missing instead of warning. In CI the panel check "
+                         "is the point; a WARN that still exits 0 means it silently never ran.")
     a = ap.parse_args()
     html = open(a.html).read()
     fails = 0
@@ -86,8 +89,9 @@ def main() -> int:
         fails += rc.returncode != 0
 
         if not os.path.exists(a.dump):
-            print(f"  [WARN] no dump at {a.dump} — panels not exercised")
-            return 1 if fails else 0
+            lvl = "FAIL" if a.require_dump else "WARN"
+            print(f"  [{lvl}] no dump at {a.dump} — panels not exercised")
+            return 1 if (fails or a.require_dump) else 0
         h = os.path.join(td, "h.js")
         open(h, "w").write(HARNESS)
         r = subprocess.run(["node", h, js, a.dump], capture_output=True, text=True)
