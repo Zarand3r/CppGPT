@@ -154,7 +154,7 @@ void GPT2::init_weights(Generator& gen) {
     }
 }
 
-void GPT2::forward(const int* tokens, const int* targets) {
+void GPT2::forward(const int* tokens, const int* targets, int logits_at) {
     const int B = B_, T = T_;
     const int C = cfg_.n_embd, L = cfg_.n_layer, NH = cfg_.n_head, V = cfg_.vocab_size;
     const auto BTC = static_cast<std::size_t>(B) * T * C;
@@ -215,7 +215,22 @@ void GPT2::forward(const int* tokens, const int* targets) {
 
     const float* last = (L == 0) ? a.encoded : a.residual3 + static_cast<std::size_t>(L - 1) * BTC;
     layernorm_forward(a.lnf, a.lnf_mean, a.lnf_rstd, last, p.lnfw, p.lnfb, B, T, C);
-    matmul_forward(a.logits, a.lnf, p.wte, nullptr, B, T, C, V);  // tied classifier
+    // The loss reads every position, so a single-position forward cannot compute
+    // one; silently producing a loss over stale logits is what this rules out.
+    ASSERT_MSG(logits_at < 0 || targets == nullptr,
+               "forward: a single-position forward cannot compute a loss");
+    ASSERT_MSG(logits_at < T, "forward: logits_at is past the end of the sequence");
+    if (logits_at < 0) {
+        matmul_forward(a.logits, a.lnf, p.wte, nullptr, B, T, C, V);  // tied classifier
+    } else {
+        const auto Vz = static_cast<std::size_t>(V);
+        const auto Cz2 = static_cast<std::size_t>(C);
+        for (int b = 0; b < B; ++b) {
+            const auto row = static_cast<std::size_t>(b) * static_cast<std::size_t>(T) +
+                             static_cast<std::size_t>(logits_at);
+            matmul_forward(a.logits + row * Vz, a.lnf + row * Cz2, p.wte, nullptr, 1, 1, C, V);
+        }
+    }
 
     // Inference (targets == nullptr): stop at the logits; no probs/loss. Otherwise
     // finish with softmax + cross-entropy and record mean_loss.

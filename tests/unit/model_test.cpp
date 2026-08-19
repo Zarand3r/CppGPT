@@ -5,6 +5,7 @@
 #include "cppgpt/model.hpp"
 
 #include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <cstddef>
 #include <vector>
@@ -187,6 +188,45 @@ int main() {
             nodecay_ok = nodecay_ok && (dm.params().qkvb[i] == qkvb0[i]);
         CHECK(decay_ok);
         CHECK(nodecay_ok);
+    }
+
+    // ---- a single-position forward is bit-identical at that position ---------
+    //
+    // This mode exists because the tied classifier is 79 GFLOP at GPT-2 scale and
+    // generation reads one row. It is only legitimate if that row is EXACTLY what
+    // the full path produces -- an optimisation that quietly changes the answer is
+    // worse than the cost it saves. Positions before the last are deliberately
+    // left stale, so they are not compared.
+    {
+        Config c{};
+        c.max_seq_len = 16; c.vocab_size = 23; c.n_layer = 2; c.n_head = 2; c.n_embd = 16;
+        const int B = 2, T = 6, V = c.vocab_size;
+        Generator g(4242ULL);
+        GPT2 m(c, B, T);
+        m.init_weights(g);
+        std::vector<int> tok(static_cast<std::size_t>(B * T));
+        for (auto& x : tok) x = static_cast<int>(g.uniform_int(0, V - 1));
+
+        m.forward(tok.data(), nullptr);
+        std::vector<float> want(static_cast<std::size_t>(B) * V);
+        for (int b = 0; b < B; ++b) {
+            const auto row = static_cast<std::size_t>(b) * T + (T - 1);
+            std::copy_n(m.acts().logits + row * V, V, want.begin() + static_cast<std::size_t>(b) * V);
+        }
+
+        m.forward(tok.data(), nullptr, /*logits_at=*/T - 1);
+        bool identical = true;
+        for (int b = 0; b < B; ++b) {
+            const auto row = static_cast<std::size_t>(b) * T + (T - 1);
+            for (int v = 0; v < V; ++v)
+                identical = identical &&
+                    (m.acts().logits[row * V + v] == want[static_cast<std::size_t>(b) * V + v]);
+        }
+        CHECK(identical);
+        // And it must refuse a loss rather than compute one over stale logits.
+        std::vector<int> tgt(tok.size(), 0);
+        CHECK_DIES_WITH(m.forward(tok.data(), tgt.data(), /*logits_at=*/T - 1),
+                        "cannot compute a loss");
     }
 
     return cppgpt::test::summary();

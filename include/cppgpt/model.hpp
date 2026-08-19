@@ -107,11 +107,25 @@ public:
     // LayerNorm gains 1, shifts 0.
     void init_weights(Generator& gen);
 
+    // `logits_at`: compute the classifier at ONE position (0-based within each
+    // batch element) instead of all T. -1 means every position, as before.
+    //
+    // At GPT-2's V=50257 the tied head is [T,C] x [C,V] -- 79 GFLOP at T=1024,
+    // about 1.6 s -- against 77 MFLOP for a single row. Generation reads exactly
+    // one row per step, so this is a requirement for usable generation rather
+    // than an optimisation. It is a POSITION and not a "last" flag because the
+    // token buffer is right-padded: the row that matters is prompt length - 1,
+    // which is only T-1 once the context has filled.
+    //
+    // Rows other than `logits_at` are left STALE, not zeroed -- zeroing costs the
+    // bandwidth this exists to save, and a caller reading them wants the loud
+    // wrongness. `targets` must be null, since the loss needs every position.
+
     // Run the forward pass for `tokens` (each [B*T] for the model's fixed B, T; ids
     // in [0,V)), filling activations. If `targets` is non-null, also computes the
     // softmax + cross-entropy and records `mean_loss`; pass nullptr for inference
     // (logits only — read them from acts().logits).
-    void forward(const int* tokens, const int* targets);
+    void forward(const int* tokens, const int* targets, int logits_at = -1);
 
     // Zero the parameter-gradient and activation-gradient arenas. Call before
     // backward(), since every op's backward accumulates (+=).

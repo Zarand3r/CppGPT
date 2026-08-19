@@ -75,7 +75,9 @@ namespace cppgpt {
         const auto len = static_cast<int>(window.size());
         std::fill(buf.begin(), buf.end(), 0);
         std::copy(window.begin(), window.end(), buf.begin());
-        model.forward(buf.data(), nullptr);  // inference: logits only
+        // Only position len-1 is ever read, and at V=50257 the full classifier is
+        // ~34% of the forward. Computing one row is exact, not approximate.
+        model.forward(buf.data(), nullptr, /*logits_at=*/len - 1);
         const float* last = model.acts().logits + static_cast<std::size_t>(len - 1) * V;
         const int tok = sample(last, V, temperature, top_k, gen);
         out.push_back(tok);

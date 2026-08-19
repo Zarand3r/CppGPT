@@ -19,9 +19,11 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "cppgpt/bpe.hpp"
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
 #include "cppgpt/generate.hpp"
@@ -53,7 +55,7 @@ int main(int argc, char** argv) {
     // one. Found by running a real training job, not by any test.
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(
-        argc, argv, {"checkpoint", "vocab", "prompt", "n", "temperature", "top-k", "seed"});
+        argc, argv, {"checkpoint", "vocab", "prompt", "n", "temperature", "top-k", "seed", "merges"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
@@ -62,7 +64,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "usage: generate --checkpoint <file.ckpt> --vocab <file.vocab> "
                      "--prompt \"text\"\n"
-                     "                [--n K] [--temperature F] [--top-k K] [--seed N]\n"
+                     "                [--merges merges.txt] [--n K] [--temperature F]\n"
+                     "                [--top-k K] [--seed N]\n"
+                     "  --merges is required for a BPE checkpoint (--vocab is then vocab.json)\n"
                      "  --top-k 1 gives greedy (deterministic) decoding\n");
         return 2;
     }
@@ -86,13 +90,46 @@ int main(int argc, char** argv) {
     cfg.n_head = h.n_head;
     cfg.n_embd = h.n_embd;
 
-    const std::string vocab = read_file(vocab_path, "vocab");
-    const CharTokenizer tok(vocab);
-    if (tok.vocab_size() != cfg.vocab_size) {
+    // Which tokenizer the weights expect is recorded IN the checkpoint (v3+).
+    // Guessing from vocab size would be vacuous for BPE -- 50257 == 50257 says
+    // nothing about which 50257 -- so the header decides and the fingerprint
+    // confirms.
+    const bool is_bpe = (h.tokenizer_kind == kTokenizerGpt2Bpe);
+    const std::string merges_path(args.str("merges", ""));
+    if (is_bpe && merges_path.empty()) {
+        std::fprintf(stderr,
+                     "generate: this checkpoint uses GPT-2 BPE; pass --merges merges.txt\n"
+                     "  (and --vocab vocab.json)\n");
+        return 1;
+    }
+
+    std::optional<CharTokenizer> ctok;
+    std::optional<BpeTokenizer> btok;
+    if (is_bpe) {
+        auto t = BpeTokenizer::open(vocab_path.c_str(), merges_path.c_str());
+        if (!t) {
+            std::fprintf(stderr, "generate: cannot load BPE tokenizer: %s\n", describe(t.error()));
+            return 1;
+        }
+        btok.emplace(std::move(*t));
+        if (h.vocab_fingerprint != 0 && btok->fingerprint() != h.vocab_fingerprint) {
+            std::fprintf(stderr,
+                         "generate: tokenizer fingerprint %016llx does not match the checkpoint's "
+                         "%016llx.\n  These files were not built together — decoding would be "
+                         "gibberish.\n",
+                         static_cast<unsigned long long>(btok->fingerprint()),
+                         static_cast<unsigned long long>(h.vocab_fingerprint));
+            return 1;
+        }
+    } else {
+        ctok.emplace(read_file(vocab_path, "vocab"));
+    }
+    const int tok_vocab = is_bpe ? btok->vocab_size() : ctok->vocab_size();
+    if (tok_vocab != cfg.vocab_size) {
         std::fprintf(stderr,
                      "generate: vocab '%s' has %d symbols but the checkpoint was trained with %d.\n"
                      "  This is the wrong vocabulary for this model — decoding would be gibberish.\n",
-                     vocab_path.c_str(), tok.vocab_size(), cfg.vocab_size);
+                     vocab_path.c_str(), tok_vocab, cfg.vocab_size);
         return 1;
     }
 
@@ -102,7 +139,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::vector<int> prompt_ids = tok.encode(prompt);
+    std::vector<int> prompt_ids;
+    if (is_bpe) {
+        bool ok = false;
+        prompt_ids = btok->encode(prompt, &ok);
+        if (!ok) {
+            std::fprintf(stderr,
+                         "generate: this prompt contains bytes the BPE pre-tokenizer cannot split "
+                         "exactly (non-ASCII).\n  Refusing rather than mis-tokenising it.\n");
+            return 1;
+        }
+    } else {
+        prompt_ids = ctok->encode(prompt);
+    }
     if (static_cast<int>(prompt_ids.size()) > cfg.max_seq_len) {
         std::fprintf(stderr, "generate: prompt is %zu tokens but the context is %d\n",
                      prompt_ids.size(), cfg.max_seq_len);
@@ -116,6 +165,7 @@ int main(int argc, char** argv) {
     Generator gen(seed);
     const std::vector<int> out = generate_absolute(model, prompt_ids, n_new, temperature, top_k, gen);
 
-    std::printf("%s%s\n", prompt.c_str(), tok.decode(out).c_str());
+    std::printf("%s%s\n", prompt.c_str(),
+                (is_bpe ? btok->decode(out) : ctok->decode(out)).c_str());
     return 0;
 }
