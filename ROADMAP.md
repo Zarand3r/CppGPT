@@ -386,6 +386,23 @@ was not. Everything below is on `main`, tested, and measured.
 - [ ] **S2: Unicode pre-tokenizer.** ASCII is exact today; `\p{L}`/`\p{N}` need generated property
       tables. Non-ASCII currently fails loudly, which is correct but limiting.
 
+### Genuinely open — the honest list (2026-08-20, tag `v0.3.0-gpt2`)
+
+Consolidated so it is not scattered across sections. Everything here is open
+*with a reason*, not merely unstarted.
+
+| # | item | why it matters now |
+|---|---|---|
+| 1 | **Threading** | GPT-2 generates at **5.1 s/token**, single-threaded on 16 idle cores. Correct and unusable. The binding constraint — ahead of any further single-thread work. |
+| 2 | **KV cache / right-sized window** | `generate_absolute` pays a full `T=1024` forward per step regardless of prompt length. The algorithmic half of (1); they compound. |
+| 3 | **S2 — Unicode pre-tokenizer** | ASCII is exact; `\p{L}`/`\p{N}` need generated property tables. Non-ASCII currently *fails loudly*, which is correct but limits the tokenizer to English-ish text. |
+| 4 | **Run `review-codify-loop`** | Required by `CLAUDE.md` after any review with ≥3 findings; the 2026-08-18 audit produced five. `docs/engineering-lessons.md` still has no entry for this period's dominant failure mode. |
+| 5 | **Unit tests for tool code** | `eval`, `profile`, `convert_hf`, `wandb_log.py` have e2e + sanitizer coverage but few unit tests. `eval`'s n-gram shipped with a real bug caught by output *shape*, not by a test. |
+| 6 | **`gelu` is 22.5% of a forward** | Now the largest single op. Canonical GPT-2 pins the formula, so this needs a *decision*, not an optimisation. |
+| 7 | **`notebooks/` on `origin/main`** | Committed in error (`c4aeaa8`); 3 files, 24 KB, no secrets. One command to remove. |
+| 8 | **`m1-train` stale branch** | 5 commits, content long since superseded. |
+| 9 | **Larger GPT-2 sizes** | 355M+ wants bf16; we are fp32-only. Out of scope, stated so it is not mistaken for an oversight. |
+
 ### Still open, and now better understood
 - [x] **CI** — done 2026-08-18. Every gate verified in BOTH directions before being trusted: the
       `ldd` check fails on a `libz`-linked binary, and `--config=asan` catches a deliberate
