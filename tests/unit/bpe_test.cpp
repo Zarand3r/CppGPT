@@ -82,6 +82,35 @@ int main() {
     CHECK(encode_mismatch == 0);
     CHECK(decode_mismatch == 0);
 
+    // ---- the byte map, all 256 of it -----------------------------------------
+    //
+    // GPT-2's ids 0..255 ARE the byte alphabet, so decoding them must yield the
+    // 256 distinct byte values exactly once each. Without this the map is only
+    // exercised over ASCII: the differential corpus cannot contain non-ASCII
+    // (encode refuses it), yet DECODE must still handle every byte, because a
+    // generated token can contain any of them.
+    //
+    // Found by mutation: shrinking a seed range of bytes_to_unicode from 0xAC to
+    // 0xAB left every other test green.
+    {
+        bool all_single = true, all_distinct = true;
+        std::vector<int> seen(256, 0);
+        for (int id = 0; id < 256; ++id) {
+            const std::string b = t.decode(std::span<const int>(&id, 1));
+            if (b.size() != 1) { all_single = false; continue; }
+            seen[static_cast<unsigned char>(b[0])]++;
+        }
+        int covered = 0;
+        for (int v = 0; v < 256; ++v) {
+            if (seen[static_cast<std::size_t>(v)] == 1) ++covered;
+            if (seen[static_cast<std::size_t>(v)] > 1) all_distinct = false;
+        }
+        std::printf("  byte map: %d/256 byte values covered exactly once\n", covered);
+        CHECK(all_single);
+        CHECK(all_distinct);
+        CHECK(covered == 256);
+    }
+
     // Non-ASCII must FAIL LOUDLY rather than mis-split. Silently producing
     // plausible tokens for text this pre-tokenizer cannot handle is the one
     // outcome worse than refusing.

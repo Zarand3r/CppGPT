@@ -397,7 +397,7 @@ Consolidated so it is not scattered across sections. Everything here is open
 | 2 | **KV cache / right-sized window** | `generate_absolute` pays a full `T=1024` forward per step regardless of prompt length. The algorithmic half of (1); they compound. |
 | 3 | **S2 — Unicode pre-tokenizer** | ASCII is exact; `\p{L}`/`\p{N}` need generated property tables. Non-ASCII currently *fails loudly*, which is correct but limits the tokenizer to English-ish text. |
 | 4 | **Run `review-codify-loop`** | Required by `CLAUDE.md` after any review with ≥3 findings; the 2026-08-18 audit produced five. `docs/engineering-lessons.md` still has no entry for this period's dominant failure mode. |
-| 5 | **Unit tests for tool code** | `eval`, `profile`, `convert_hf`, `wandb_log.py` have e2e + sanitizer coverage but few unit tests. `eval`'s n-gram shipped with a real bug caught by output *shape*, not by a test. |
+| 5 | **Unit tests for tool code** | `convert_hf` and `dump_logits` have **zero** tests (2026-08-20 review). `convert_hf`'s transpose and 148/160 reconciliation are covered only by the real 522 MB download. Unblocked by a small synthetic safetensors fixture — contained, not blocked. Note is at the point of use in `tools/convert_hf.cpp`. |
 | 6 | **`gelu` is 22.5% of a forward** | Now the largest single op. Canonical GPT-2 pins the formula, so this needs a *decision*, not an optimisation. |
 | 7 | **`notebooks/` on `origin/main`** | Committed in error (`c4aeaa8`); 3 files, 24 KB, no secrets. One command to remove. |
 | 8 | **`m1-train` stale branch** | 5 commits, content long since superseded. |

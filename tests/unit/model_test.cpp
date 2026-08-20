@@ -214,6 +214,27 @@ int main() {
             std::copy_n(m.acts().logits + row * V, V, want.begin() + static_cast<std::size_t>(b) * V);
         }
 
+        // POISON the arena with a different input's logits before the
+        // single-position run. Without this the test cannot tell "computed the
+        // right row" from "did not compute, and the stale value from the previous
+        // full forward happened to be correct" -- which is exactly what it failed
+        // to tell: a mutation computing row T-2 instead of T-1 survived it.
+        std::vector<int> other(tok.size());
+        for (std::size_t k = 0; k < other.size(); ++k)
+            other[k] = static_cast<int>((tok[k] + 7) % V);
+        m.forward(other.data(), nullptr);
+        bool poisoned = false;
+        for (int b = 0; b < B && !poisoned; ++b) {
+            const auto row = static_cast<std::size_t>(b) * T + (T - 1);
+            for (int v = 0; v < V; ++v)
+                if (m.acts().logits[row * V + v] != want[static_cast<std::size_t>(b) * V + v])
+                    poisoned = true;
+        }
+        CHECK(poisoned);  // the poison must actually differ, or the guard is inert
+
+        // Snapshot the whole poisoned buffer, so "only one row changed" is checkable.
+        const std::vector<float> stale(m.acts().logits,
+                                       m.acts().logits + static_cast<std::size_t>(B) * T * V);
         m.forward(tok.data(), nullptr, /*logits_at=*/T - 1);
         bool identical = true;
         for (int b = 0; b < B; ++b) {
@@ -223,6 +244,23 @@ int main() {
                     (m.acts().logits[row * V + v] == want[static_cast<std::size_t>(b) * V + v]);
         }
         CHECK(identical);
+
+        // Only ONE row may be written. This is the documented contract ("rows
+        // other than logits_at are left stale") and, until now, that claim had no
+        // test -- a mutation ignoring logits_at and computing every row survived,
+        // because the row under test was then still correct, merely slower. The
+        // whole feature exists for speed, so a test that cannot see the speed
+        // being lost cannot see the feature being lost.
+        bool others_untouched = true;
+        for (int b = 0; b < B; ++b) {
+            for (int t2 = 0; t2 + 1 < T; ++t2) {  // every row except the last
+                const auto row = static_cast<std::size_t>(b) * T + static_cast<std::size_t>(t2);
+                for (int v = 0; v < V; ++v)
+                    others_untouched = others_untouched &&
+                                       (m.acts().logits[row * V + v] == stale[row * V + v]);
+            }
+        }
+        CHECK(others_untouched);
         // And it must refuse a loss rather than compute one over stale logits.
         std::vector<int> tgt(tok.size(), 0);
         CHECK_DIES_WITH(m.forward(tok.data(), tgt.data(), /*logits_at=*/T - 1),

@@ -275,3 +275,38 @@ measured the wrong property of the thing it was protecting.
 **Rule.** When a test guards a set membership — which tensors decay, which flags are set, which files
 are written — assert the *membership by name*, not the cardinality. A count is invariant under every
 permutation, which is precisely the mutation class these tests exist to catch.
+
+## L19 — A test whose target already holds the right answer cannot fail
+
+**Incident (2026-08-20, `tests/unit/model_test.cpp`).** `forward(..., logits_at)` computes the
+classifier at one position instead of all T. The test ran the full forward, saved row `T-1`, ran the
+single-position forward, and compared row `T-1`. A mutation making it compute row `T-2` **survived**:
+the full forward had already left the correct value at `T-1`, so the test could not distinguish *"the
+single-position path wrote the right answer"* from *"it wrote nothing, and the stale value from the
+previous run happened to be right."*
+
+**Rule.** When a test checks that code WROTE something, the destination must hold a **different**
+value first, and that difference must itself be asserted. Poison, then verify the poison took, then
+run, then compare.
+
+This is the third instance of the same shape, which is why it gets its own entry rather than a note
+on L7:
+
+| where | what made the test pass without the code working |
+|---|---|
+| `act_guard_test` | the oversized config died in the **allocator**, so the guard under test never ran — a bare `CHECK_DIES` is satisfied by any failure (fixed by `CHECK_DIES_WITH`, matching the message) |
+| `eval`'s e2e contract | perplexity and bits/char are both **derived from** the nats figure, so a wrong nats satisfied all three together (fixed by an external anchor: `train`'s independent eval) |
+| `logits_at` | the destination **already held** the right value (fixed by poisoning the arena first) |
+
+The unifying failure is that the assertion had a second way to be satisfied. Ask of every check:
+*what else could make this pass?*
+
+**Corollary for optimisations.** A change whose only purpose is speed needs a test that can see the
+speed being lost. `logits_at` had a second survivor — a mutation ignoring the parameter and computing
+every row — which was *correct, merely slower*. That was closed by asserting the documented contract
+("rows other than `logits_at` are left stale"), which until then was a claim with no test. **A
+performance feature verified only for correctness is unverified.**
+
+**Mechanical check.** `tools/mutation_suite.sh` runs a curated battery over the load-bearing files and
+reports survivors. Prose did not prevent recurrence here — the same author wrote all three — so the
+rule ships with something that runs.

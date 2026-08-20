@@ -17,8 +17,18 @@
 //      reconciliation is asserted: it is the cheapest possible check that
 //      everything else was mapped.
 //
+// DEFERRED (2026-08-20 review): this file has NO unit test. Its two load-bearing
+// behaviours -- the Conv1D transpose and the 148/160 reconciliation -- are
+// currently covered only by running it against the real 522 MB download, which
+// cannot be committed or run in CI. What unblocks a test is a small synthetic
+// safetensors fixture (a 2-layer, 8-embd model written by a generator script);
+// that is a contained piece of work, not a blocked one. Until then, the error
+// paths below are exercised by hand and recorded in ROADMAP.md item 5.
+//
 // Usage: convert_hf --model model.safetensors --config config.json --out gpt2.ckpt
 //                   [--vocab vocab.json --merges merges.txt]
+#include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -199,6 +209,50 @@ int main(int argc, char** argv) {
     }
     const Config cfg{n_pos, n_vocab, n_layer, n_head, n_embd};
     std::printf("  config: L%d H%d C%d V%d ctx%d\n", n_layer, n_head, n_embd, n_vocab, n_pos);
+
+    // Cross-check the config against the TENSOR SHAPES before building anything.
+    // config.json is external input: a wrong field is semantic corruption, which
+    // this repo's failure model says must fail the operation -- not abort. Before
+    // this, `n_embd: 1024` and `n_head: 7` both reached GPT2's constructor and
+    // died on an assert with exit 134 and no usable message. The comment claiming
+    // the config was "cross-checked" described a check that did not exist.
+    {
+        const auto shape_of = [&](const std::string& n) -> std::vector<std::int64_t> {
+            for (const auto& [k, v] : ents) if (k == n) return v.shape;
+            return {};
+        };
+        const auto wte = shape_of("wte.weight");
+        const auto wpe = shape_of("wpe.weight");
+        if (wte.size() != 2 || wpe.size() != 2) {
+            std::fprintf(stderr, "convert_hf: wte/wpe missing or not 2-D\n");
+            return 1;
+        }
+        int layers = 0;
+        for (const auto& [k, v] : ents)
+            if (k.rfind("h.", 0) == 0) {
+                const std::size_t dot = k.find('.', 2);
+                if (dot != std::string::npos)
+                    layers = std::max(layers, std::atoi(k.substr(2, dot - 2).c_str()) + 1);
+            }
+        struct Chk { const char* what; long long got, want; };
+        const Chk checks[] = {
+            {"vocab_size vs wte rows", n_vocab, wte[0]},
+            {"n_embd vs wte columns", n_embd, wte[1]},
+            {"n_positions vs wpe rows", n_pos, wpe[0]},
+            {"n_embd vs wpe columns", n_embd, wpe[1]},
+            {"n_layer vs h.* tensors", n_layer, layers},
+        };
+        for (const Chk& c : checks)
+            if (c.got != c.want) {
+                std::fprintf(stderr, "convert_hf: config.json disagrees with the weights — %s: "
+                                     "config says %lld, tensors say %lld\n", c.what, c.got, c.want);
+                return 1;
+            }
+        if (n_head <= 0 || n_embd % n_head != 0) {
+            std::fprintf(stderr, "convert_hf: n_head %d does not divide n_embd %d\n", n_head, n_embd);
+            return 1;
+        }
+    }
 
     const auto find = [&](const std::string& n) -> const Entry* {
         for (const auto& [k, v] : ents) if (k == n) return &v;
