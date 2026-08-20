@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# Supersede in-flight runs on the same ref. Without this a push during a run
+# leaves the old one to burn its full timeout -- two runs sat for 45 minutes each
+# before this was added.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -62,7 +69,12 @@ jobs:
       # indistinguishable from the strong check passing.
       - name: Viewer wiring and render
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y nodejs
+          # NO apt-get: node is preinstalled on ubuntu-latest, and `apt-get update
+          # -qq` is silent, so when it blocked on a lock the step hung for the full
+          # 45-minute timeout having printed nothing. Assert the dependency instead
+          # of installing it -- a missing node must fail in seconds, not minutes.
+          command -v node >/dev/null || { echo "node not found on the runner"; exit 1; }
+          node --version
           bazel build //tools:prepare //tools:train //tools:inspect --config=release
           # A real dump, because --require-dump makes the panel check mandatory and
           # data/ is gitignored. Without generating one the check would WARN and
