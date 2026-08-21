@@ -19,6 +19,13 @@ BAZEL="${BAZEL:-$HOME/.local/bin/bazel}"
 CONFIG="${CONFIG:-dev}"
 [ -f "$FILE" ] || { echo "harness error: no such file '$FILE'" >&2; exit 2; }
 
+# The baseline MUST be green first. Without this a red test reports CAUGHT for
+# every mutation -- the harness then agrees with you no matter what the code
+# does, which is the exact failure it exists to detect. Found when a broken test
+# assertion made four mutations "pass" in a row.
+"$BAZEL" test "$TARGET" --config="$CONFIG" >/dev/null 2>&1 || {
+  echo "harness error: $TARGET is RED before mutating — fix that first" >&2; exit 2; }
+
 BAK="$(mktemp)"; cp "$FILE" "$BAK"
 restore() { cp "$BAK" "$FILE"; rm -f "$BAK"; }
 trap restore EXIT

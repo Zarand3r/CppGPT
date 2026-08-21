@@ -30,6 +30,11 @@ src/model.cpp	//tests/unit:model_test	s|if (logits_at < 0) {|if (true) {|	model:
 src/model.cpp	//tests/unit:act_guard_test	s|ASSERT_MSG(atot <= static_cast<std::size_t>(std::numeric_limits<int>::max()),|ASSERT_MSG(true \|\|(atot <= static_cast<std::size_t>(std::numeric_limits<int>::max())),|	model: activation INT_MAX guard removed
 src/ops.cpp	//tests/unit:softmax_test	s|std::exp(inp\[i\] - maxv)|std::exp(inp[i])|	ops: softmax loses max-subtraction
 src/ops.cpp	//tests/unit:matmul_test	s|for (; c < Cz; ++c) s += inp_bt\[c\] \* w_oc\[c\];|;|	ops: matmul drops the ragged tail
+src/sample.cpp	//tests/unit:sample_test	s|thresh = tmp\[static_cast<std::size_t>(V - top_k)\];|thresh = tmp[static_cast<std::size_t>(top_k)];|	sample: top-k reads the wrong end
+src/sample.cpp	//tests/unit:sample_test	s|thresh = tmp\[static_cast<std::size_t>(V - top_k)\];|thresh = tmp[static_cast<std::size_t>(V - top_k)] - 0.01f;|	sample: top-k threshold low by 0.01
+src/sample.cpp	//tests/unit:sample_test	s|std::nth_element(tmp.begin(), tmp.begin() + (V - top_k), tmp.end());|std::nth_element(tmp.begin(), tmp.begin() + (V - top_k) + 1, tmp.end());|	sample: partition off by one
+src/optimizer.cpp	//tests/unit:adamw_test	s|param\[i\] -= lr \* (mhat|param[i] += lr * (mhat|	adamw: update sign flipped
+src/optimizer.cpp	//tests/unit:optim_schedule_test	s|0.5f \* (1.0f + std::cos|0.5f * (1.0f - std::cos|	cosine: decay runs backwards
 src/interpret.cpp	//tests/unit:interpret_test	s|(dot - (sum / C) \* u_sum)|(dot)|	interpret: attribution loses centering
 TSV
 
