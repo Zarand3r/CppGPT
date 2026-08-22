@@ -45,8 +45,8 @@
 namespace {
 using namespace cppgpt;
 
-// 3 adds "pos_embed"; 2 added "attribution" and "ablation"; 1 had none of them.
-constexpr int kSchemaVersion = 3;
+// 4 adds "run_url"; 3 added "pos_embed"; 2 "attribution"/"ablation"; 1 had none.
+constexpr int kSchemaVersion = 4;
 
 std::string read_file(const std::string& path, const char* what) {
     std::ifstream f(path, std::ios::binary);
@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb", "ablate"});
+                          "max-mb", "ablate", "run-url"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
                      "               --out run.json [--layers 0,2] [--heads 0,1] [--top-k K]\n"
-                     "               [--max-mb N] [--ablate 0|1]\n");
+                     "               [--max-mb N] [--ablate 0|1] [--run-url URL]\n");
         return 2;
     }
     const int top_k = args.integer("top-k", 8);
@@ -199,6 +199,10 @@ int main(int argc, char** argv) {
     // The sweep costs L·(NH+2) forward passes: milliseconds at toy scale, and the
     // whole point of the tool. --ablate 0 turns it off for a model where it isn't.
     const bool do_ablate = args.integer("ablate", 1) != 0;
+    // Provenance travels WITH the dump rather than being hardcoded in the page:
+    // a URL baked into viewer.html silently goes stale the moment a different
+    // checkpoint is served, and a wrong provenance link is worse than none.
+    const std::string run_url(args.str("run-url", ""));
 
     // Architecture comes from the checkpoint, never from flags.
     auto peek = CheckpointFile::open(ckpt.c_str());
@@ -270,6 +274,9 @@ int main(int argc, char** argv) {
           ", \"n_embd\": " + std::to_string(cfg.n_embd) +
           ", \"vocab_size\": " + std::to_string(V) +
           ", \"max_seq_len\": " + std::to_string(cfg.max_seq_len) + "},\n";
+    js += "  \"run_url\": \"";
+    json_escape(js, run_url);
+    js += "\",\n";
     js += "  \"prompt\": \"";
     json_escape(js, prompt);
     js += "\",\n  \"n_positions\": " + std::to_string(n_pos) + ",\n";

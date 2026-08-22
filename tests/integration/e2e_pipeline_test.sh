@@ -94,7 +94,7 @@ LC_ALL=C grep -qE '^[a-z ]+$' "$WORK/gen_a.txt" || fail "generated text escaped 
 python3 - "$WORK/run.json" <<'PYEOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["schema"] == 3, f"unexpected schema {d['schema']}"
+assert d["schema"] == 4, f"unexpected schema {d['schema']}"
 n = d["n_positions"]
 assert n == len(d["tokens"]) > 0, "token count disagrees with n_positions"
 assert len(d["residual_norms"]) == d["config"]["n_layer"], "residual_norms has wrong layer count"
