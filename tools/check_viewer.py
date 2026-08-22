@@ -34,11 +34,17 @@ const els = {};
 function mk(id){ if(els[id]) return els[id];
   els[id] = {id, innerHTML:'', textContent:'', hidden:false, value:'0', files:[],
              width:300, height:200, style:{}, className:'', title:'',
-             classList:{add(){},remove(){}}, kids:[], appendChild(c){this.kids.push(c)},
+             classList:{add(){},remove(){}}, kids:[],
+             appendChild(c){ this.kids.push(c); if (c && c.textContent) this.textContent += c.textContent; },
              drawn:false, getContext(){ this.drawn = true; return ctx; }};
   return els[id]; }
+// createTextNode is part of the DOM the page uses; a stub missing it reports the
+// panel as THROWING rather than as working, which is a false failure. The stub
+// must model what the page calls, not a convenient subset.
 global.document = { querySelector: s => mk(s.replace('#','')),
-                    createElement: () => mk('_t'+Math.random()), documentElement: {} };
+                    createElement: () => mk('_t'+Math.random()),
+                    createTextNode: t => ({nodeValue: String(t), textContent: String(t)}),
+                    documentElement: {} };
 global.getComputedStyle = () => ({getPropertyValue: () => '#3b5bdb'});
 global.location = {protocol:'http:', href:'http://x/cppgpt/'};
 global.fetch = () => Promise.reject(new Error('stub'));

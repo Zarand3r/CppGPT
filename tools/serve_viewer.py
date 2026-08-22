@@ -71,6 +71,10 @@ def run_inspect(prompt: str) -> tuple[int, dict | str]:
                 "--vocab", str(ARGS.vocab), "--prompt", prompt,
                 "--out", str(out), "--top-k", str(TOP_K),
             ]
+            # Forwarded so a live prompt carries the same provenance as the seed
+            # dump; without it the panel would appear only before the first run.
+            if ARGS.run_url:
+                cmd += ["--run-url", ARGS.run_url]
             try:
                 p = subprocess.run(cmd, capture_output=True, timeout=INSPECT_TIMEOUT_S)
             except subprocess.TimeoutExpired:
@@ -158,6 +162,7 @@ def main() -> int:
     ap.add_argument("--inspect", type=pathlib.Path, default=pathlib.Path("bazel-bin/tools/inspect"))
     ap.add_argument("--site", type=pathlib.Path, default=pathlib.Path("site"))
     ap.add_argument("--port", type=int, default=8092)
+    ap.add_argument("--run-url", default="", help="W&B (or other) URL for the served checkpoint")
     ARGS = ap.parse_args()
 
     for p, what in ((ARGS.checkpoint, "checkpoint"), (ARGS.vocab, "vocab"),

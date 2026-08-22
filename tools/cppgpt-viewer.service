@@ -9,7 +9,8 @@ ExecStart=/usr/bin/python3 /home/rbao/cppgpt/tools/serve_viewer.py \
     --checkpoint /home/rbao/cppgpt/data/shakespeare.ckpt \
     --vocab /home/rbao/cppgpt/data/shakespeare.vocab \
     --inspect /home/rbao/cppgpt/bazel-bin/tools/inspect \
-    --site /home/rbao/cppgpt/site --port 8092
+    --site /home/rbao/cppgpt/site --port 8092 \
+    --run-url https://wandb.ai/richardbao419-substrate/cppgpt/runs/zjris5j7
 Restart=always
 RestartSec=2
 # Binds 127.0.0.1 only; Tailscale Funnel is what exposes it.

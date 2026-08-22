@@ -81,6 +81,11 @@
 </div>
 
 <div id="app" hidden>
+  <div class="panel" id="provwrap" hidden>
+    <h2>Which model is this</h2>
+    <p class="kv" id="prov" style="margin:0; font-size:12.5px"></p>
+  </div>
+
   <div class="panel">
     <h2>Prompt</h2>
     <div id="tokens"></div>
@@ -311,9 +316,32 @@ function drawTokens() {
   host.appendChild(cap);
 }
 
+// Provenance comes from the dump, not from this file: a URL hardcoded here would
+// keep pointing at the old training run after a new checkpoint is served, and a
+// confidently wrong link is worse than none. The panel hides itself when absent.
+function drawProv() {
+  const u = D.run_url;
+  const c = D.config;
+  const host = $('#prov');
+  if (!u) { $('#provwrap').hidden = true; return; }
+  $('#provwrap').hidden = false;
+  host.innerHTML = '';
+  host.appendChild(document.createTextNode(
+    `${c.n_layer} layers x ${c.n_head} heads, n_embd ${c.n_embd}, vocab ${c.vocab_size}, ` +
+    `context ${c.max_seq_len}. Trained here: `));
+  const a = document.createElement('a');
+  // Only http(s) is linkable. A dump is user-supplied via drag-and-drop, and a
+  // javascript: URL in an href is the oldest injection there is.
+  const safe = /^https?:\/\//i.test(u);
+  if (safe) { a.href = u; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+  a.textContent = u;
+  a.style.color = 'var(--accent)';
+  host.appendChild(safe ? a : document.createTextNode(u + '  (not a http(s) URL — not linked)'));
+}
+
 function render() {
   drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL();
-  drawAttrib(); drawAblate(); drawPos();
+  drawAttrib(); drawAblate(); drawPos(); drawProv();
 }
 
 // Learned positional embeddings — `wpe` is a trained parameter, not a fixed
@@ -590,8 +618,8 @@ function load(f) {
       const d = JSON.parse(r.result);
       // Older dumps degrade gracefully — every panel checks for its own key — so
       // only a dump from the FUTURE is worth interrupting the user for.
-      if (d.schema > 3)
-        alert(`This viewer reads schema 3; the file says ${d.schema}. Newer panels will be missing.`);
+      if (d.schema > 4)
+        alert(`This viewer reads schema 4; the file says ${d.schema}. Newer panels will be missing.`);
       show(d);
     } catch (e) { alert('Could not parse that file as an inspect dump: ' + e.message); }
   };
