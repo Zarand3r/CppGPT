@@ -93,11 +93,48 @@ LC_ALL=C grep -qE '^[a-z ]+$' "$WORK/gen_a.txt" || fail "generated text escaped 
 # the model's final computation, so disagreement means the lens is wired wrong.
 python3 - "$WORK/run.json" <<'PYEOF'
 import json, sys
+
+# NO DUPLICATE KEYS. json.load silently keeps the LAST value for a repeated key,
+# so a dump emitting one twice loses the first and looks entirely normal. That is
+# not hypothetical: a key rename in inspect.cpp matched nothing (the C++ literal
+# is escaped), the dump carried "residual_norms" twice, and the surviving value
+# was the wrong tensor. A check downstream of json.load cannot see this -- the
+# parse has already resolved it -- so it has to be done with a pairs hook.
+def _no_dupes(pairs):
+    seen = set()
+    for k, _ in pairs:
+        assert k not in seen, f"dump emits the key {k!r} more than once"
+        seen.add(k)
+    return dict(pairs)
+
+raw = open(sys.argv[1]).read()
+json.loads(raw, object_pairs_hook=_no_dupes)
 d = json.load(open(sys.argv[1]))
 assert d["schema"] == 5, f"unexpected schema {d['schema']}"
 n = d["n_positions"]
 assert n == len(d["tokens"]) > 0, "token count disagrees with n_positions"
 assert len(d["residual_norms"]) == d["config"]["n_layer"], "residual_norms has wrong layer count"
+
+# residual_mid is the stream after the ATTENTION sublayer; residual_norms is after
+# the MLP. They are different tensors and must never be equal.
+#
+# This exists because residual_mid was created by copying the residual_norms block
+# and swapping residual3 -> residual2, and the sibling key rename in that same edit
+# SILENTLY FAILED (the C++ string literal is escaped, so the pattern matched
+# nothing). Had the tensor swap failed the same way, both keys would hold
+# residual3, the viewer would draw four duplicated writes, and every gate stayed
+# green -- verified by mutation.
+mid = d["residual_mid"]
+assert len(mid) == d["config"]["n_layer"], "residual_mid has wrong layer count"
+assert all(len(r) == n for r in mid), "residual_mid is not n_positions wide"
+assert mid != d["residual_norms"], \
+    "residual_mid equals residual_norms — both are reading the same tensor"
+for li, (a_, b_) in enumerate(zip(mid, d["residual_norms"])):
+    for ti, (x, y) in enumerate(zip(a_, b_)):
+        assert x != y, f"layer {li} position {ti}: the MLP wrote nothing to the residual stream"
+# A block has two adds, so the stream is measured twice per layer.
+assert 2 * d["config"]["n_layer"] == len(mid) + len(d["residual_norms"]), \
+    "expected two residual measurements per layer"
 for li, L in enumerate(d["attention"]["data"]):
     for hi, H in enumerate(L):
         assert len(H) == n, "attention is not n_positions square"
@@ -151,6 +188,22 @@ PYEOF
            --prompt "alpha be" --out "$WORK/noabl.json" --ablate 0 > /dev/null
 python3 - "$WORK/noabl.json" <<'PYEOF'
 import json, sys
+
+# NO DUPLICATE KEYS. json.load silently keeps the LAST value for a repeated key,
+# so a dump emitting one twice loses the first and looks entirely normal. That is
+# not hypothetical: a key rename in inspect.cpp matched nothing (the C++ literal
+# is escaped), the dump carried "residual_norms" twice, and the surviving value
+# was the wrong tensor. A check downstream of json.load cannot see this -- the
+# parse has already resolved it -- so it has to be done with a pairs hook.
+def _no_dupes(pairs):
+    seen = set()
+    for k, _ in pairs:
+        assert k not in seen, f"dump emits the key {k!r} more than once"
+        seen.add(k)
+    return dict(pairs)
+
+raw = open(sys.argv[1]).read()
+json.loads(raw, object_pairs_hook=_no_dupes)
 d = json.load(open(sys.argv[1]))
 assert d["ablation"] == [], "--ablate 0 still ran the sweep"
 assert d["attribution"]["heads"], "--ablate 0 should not disable attribution (it costs no forward)"
