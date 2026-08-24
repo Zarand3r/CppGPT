@@ -53,20 +53,29 @@
           color:var(--dim) }
   #drop.hot { border-color:var(--accent); color:var(--accent) }
   .kv { color:var(--dim) }
-  /* Architecture map. Cell size comes from n_head/n_layer so a 12x12 GPT-2 fits
-     the same box a 4x4 toy model does. */
-  .archrow { display:flex; align-items:stretch; gap:6px; overflow-x:auto; padding-bottom:4px }
-  .blk { border:1px solid var(--line); border-radius:7px; padding:6px 5px 4px; min-width:0;
-         background:var(--bg) }
-  .blk .lab { font-size:10.5px; color:var(--dim); text-align:center; margin-bottom:4px }
-  .heads { display:grid; gap:2px; margin-bottom:3px }
+  /* Architecture map. Two rows that must ALIGN: the block row and the residual
+     stream beneath it share the same terminal widths and the same gap, so a
+     stream segment sits directly under the block that writes into it. */
+  .archrow { display:flex; align-items:stretch; gap:8px; overflow-x:auto }
+  .residrow { display:flex; align-items:flex-end; gap:8px; overflow-x:auto; margin-top:2px }
+  .term { width:78px; flex:0 0 78px; display:flex; flex-direction:column; justify-content:center;
+          text-align:center; font-size:10.5px; color:var(--dim); padding:0 4px }
+  .termpad { width:78px; flex:0 0 78px }
+  .blk { flex:1 1 0; min-width:0; border:1px solid var(--line); border-radius:7px;
+         padding:5px 5px 4px; background:var(--bg) }
+  .blk .lab { font-size:10.5px; color:var(--dim); text-align:center; margin-bottom:3px }
+  .sub { font-size:9px; color:var(--dim); letter-spacing:.06em; margin:1px 0 2px }
+  .heads { display:grid; gap:2px }
   .cell { height:18px; border-radius:2px; border:1px solid var(--line); cursor:pointer;
           font:9.5px/18px ui-monospace,monospace; text-align:center; color:var(--fg) }
   .cell.mlp { cursor:default }
   .cell.sel { outline:2px solid var(--accent); outline-offset:1px }
-  .spine { height:8px; border-radius:4px; background:var(--accent) }
-  .term { display:flex; flex-direction:column; justify-content:center; text-align:center;
-          font-size:10.5px; color:var(--dim); padding:0 4px; white-space:nowrap }
+  /* One continuous bar: segments share edges, so height changes read as the
+     stream growing rather than as separate per-layer bars. */
+  .seg { flex:1 1 0; min-width:0; background:var(--accent); border-radius:1px }
+  .segwrap { flex:1 1 0; min-width:0; display:flex; flex-direction:column;
+             justify-content:flex-end; align-items:stretch }
+  .segcap { font-size:9px; color:var(--dim); text-align:center; margin-bottom:2px }
 </style>
 
 <h1>Inside the model</h1>
@@ -101,6 +110,12 @@
   </div>
 
   <div class="panel">
+    <h2>Generation</h2>
+    <div id="tokens"></div>
+    <p class="kv" id="meta" style="margin:12px 0 0; font-size:12.5px"></p>
+  </div>
+
+  <div class="panel">
     <h2>The model, and where the work happened</h2>
     <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
       Every block this model actually has, drawn from its own config — so it is right for whatever
@@ -109,19 +124,20 @@
       <em>not</em> by attention weight. The bar under each block is that layer's step KL.
       <strong>Click a head</strong> to select it in the attention panels below.
     </p>
+    <p style="margin:-6px 0 12px; color:var(--dim); font-size:12.5px">
+      The bar beneath is the <strong>residual stream</strong> — the highway every block reads from
+      and writes back into. Its height is ‖residual‖ at the selected token, so it grows left to
+      right as each block adds to it. Click a token in the prompt above to move the read-out.
+    </p>
     <div class="archrow" id="arch"></div>
+    <div class="residrow" id="resid"></div>
+    <p class="kv" id="residcap" style="font-size:12.5px; margin:6px 0 0"></p>
     <p class="kv" id="archcap" style="font-size:12.5px; margin-top:10px"></p>
     <div class="note">
       Shaded by ablation, deliberately. Weighting these cells by attention would invite exactly the
       reading Jain &amp; Wallace and Wiegreffe &amp; Pinter warn against — attention shows where
       information moved, not whether it mattered. Ablation answers the second question.
     </div>
-  </div>
-
-  <div class="panel">
-    <h2>Prompt</h2>
-    <div id="tokens"></div>
-    <p class="kv" id="meta" style="margin:12px 0 0; font-size:12.5px"></p>
   </div>
 
   <div class="row">
@@ -353,43 +369,62 @@ function drawTokens() {
 // config for the shape, ablation for the shading, layer_kl for the spine -- so it
 // needs no new data and cannot disagree with the panels below it.
 function drawArch() {
-  const host = $('#arch');
+  const host = $('#arch'), rhost = $('#resid');
   const c = D.config;
-  archCells = [];  // [layer][head] -> the cell element, so selection needs no DOM query
+  archCells = [];
   if (!c || !D.ablation || !D.ablation.length) {
     host.innerHTML = '<p class="kv">dump predates the ablation sweep</p>';
-    $('#archcap').textContent = '';
+    rhost.innerHTML = ''; $('#archcap').textContent = ''; $('#residcap').textContent = '';
     return;
   }
   const at = (kind, l, h) => D.ablation.find(r => r.kind === kind && r.layer === l && r.head === h);
   const mx = Math.max(...D.ablation.map(r => r.kl), 1e-9);
-  // sqrt, as in the ablation map: KL is heavy-tailed and a linear ramp renders
-  // every cell but the top one blank.
+  // sqrt: ablation KL is heavy-tailed; a linear ramp renders all but the top blank.
   const shade = kl => `rgba(232,89,12,${(Math.sqrt(Math.max(0, kl / mx)) * 0.85).toFixed(3)})`;
-  const stepMax = Math.max(...(D.layer_kl || []).map(e => e.step), 1e-9);
+  const kl = D.layer_kl || [];
 
-  host.innerHTML = '';
+  host.innerHTML = ''; rhost.innerHTML = '';
   const term = (t, sub) => {
     const d = document.createElement('div');
     d.className = 'term';
     d.innerHTML = `<div><strong>${t}</strong></div><div>${sub}</div>`;
     return d;
   };
+  const pad = () => { const d = document.createElement('div'); d.className = 'termpad'; return d; };
+
   host.appendChild(term('embed', `${c.vocab_size} &times; ${c.n_embd}`));
+  rhost.appendChild(pad());
+
+  // Residual norms at the SELECTED position, so clicking a token moves the
+  // read-out. Scaled against the max across layers, not an absolute, because the
+  // interesting thing is the shape of the growth.
+  const norms = (D.residual_norms || []).map(row => row[pos]);
+  const nmax = Math.max(...norms, 1e-9);
 
   for (let l = 0; l < c.n_layer; l++) {
     const blk = document.createElement('div');
     blk.className = 'blk';
-    blk.style.flex = '1 1 0';
     const lab = document.createElement('div');
     lab.className = 'lab';
-    lab.textContent = `L${l}`;
+    // L0's step KL is UNDEFINED, not zero: there is no previous layer to diff
+    // against. Rendering it as 0 read as "layer 0 does nothing" while its cells
+    // are the darkest on the page -- L0 is the most load-bearing layer here.
+    const e = kl[l];
+    lab.textContent = `L${l}` + (l === 0 ? '   step —' : (e ? `   step ${e.step.toFixed(2)}` : ''));
+    lab.title = l === 0
+      ? 'step KL is undefined at layer 0: no previous layer to compare against. '
+        + 'Use the cell shading (ablation) for how much this layer matters.'
+      : (e ? `this layer moved the prediction ${e.step.toFixed(3)} nats` : '');
     blk.appendChild(lab);
+
+    const sa = document.createElement('div');
+    sa.className = 'sub'; sa.textContent = 'ATTENTION';
+    blk.appendChild(sa);
 
     const heads = document.createElement('div');
     const row = [];
     heads.className = 'heads';
-    heads.style.gridTemplateColumns = `repeat(${Math.min(c.n_head, 4)}, 1fr)`;
+    heads.style.gridTemplateColumns = `repeat(${Math.min(c.n_head, 6)}, 1fr)`;
     for (let h = 0; h < c.n_head; h++) {
       const r = at('head', l, h);
       const cell = document.createElement('div');
@@ -405,30 +440,46 @@ function drawArch() {
     archCells.push(row);
     blk.appendChild(heads);
 
+    const sm = document.createElement('div');
+    sm.className = 'sub'; sm.textContent = 'MLP';
+    blk.appendChild(sm);
     const mlp = at('mlp', l, -1);
     const m = document.createElement('div');
     m.className = 'cell mlp';
     m.style.background = mlp ? shade(mlp.kl) : 'transparent';
-    m.textContent = 'MLP';
+    m.textContent = mlp ? mlp.kl.toFixed(2) : '';
     m.title = mlp ? `L${l} MLP — silencing it moves the output ${mlp.kl.toFixed(4)} nats` : 'MLP';
     blk.appendChild(m);
-
-    const e = (D.layer_kl || [])[l];
-    const sp = document.createElement('div');
-    sp.className = 'spine';
-    sp.style.marginTop = '4px';
-    sp.style.opacity = e ? String(0.15 + 0.85 * Math.sqrt(e.step / stepMax)) : '0.2';
-    sp.title = e ? `layer ${l} moved the prediction ${e.step.toFixed(3)} nats` : '';
-    blk.appendChild(sp);
     host.appendChild(blk);
+
+    // The stream segment sits directly under the block that writes into it.
+    const wrap = document.createElement('div');
+    wrap.className = 'segwrap';
+    const cap = document.createElement('div');
+    cap.className = 'segcap';
+    cap.textContent = norms.length ? norms[l].toFixed(1) : '';
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.style.height = norms.length
+      ? `${Math.max(5, Math.round(6 + 26 * (norms[l] / nmax)))}px` : '8px';
+    seg.title = norms.length
+      ? `‖residual‖ after layer ${l} at position ${pos} = ${norms[l].toFixed(2)}` : '';
+    wrap.appendChild(cap); wrap.appendChild(seg);
+    rhost.appendChild(wrap);
   }
   host.appendChild(term('unembed', `tied &rarr; ${c.vocab_size}`));
+  rhost.appendChild(pad());
 
   const top = D.ablation.slice().sort((a, b) => b.kl - a.kl)[0];
   $('#archcap').textContent =
     `${c.n_layer} layers x ${c.n_head} heads, n_embd ${c.n_embd}. Most load-bearing: ` +
     `${top.kind} L${top.layer}` + (top.head >= 0 ? '\u00b7H' + top.head : '') +
-    ` (KL ${top.kl.toFixed(2)}). Bar opacity under each block is that layer's step KL.`;
+    ` (KL ${top.kl.toFixed(2)}). Cell shading is ablation KL; "step" is how far that layer moved ` +
+    `the prediction (undefined at L0).`;
+  $('#residcap').textContent = norms.length
+    ? `residual stream at position ${pos} (${esc(D.tokens[pos].text)}): ` +
+      norms.map((v, i) => `L${i} ${v.toFixed(1)}`).join('  →  ')
+    : 'dump has no residual_norms';
   markSelectedHead();
 }
 
