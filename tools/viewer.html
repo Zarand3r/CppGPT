@@ -53,6 +53,20 @@
           color:var(--dim) }
   #drop.hot { border-color:var(--accent); color:var(--accent) }
   .kv { color:var(--dim) }
+  /* Architecture map. Cell size comes from n_head/n_layer so a 12x12 GPT-2 fits
+     the same box a 4x4 toy model does. */
+  .archrow { display:flex; align-items:stretch; gap:6px; overflow-x:auto; padding-bottom:4px }
+  .blk { border:1px solid var(--line); border-radius:7px; padding:6px 5px 4px; min-width:0;
+         background:var(--bg) }
+  .blk .lab { font-size:10.5px; color:var(--dim); text-align:center; margin-bottom:4px }
+  .heads { display:grid; gap:2px; margin-bottom:3px }
+  .cell { height:18px; border-radius:2px; border:1px solid var(--line); cursor:pointer;
+          font:9.5px/18px ui-monospace,monospace; text-align:center; color:var(--fg) }
+  .cell.mlp { cursor:default }
+  .cell.sel { outline:2px solid var(--accent); outline-offset:1px }
+  .spine { height:8px; border-radius:4px; background:var(--accent) }
+  .term { display:flex; flex-direction:column; justify-content:center; text-align:center;
+          font-size:10.5px; color:var(--dim); padding:0 4px; white-space:nowrap }
 </style>
 
 <h1>Inside the model</h1>
@@ -81,6 +95,24 @@
 </div>
 
 <div id="app" hidden>
+  <div class="panel">
+    <h2>The model, and where the work happened</h2>
+    <p style="margin:-4px 0 12px; color:var(--dim); font-size:12.5px">
+      Every block this model actually has, drawn from its own config — so it is right for whatever
+      checkpoint is loaded, not a picture of a transformer in general. Each cell is shaded by
+      <strong>how much silencing it changed the output</strong> (ablation KL, the causal measure),
+      <em>not</em> by attention weight. The bar under each block is that layer's step KL.
+      <strong>Click a head</strong> to select it in the attention panels below.
+    </p>
+    <div class="archrow" id="arch"></div>
+    <p class="kv" id="archcap" style="font-size:12.5px; margin-top:10px"></p>
+    <div class="note">
+      Shaded by ablation, deliberately. Weighting these cells by attention would invite exactly the
+      reading Jain &amp; Wallace and Wiegreffe &amp; Pinter warn against — attention shows where
+      information moved, not whether it mattered. Ablation answers the second question.
+    </div>
+  </div>
+
   <div class="panel">
     <h2>Prompt</h2>
     <div id="tokens"></div>
@@ -241,7 +273,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let D = null, pos = 0;
+let D = null, pos = 0, archCells = [];
 
 function show(data) {
   D = data; pos = data.n_positions - 1;
@@ -253,7 +285,8 @@ function show(data) {
   fillSelect($('#q'), data.n_positions, data.n_positions - 1, i => `${i} (${esc(data.tokens[i].text)})`);
   fillSelect($('#al'), data.attention.layers.length, 0, i => `L${data.attention.layers[i]}`);
   fillSelect($('#ah'), data.attention.heads.length, 0, i => `H${data.attention.heads[i]}`);
-  for (const id of ['q', 'al', 'ah']) $('#' + id).onchange = drawAttnText;
+  for (const id of ['q', 'al', 'ah'])
+    $('#' + id).onchange = () => { drawAttnText(); markSelectedHead(); };
   drawTokens(); render();
 }
 
@@ -311,9 +344,119 @@ function drawTokens() {
   host.appendChild(cap);
 }
 
+// Architecture map. Purely a re-presentation of numbers already in the dump --
+// config for the shape, ablation for the shading, layer_kl for the spine -- so it
+// needs no new data and cannot disagree with the panels below it.
+function drawArch() {
+  const host = $('#arch');
+  const c = D.config;
+  archCells = [];  // [layer][head] -> the cell element, so selection needs no DOM query
+  if (!c || !D.ablation || !D.ablation.length) {
+    host.innerHTML = '<p class="kv">dump predates the ablation sweep</p>';
+    $('#archcap').textContent = '';
+    return;
+  }
+  const at = (kind, l, h) => D.ablation.find(r => r.kind === kind && r.layer === l && r.head === h);
+  const mx = Math.max(...D.ablation.map(r => r.kl), 1e-9);
+  // sqrt, as in the ablation map: KL is heavy-tailed and a linear ramp renders
+  // every cell but the top one blank.
+  const shade = kl => `rgba(232,89,12,${(Math.sqrt(Math.max(0, kl / mx)) * 0.85).toFixed(3)})`;
+  const stepMax = Math.max(...(D.layer_kl || []).map(e => e.step), 1e-9);
+
+  host.innerHTML = '';
+  const term = (t, sub) => {
+    const d = document.createElement('div');
+    d.className = 'term';
+    d.innerHTML = `<div><strong>${t}</strong></div><div>${sub}</div>`;
+    return d;
+  };
+  host.appendChild(term('embed', `${c.vocab_size} &times; ${c.n_embd}`));
+
+  for (let l = 0; l < c.n_layer; l++) {
+    const blk = document.createElement('div');
+    blk.className = 'blk';
+    blk.style.flex = '1 1 0';
+    const lab = document.createElement('div');
+    lab.className = 'lab';
+    lab.textContent = `L${l}`;
+    blk.appendChild(lab);
+
+    const heads = document.createElement('div');
+    const row = [];
+    heads.className = 'heads';
+    heads.style.gridTemplateColumns = `repeat(${Math.min(c.n_head, 4)}, 1fr)`;
+    for (let h = 0; h < c.n_head; h++) {
+      const r = at('head', l, h);
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.style.background = r ? shade(r.kl) : 'transparent';
+      cell.textContent = c.n_head <= 8 ? 'H' + h : '';
+      cell.title = r ? `L${l}\u00b7H${h} — silencing it moves the output ${r.kl.toFixed(4)} nats`
+                     : `L${l}\u00b7H${h}`;
+      cell.onclick = () => selectHead(l, h);
+      row.push(cell);
+      heads.appendChild(cell);
+    }
+    archCells.push(row);
+    blk.appendChild(heads);
+
+    const mlp = at('mlp', l, -1);
+    const m = document.createElement('div');
+    m.className = 'cell mlp';
+    m.style.background = mlp ? shade(mlp.kl) : 'transparent';
+    m.textContent = 'MLP';
+    m.title = mlp ? `L${l} MLP — silencing it moves the output ${mlp.kl.toFixed(4)} nats` : 'MLP';
+    blk.appendChild(m);
+
+    const e = (D.layer_kl || [])[l];
+    const sp = document.createElement('div');
+    sp.className = 'spine';
+    sp.style.marginTop = '4px';
+    sp.style.opacity = e ? String(0.15 + 0.85 * Math.sqrt(e.step / stepMax)) : '0.2';
+    sp.title = e ? `layer ${l} moved the prediction ${e.step.toFixed(3)} nats` : '';
+    blk.appendChild(sp);
+    host.appendChild(blk);
+  }
+  host.appendChild(term('unembed', `tied &rarr; ${c.vocab_size}`));
+
+  const top = D.ablation.slice().sort((a, b) => b.kl - a.kl)[0];
+  $('#archcap').textContent =
+    `${c.n_layer} layers x ${c.n_head} heads, n_embd ${c.n_embd}. Most load-bearing: ` +
+    `${top.kind} L${top.layer}` + (top.head >= 0 ? '\u00b7H' + top.head : '') +
+    ` (KL ${top.kl.toFixed(2)}). Bar opacity under each block is that layer's step KL.`;
+  markSelectedHead();
+}
+
+// Clicking a cell drives the attention selects below, so the map indexes the rest
+// of the page rather than being a separate picture.
+function selectHead(l, h) {
+  const A = D.attention;
+  const li = A.layers.indexOf(l), hi = A.heads.indexOf(h);
+  if (li < 0 || hi < 0) {
+    $('#archcap').textContent =
+      `L${l}\u00b7H${h} is not in this dump's attention selection ` +
+      `(rerun inspect without --layers/--heads to include it).`;
+    return;
+  }
+  $('#al').value = String(li);
+  $('#ah').value = String(hi);
+  drawAttnText();
+  markSelectedHead();
+}
+
+function markSelectedHead() {
+  const A = D.attention;
+  if (!A || !A.layers.length || !archCells.length) return;
+  const l = A.layers[Math.min(+$('#al').value || 0, A.layers.length - 1)];
+  const h = A.heads[Math.min(+$('#ah').value || 0, A.heads.length - 1)];
+  for (const row of archCells)
+    for (const cell of row) cell.classList.remove('sel');
+  if (archCells[l] && archCells[l][h]) archCells[l][h].classList.add('sel');
+}
+
 function render() {
   drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL();
-  drawAttrib(); drawAblate(); drawPos();
+  drawAttrib(); drawAblate(); drawPos(); drawArch();
 }
 
 // Learned positional embeddings — `wpe` is a trained parameter, not a fixed
