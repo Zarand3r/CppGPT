@@ -72,13 +72,18 @@
      each sublayer writes into it. */
   .stream { display:flex; flex-direction:column; align-items:center; justify-content:center;
             position:relative; min-height:34px }
-  .streambar { background:var(--accent); border-radius:2px; width:10px; flex:1 1 auto;
-               min-height:26px; opacity:.75 }
+  /* FIXED height: only WIDTH encodes the norm. Letting the bar flex to fill its
+     row made it taller beside the attention box than beside the MLP box, which
+     reads as data and is not. */
+  .streambar { background:var(--accent); border-radius:2px; height:20px; opacity:.75 }
   .streamval { font:9.5px/1.4 ui-monospace,monospace; color:var(--dim); margin-top:2px }
   .plus { font-size:11px; color:var(--warm); font-weight:700 }
-  .gap { display:grid; grid-template-columns:1fr 132px; gap:10px; height:12px }
-  .gap .rail { grid-column:2; justify-self:center; width:10px; background:var(--accent);
-               opacity:.75; border-radius:2px }
+  /* The rail carries the CURRENT stream width forward. Fixed-width rails made the
+     stream appear to pinch between every write, as if it thinned and re-thickened;
+     it does neither -- it holds its thickness until the next sublayer adds. */
+  .gap { display:grid; grid-template-columns:1fr 132px; gap:10px; height:14px }
+  .gap .rail { grid-column:2; justify-self:center; background:var(--accent);
+               opacity:.75; border-radius:0 }
   .lyr { font-size:10px; color:var(--dim); letter-spacing:.08em; margin:8px 0 3px;
          border-top:1px solid var(--line); padding-top:5px }
   .endcap { text-align:center; font-size:11px; color:var(--dim); padding:6px 0 }
@@ -398,7 +403,18 @@ function drawArch() {
                                 if (txt !== undefined) d.textContent = txt; return d; };
   host.innerHTML = '';
 
-  const rail = () => { const g = el('div', 'gap'); g.appendChild(el('div', 'rail')); return g; };
+  // Width of the stream at a given norm; one place so the rails and bars agree.
+  const wOf = n => (n === null || n === undefined)
+    ? 6 : Math.max(4, Math.round(4 + 26 * (n / nmax)));
+  let streamW = 6;  // before layer 0 the stream is the embedding, whose norm we do not emit
+  const rail = () => {
+    const g = el('div', 'gap');
+    const r = el('div', 'rail');
+    r.style.width = `${streamW}px`;
+    r.title = streamW === 6 ? 'embedding output (norm not measured)' : '';
+    g.appendChild(r);
+    return g;
+  };
   // One stage: a sublayer on the left, the stream on the right, joined by a '+'.
   const stage = (body, norm, title) => {
     const st = el('div', 'stg');
@@ -406,7 +422,8 @@ function drawArch() {
     const sm = el('div', 'stream');
     const bar = el('div', 'streambar');
     if (norm !== null) {
-      bar.style.width = `${Math.max(4, Math.round(4 + 26 * (norm / nmax)))}px`;
+      bar.style.width = `${wOf(norm)}px`;
+      streamW = wOf(norm);  // the rails below inherit it
       bar.title = title;
       sm.appendChild(el('div', 'plus', '+'));
       sm.appendChild(bar);
