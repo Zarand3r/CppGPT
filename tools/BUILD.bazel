@@ -58,6 +58,16 @@ cc_binary(
     deps = ["//:cppgpt"],
 )
 
+# Is a component important, or was it important on ONE prompt?
+cc_binary(
+    name = "ablation_stats",
+    srcs = ["ablation_stats.cpp"],
+    deps = [
+        ":cli",
+        "//:cppgpt",
+    ],
+)
+
 cc_binary(
     name = "bench",
     srcs = ["bench.cpp"],

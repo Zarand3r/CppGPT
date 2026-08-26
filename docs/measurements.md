@@ -399,3 +399,36 @@ which share no code.
 
 The fixture generator refuses to write a case the two oracles disagree on, so the gate is never one
 implementation's opinion.
+
+## M-16 · Is a component important, or was it important on ONE prompt?
+
+`//tools:ablation_stats`, toy checkpoint, 128 windows of 32 tokens from the validation split,
+3,200 forward passes in ~3 s.
+
+| component | mean KL | median | p90 | max | active (KL ≥ 0.01) |
+|---|---|---|---|---|---|
+| L0 MLP | 5.098 | **4.762** | 9.03 | 14.88 | **100%** |
+| L0 attn | 2.270 | **1.725** | 4.71 | 12.63 | **100%** |
+| L3 MLP | 0.868 | 0.579 | 2.08 | 6.30 | 100% |
+| L2 MLP | 0.746 | 0.278 | 2.02 | 8.51 | 93% |
+| L2 attn | 0.634 | 0.250 | 1.76 | 8.02 | 94% |
+| L0 H3 | 0.369 | 0.100 | 0.72 | 5.70 | 88% |
+| L2 H0 | 0.182 | **0.078** | 0.58 | 1.76 | 84% |
+
+**6 components are active on ≥90% of prompts, 18 on 25–90%, none below 25%.**
+
+> **The single-prompt view overstates specific components badly.** `tools/inspect` reports
+> **L2 H0 at 0.628** on the seed prompt — **8× its median of 0.078**. Read as "the most important
+> head", which the architecture panel invites, that is a claim about one input, not about the head.
+> L0 MLP and L0 attn are the only components that are large *and* consistent (medians 4.76 and 1.73,
+> active on every prompt).
+
+The effects are heavy-tailed: L2 MLP's mean is 2.7× its median, so the mean is set by a handful of
+prompts. Median and activity rate are the honest summaries; mean alone is not.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:ablation_stats -- \
+  --checkpoint $PWD/data/shakespeare.ckpt --data $PWD/data/shakespeare.val.bin \
+  --prompts 128 --seq 32
+```

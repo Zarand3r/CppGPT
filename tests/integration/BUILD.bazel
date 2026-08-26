@@ -55,6 +55,7 @@ sh_test(
     size = "small",
     srcs = ["e2e_pipeline_test.sh"],
     data = [
+        "//tools:ablation_stats",
         "//tools:eval",
         "//tools:generate",
         "//tools:inspect",
