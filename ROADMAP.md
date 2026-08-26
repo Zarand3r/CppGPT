@@ -386,6 +386,37 @@ was not. Everything below is on `main`, tested, and measured.
 - [ ] **S2: Unicode pre-tokenizer.** ASCII is exact today; `\p{L}`/`\p{N}` need generated property
       tables. Non-ASCII currently fails loudly, which is correct but limiting.
 
+### Resuming in a fresh session (2026-08-26)
+
+Everything below is on disk or on GitHub; nothing lives only in a conversation.
+`CLAUDE.md` auto-loads and routes to the skills, so a new session in this
+directory starts oriented.
+
+**Read in this order.** `ROADMAP.md` (this file — the single source of truth for
+what is left) → `docs/EXPERIMENTS.md` (why the training runs were shaped as they
+were, with predictions registered before results) → `docs/DECISIONS.md` D1–D9
+(the architectural calls and the two that were reversed) →
+`docs/engineering-lessons.md` L1–L19 (the failure modes this repo has actually
+hit) → `docs/measurements.md` M-1…M-16 (every number, each with a reproduce
+command).
+
+**Open PRs, none merged.** #35 threading design (needs three decisions, no code),
+#36 viewer provenance, #37 architecture map (stacked on #36), #38 ablation
+variance. `git log --oneline origin/main..<branch>` shows each.
+
+**The mech-interp series is 1 of 4 done.** #38 is item 1. Still to build, in
+order and with the reasoning already written down in the conversation that
+produced this list:
+
+| | item | where | cost |
+|---|---|---|---|
+| 2 | **Max-activating examples** — for each of the 2,048 MLP neurons, its top-activating contexts over the corpus. Highest insight per line; needs **no new model**, since `fch_gelu` `[L,B,T,4C]` is already in the arena. | offline, one corpus pass | small |
+| 3 | **Attribution patching, validated against exhaustive ablation.** `effect ≈ −∇a·a`. The field uses this *because* exhaustive ablation is infeasible; here it is affordable, so the approximation's **error** can be measured. The only item that is a contribution rather than an application. M-16's non-additivity (L0 block 22.9× the sum of its heads) predicts where it will fail. | real-time, 1 fwd + 1 bwd | medium |
+| 4 | **Induction-head probe** (Olsson et al.) — repeated random sequences. A yes/no answer about whether a canonical circuit exists in 4 layers. | offline | small |
+| 5 | **Transcoders / SAEs** — deliberately last. They exist to resolve *superposition*; at `n_embd=128` in a model that beats a 5-gram by 8.9%, the payoff is the least certain on this list. Anthropic's circuit tracing gave satisfying insight on ~¼ of prompts on a real model. | offline, hours | large |
+
+**Working agreement:** modular PRs for review, not direct pushes to `main`.
+
 ### Genuinely open — the honest list (2026-08-20, tag `v0.3.0-gpt2`)
 
 Consolidated so it is not scattered across sections. Everything here is open
