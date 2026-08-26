@@ -342,7 +342,7 @@ more steps did — real, but decisively the second-order effect.
 ## M-14 · GPT-2 124M — real weights, forward parity and generation
 
 `//tools:convert_hf` on `openai-community/gpt2` (`model.safetensors`, 522 MB) ->
-`gpt2-124M.ckpt` (475 MB, 124,439,808 params). Tokenizer: `//include/cppgpt/bpe.hpp`.
+`gpt2-124M.ckpt` (475 MB, 124,439,808 params). Tokenizer: `include/cppgpt/bpe.hpp`.
 
 ### Forward parity — a self-calibrating gate
 
@@ -388,7 +388,7 @@ bazel run --config=release //tools:dump_logits -- <ckpt> <vocab.json> <merges.tx
 
 ## M-15 · BPE tokenizer
 
-`//include/cppgpt/bpe.hpp`, differential against tiktoken (OpenAI) **and** transformers (HuggingFace),
+`include/cppgpt/bpe.hpp`, differential against tiktoken (OpenAI) **and** transformers (HuggingFace),
 which share no code.
 
 | | |
@@ -432,3 +432,38 @@ bazel run --config=release //tools:ablation_stats -- \
   --checkpoint $PWD/data/shakespeare.ckpt --data $PWD/data/shakespeare.val.bin \
   --prompts 128 --seq 32
 ```
+
+## M-17 · Ablation is not additive, and total effect is not direct effect
+
+Same toy checkpoint and seed prompt as M-16. Two decompositions that a single importance number hides.
+
+### Silencing a block ≠ silencing its heads
+
+| layer | Σ of the 4 head ablations | whole attention block | ratio |
+|---|---|---|---|
+| **L0** | 0.161 | **3.696** | **22.9×** |
+| L1 | 0.103 | 0.031 | **0.30×** |
+| L2 | 0.807 | 1.095 | 1.36× |
+| L3 | 0.137 | 0.227 | 1.66× |
+
+Removing L0's heads one at a time costs almost nothing; removing all four is catastrophic — the
+**hydra effect** (McGrath et al. 2023), where the surviving heads compensate. L1 shows the opposite:
+the block matters *less* than its parts, so its heads partly cancel each other.
+
+> **No additive or first-order theory can predict block importance from head importance here**, and
+> the degree of non-additivity varies **76×** across layers of the same model. This is the concrete
+> prediction to test when attribution patching is built (`ROADMAP.md`, mech-interp item 3): the
+> gradient approximation should track single-component ablation and fail on joint ablation.
+
+### Direct effect and total effect can disagree completely
+
+| head | ablation KL (total) | DLA (direct) | reading |
+|---|---|---|---|
+| **L2 H1** | **0.0059** | **+0.907** | writes hardest into the output direction, yet removing it changes almost nothing — it is compensated |
+| **L2 H0** | **0.6278** | **+0.034** | largest total effect, negligible direct effect — it acts entirely *through later layers* |
+
+Either number alone gives the opposite answer about which head matters. Attribution answers "what did
+this component write into the output direction"; ablation answers "what breaks if it stops writing".
+
+**Reproduce:** the numbers are in `data/run.json` (`ablation`, `attribution.heads`), produced by
+`//tools:inspect`; see M-16 for the multi-prompt version.

@@ -25,10 +25,16 @@ inline version was wrong in a way that reported success.
 | `audit_run.py` | does this run show any bug signature? | "the loss went down" is not evidence training was correct |
 | `corpus_stats.py` | what does the corpus say should follow this text? | settled whether the model was wrong about `ju` → `l` (it was not) |
 | `mutate.sh` | does this test actually catch that defect? | the inline loop had two bugs, both silently reporting success |
+| `check_docs.py` | does every path a doc names exist? | a doc naming code that no longer exists teaches a wrong mental model |
 | `check_viewer.py` | is the viewer wired up and does it render? | a button once shipped rendered but unwired |
 | `wandb_log.py` | ship a run to W&B | keeps the network out of the training binary |
 | `serve_viewer.py` | serve the viewer + run the model on submitted prompts | public-facing; see `docs/DECISIONS.md` D5 |
 | `make-site.sh` | assemble `site/` from `viewer.html` + a dump | one source for the page |
+
+| `ablation_stats` | is a component important, or was it important on one prompt? | every ablation number in `inspect` is from a single forward pass |
+
+See [`docs/INTERPRETING.md`](../docs/INTERPRETING.md) for what these tools' output supports and,
+more importantly, what it does not.
 
 ### Notes that matter
 

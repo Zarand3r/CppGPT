@@ -309,7 +309,7 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **Byte-level BPE tokenizer.** Needed only to share GPT-2's 50257 vocabulary. Char-level is the
       MVP tokenizer; it already round-trips exactly and needs no assets. (Full spec, traps and
       fixtures: `docs/M3_INFERENCE_PLAN.md` M3-S3.)
-- [ ] **Load pretrained GPT-2 124M weights** (`convert_hf_gpt2.py` + `tools/import_hf`) and the
+- [ ] **Load pretrained GPT-2 124M weights** (`//tools:convert_hf` + `tools/import_hf`) and the
       token-exact-vs-HuggingFace gate. The mapping is fully researched and verified — Conv1D
       transposes, Q‖K‖V order, the layer-bisect fixture. (`M3-S2`, `M3-S5`.)
 - [ ] **KV cache** — an inference speedup, irrelevant at MVP context lengths. (`M3-S4`.)
@@ -392,7 +392,7 @@ Everything below is on disk or on GitHub; nothing lives only in a conversation.
 `CLAUDE.md` auto-loads and routes to the skills, so a new session in this
 directory starts oriented.
 
-**Read in this order.** `ROADMAP.md` (this file — the single source of truth for
+**Read in this order.** `docs/INTERPRETING.md` (how to read the interpretability tools, and what they do not support — the reasoning behind every panel) → `ROADMAP.md` (this file — the single source of truth for
 what is left) → `docs/EXPERIMENTS.md` (why the training runs were shaped as they
 were, with predictions registered before results) → `docs/DECISIONS.md` D1–D9
 (the architectural calls and the two that were reversed) →

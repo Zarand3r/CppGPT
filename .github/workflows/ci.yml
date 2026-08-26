@@ -67,6 +67,11 @@ jobs:
       # exactly what happened: the panel-render half never ran in CI and the step
       # still went green. A fallback that silently substitutes a weaker check is
       # indistinguishable from the strong check passing.
+      # A doc naming code that no longer exists is worse than no doc, and nothing
+      # else in CI reads the docs at all.
+      - name: Documentation references
+        run: python3 tools/check_docs.py
+
       - name: Viewer wiring and render
         run: |
           # NO apt-get: node is preinstalled on ubuntu-latest, and `apt-get update
