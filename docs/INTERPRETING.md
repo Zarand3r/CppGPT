@@ -76,6 +76,38 @@ previous-token head" from one input is the standard error in this field.
 
 **Before believing any single-prompt number, check its median.**
 
+## 4a. Every ablation number here is a *zero*-ablation number
+
+`save_and_ablate` zeroes the weights that carry a component. That is why it needs
+no forward hook — and it is also the only ablation it can express. The field
+treats zero ablation (and mean ablation) as taking the model **off distribution
+in an unprincipled manner**: the activation distribution the rest of the network
+was trained against is destroyed, so the ablated model can come out either worse
+or better than the component's true importance would imply, and **the sign of
+that error is not known in advance**. The recommended default is *resample*
+ablation — substitute the component's output from a randomly chosen other input,
+so the replacement is drawn from the component's own empirical distribution.
+
+So M-16 and M-17 are honest measurements of a well-defined intervention, but that
+intervention is not the one the field would choose, and no claim here should be
+read as mode-independent until the same sweep has been run under resample
+ablation. Doing so needs an activation-level intervention that does not exist
+yet; `ROADMAP.md` M6-A1/B1 track it.
+
+## 4b. A component can look unimportant *because* it was important
+
+§5 records that ablation does not decompose. The mechanism has a name: when a
+component is removed, a dormant backup can take over. The primary then measures
+small (the damage was repaired) and the backup also measures small on the intact
+model (it was silent). **Both look unimportant, and neither is** — which is a
+better description of the 22.9× gap in §5 than "non-additivity".
+
+The correction is to score components *conditionally*: ablate a primary set
+first, then ask how much each remaining component's effect **grows**. With 24
+components in this model all 576 ordered pairs are affordable, so the exhaustive
+version is available here — the field uses approximations only because at real
+scale it is not. `ROADMAP.md` M6-A2.
+
 ## 5. Ablation does not decompose
 
 Silencing a whole attention block is not the sum of silencing its heads — in this
