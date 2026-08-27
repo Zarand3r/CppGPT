@@ -115,4 +115,22 @@ void save_and_ablate(GPT2& model, Ablation kind, int layer, int head, float* sav
 // bit-for-bit. Pass the same kind/layer/head and the buffer it filled.
 void restore_ablation(GPT2& model, Ablation kind, int layer, int head, const float* saved) noexcept;
 
+// ---------------------------------------------------------------------------
+// Interchange interventions (the donor half of the patch seam)
+// ---------------------------------------------------------------------------
+//
+// Read the current value of a patch site out of the activation arena so it can
+// be replayed as a `Patch` on a different prompt. That pairing IS the standard
+// three-pass workflow the field calls activation patching, interchange
+// intervention, causal tracing, or resample ablation — they are one operation:
+//
+//   1. forward(donor)                       2. capture_site(model, site, ...)
+//   3. forward(clean, ..., &patch)          -> measure how far the output moved
+//
+// Read-only with respect to the model; `out` is caller-owned and needs
+// patch_floats(model.config(), site, model.batch(), model.seq_len()) floats.
+//
+// `head` is ignored unless site == PatchSite::HeadOut.
+void capture_site(const GPT2& model, PatchSite site, int layer, int head, float* out) noexcept;
+
 }  // namespace cppgpt

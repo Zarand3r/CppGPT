@@ -16,6 +16,7 @@
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/model_config.hpp"
 #include "cppgpt/optimizer.hpp"
+#include "cppgpt/patch.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/storage.hpp"
 
@@ -125,7 +126,15 @@ public:
     // in [0,V)), filling activations. If `targets` is non-null, also computes the
     // softmax + cross-entropy and records `mean_loss`; pass nullptr for inference
     // (logits only — read them from acts().logits).
-    void forward(const int* tokens, const int* targets, int logits_at = -1);
+    //
+    // `patch` (default none) replaces ONE activation site mid-pass — the seam
+    // interchange interventions need, and the only thing in this class that
+    // exists for the interpretability layer. See cppgpt/patch.hpp for why no
+    // weight modification can express it. With `patch == nullptr` this function
+    // is bit-identical to the pre-seam build; //tests/unit:interpret_golden_test
+    // and //tests/integration:parity_test both pin that.
+    void forward(const int* tokens, const int* targets, int logits_at = -1,
+                 const Patch* patch = nullptr);
 
     // Zero the parameter-gradient and activation-gradient arenas. Call before
     // backward(), since every op's backward accumulates (+=).
@@ -188,7 +197,13 @@ public:
     [[nodiscard]] int batch() const noexcept { return B_; }    // fixed batch size
     [[nodiscard]] int seq_len() const noexcept { return T_; }  // fixed context length
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }
-    [[nodiscard]] ParamTensors& params() noexcept { return params_; }  // mutable: optimizer / tests
+    // Mutable access is for the optimizer, tests, and `interpret.hpp`'s
+    // save_and_ablate — the ONLY interpretability code that writes to the model.
+    // Everything else in the interpretability layer reads through the const
+    // params()/acts() overloads, and new work must keep it that way: an
+    // intervention belongs in the forward pass behind an explicit patch
+    // argument, not in a caller reaching in here to rewrite weights.
+    [[nodiscard]] ParamTensors& params() noexcept { return params_; }
     [[nodiscard]] const ParamTensors& grads() const noexcept { return grads_; }
     [[nodiscard]] const ActTensors& acts() const noexcept { return acts_; }
     [[nodiscard]] float mean_loss() const noexcept { return mean_loss_; }
