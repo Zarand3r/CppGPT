@@ -445,3 +445,52 @@ against the expected element count before any read.
 ### How we will know it was right
 If a future model format needs genuinely nested JSON, this stops scaling and the Python step returns.
 For safetensors — flat by design, because it exists to be read without a framework — it holds.
+
+---
+
+## D10 — The interpretability boundary is enforced by the build, not by review
+
+**Decision.** `//:cppgpt` splits into `//:cppgpt_core` and `//:cppgpt_interp`, with the umbrella
+target keeping every existing consumer working. The interpretability layer may read the model; the
+model may not reach the interpretability layer, and the build now makes that a compile error rather
+than a review comment.
+
+### The probe that motivated it
+
+Adding `#include "cppgpt/interpret.hpp"` to `src/model.cpp` **compiled clean**. One `cc_library` with
+`glob(["src/**/*.cpp"])` puts `model.cpp` and `interpret.cpp` in the same translation unit set and
+exports every header to every source, so nothing but habit kept the dependency one-directional.
+
+That is the same class of gap the repo has hit before: a rule that exists in prose and in nobody's
+compiler. `bazel test //...` was green either way, so the boundary had never been *tested* — and a
+gate that has never been seen to fail is not a gate.
+
+After the split the same edit fails with `fatal error: 'cppgpt/interpret.hpp' file not found`.
+Verified in both directions: the violation compiles before the change and does not after, and the
+full suite stays green (33/33).
+
+### Where the line runs, and why `patch.hpp` is on the core side
+
+`patch.hpp` is **core**. It is the seam *mechanism* — the vocabulary for replacing one activation
+mid-forward — and the model owns it the way it owns `layer_slice()`. The interpretability layer owns
+the *policy* built on that mechanism: the logit lens, direct logit attribution, KL, ablation, and
+donor capture.
+
+Drawing it here is what keeps the core diff for all of M6 at **eight substantive lines**: one
+include, the `forward` signature, one validation call, and three `apply_patch` calls.
+
+### Cost
+
+The globs become exclusion lists, so a new `src/*.cpp` silently joins core rather than being placed
+deliberately. That is a real downside and the reason to prefer explicit source lists if the file
+count grows. Two targets also mean a consumer can now depend on the wrong one; the umbrella
+`//:cppgpt` exists so the default choice stays correct.
+
+### What this does NOT claim
+
+The build stops core from *including* interpretability headers. It does not stop the
+interpretability layer from writing to the model — `save_and_ablate` still mutates weights through
+the non-const `params()` overload, which is documented at the accessor. That write access is
+expected to leave the shipping path once ablation becomes a donor patch, surviving only in
+`interpret_test` as the independent implementation that keeps P2 non-circular
+(`IMPLEMENTATION_PLAN.md`).

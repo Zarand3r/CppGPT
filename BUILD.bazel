@@ -3,10 +3,50 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 # The cppgpt library. Small and multi-TU (not header-only): src/*.cpp compiled,
 # include/cppgpt/*.hpp exported as <cppgpt/...> via strip_include_prefix.
 # Warning flags (-Wall -Wextra -Wpedantic -Werror) come from .bazelrc globally.
+#
+# WHY THIS IS TWO TARGETS AND NOT ONE.
+#
+# The interpretability layer reads the model; the model must never depend on the
+# interpretability layer. That direction was true by convention, and a probe
+# showed convention was all it was: adding `#include "cppgpt/interpret.hpp"` to
+# src/model.cpp compiled clean under a single glob()'d target. A boundary a
+# reviewer has to remember is not a boundary.
+#
+# Split this way, Bazel enforces it: interpret.hpp is not among cppgpt_core's
+# headers, so any core file that reaches for it fails to compile. The check is
+# structural and costs nothing at CI time -- the same reason `ldd` allow-listing
+# and the docs-path check are mechanical here rather than review items.
+#
+# WHERE THE LINE RUNS. patch.hpp is CORE, not interpretability. It is the seam
+# mechanism -- the vocabulary for replacing one activation mid-forward -- and the
+# model owns it the same way it owns layer_slice(). What lives in the
+# interpretability layer is the POLICY built on that mechanism: the lens,
+# attribution, KL, ablation, and donor capture.
 cc_library(
-    name = "cppgpt",
-    srcs = glob(["src/**/*.cpp"]),
-    hdrs = glob(["include/cppgpt/**/*.hpp"]),
+    name = "cppgpt_core",
+    srcs = glob(["src/**/*.cpp"], exclude = ["src/interpret.cpp"]),
+    hdrs = glob(["include/cppgpt/**/*.hpp"], exclude = ["include/cppgpt/interpret.hpp"]),
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "cppgpt_interp",
+    srcs = ["src/interpret.cpp"],
+    hdrs = ["include/cppgpt/interpret.hpp"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [":cppgpt_core"],
+)
+
+# Umbrella, so every existing consumer keeps working unchanged. A target that
+# wants the guarantee "this code cannot reach interpretability" should depend on
+# :cppgpt_core directly.
+cc_library(
+    name = "cppgpt",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":cppgpt_core",
+        ":cppgpt_interp",
+    ],
 )
