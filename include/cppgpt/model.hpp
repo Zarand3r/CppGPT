@@ -75,29 +75,6 @@ struct ActTensors {
 };
 inline constexpr int kNumActTensors = 23;
 
-// Per-layer slice of an activation shaped [L, B, T, C]. Consumers outside
-// model.cpp must use this rather than recomputing the stride: tools/inspect.cpp
-// derived it as `layer * T * C` and silently dropped the B factor, which was
-// correct only because that tool happens to build with B == 1. Three separate
-// re-derivations of a stride the model already knows is two too many.
-[[nodiscard]] inline const float* layer_slice(const float* base, int layer, int B, int T,
-                                              int C) noexcept {
-    return base + static_cast<std::size_t>(layer) * static_cast<std::size_t>(B) *
-                      static_cast<std::size_t>(T) * static_cast<std::size_t>(C);
-}
-
-// Per-(layer, head) slice of an attention tensor shaped [L, B, NH, T, T]. Same
-// reason as above, and the same bug had survived TWICE in tools/inspect.cpp on
-// this shape after the residual one was fixed — announcing the class retired
-// while two instances remained.
-[[nodiscard]] inline const float* head_slice(const float* base, int layer, int head, int B, int NH,
-                                             int T) noexcept {
-    const auto per_head = static_cast<std::size_t>(T) * static_cast<std::size_t>(T);
-    const auto per_layer = static_cast<std::size_t>(B) * static_cast<std::size_t>(NH) * per_head;
-    return base + static_cast<std::size_t>(layer) * per_layer +
-           static_cast<std::size_t>(head) * per_head;
-}
-
 class GPT2 {
 public:
     // Allocates the parameter and activation arenas for `cfg` at batch dims B, T.

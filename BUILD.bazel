@@ -1,29 +1,34 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-# The cppgpt library. Small and multi-TU (not header-only): src/*.cpp compiled,
-# include/cppgpt/*.hpp exported as <cppgpt/...> via strip_include_prefix.
-# Warning flags (-Wall -Wextra -Wpedantic -Werror) come from .bazelrc globally.
+# The cppgpt library, in TWO layers. Warning flags (-Wall -Wextra -Wpedantic
+# -Werror) come from .bazelrc globally.
 #
-# WHY THIS IS TWO TARGETS AND NOT ONE.
+#   cppgpt_model   — train, inference, load. What the model IS.
+#   cppgpt_interp  — the interpretability layer: logit lens, direct logit
+#                    attribution, KL, ablation, donor capture, and the helpers
+#                    for indexing the activation arena by layer and head.
 #
-# The interpretability layer reads the model; the model must never depend on the
-# interpretability layer. That direction was true by convention, and a probe
+# The interpretability layer reads the model. The model must never reach the
+# interpretability layer. That direction used to be convention only, and a probe
 # showed convention was all it was: adding `#include "cppgpt/interpret.hpp"` to
-# src/model.cpp compiled clean under a single glob()'d target. A boundary a
-# reviewer has to remember is not a boundary.
+# src/model.cpp compiled clean under a single glob()'d target, and
+# `bazel test //...` was green either way. Split this way Bazel enforces it —
+# interpret.hpp is not among cppgpt_model's headers, so any model file reaching
+# for it fails to compile.
 #
-# Split this way, Bazel enforces it: interpret.hpp is not among cppgpt_core's
-# headers, so any core file that reaches for it fails to compile. The check is
-# structural and costs nothing at CI time -- the same reason `ldd` allow-listing
-# and the docs-path check are mechanical here rather than review items.
+# THE ONE THING IN cppgpt_model THAT IS NOT TRAIN/INFER/LOAD is patch.hpp. It
+# has to be here: GPT2::forward calls apply_patch, so model.cpp compiles against
+# that type no matter which target owns the header, and putting it in
+# cppgpt_interp would make the model depend on the layer that depends on it.
+# The alternative — a duplicate forward loop inside interpret.cpp — was rejected
+# because it creates a second numerical truth in a repo built on parity.
 #
-# WHERE THE LINE RUNS. patch.hpp is CORE, not interpretability. It is the seam
-# mechanism -- the vocabulary for replacing one activation mid-forward -- and the
-# model owns it the same way it owns layer_slice(). What lives in the
-# interpretability layer is the POLICY built on that mechanism: the lens,
-# attribution, KL, ablation, and donor capture.
+# So patch.hpp is a deliberate, bounded exception rather than a definition of
+# "core", and it is kept as small as a thing can be: an enum, a POD, and three
+# functions whose whole body is memcpy and asserts. It knows nothing about GPT2.
+# See docs/DECISIONS.md D10.
 cc_library(
-    name = "cppgpt_core",
+    name = "cppgpt_model",
     srcs = glob(["src/**/*.cpp"], exclude = ["src/interpret.cpp"]),
     hdrs = glob(["include/cppgpt/**/*.hpp"], exclude = ["include/cppgpt/interpret.hpp"]),
     strip_include_prefix = "include",
@@ -36,17 +41,16 @@ cc_library(
     hdrs = ["include/cppgpt/interpret.hpp"],
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
-    deps = [":cppgpt_core"],
+    deps = [":cppgpt_model"],
 )
 
-# Umbrella, so every existing consumer keeps working unchanged. A target that
-# wants the guarantee "this code cannot reach interpretability" should depend on
-# :cppgpt_core directly.
+# Umbrella, so every existing consumer keeps working unchanged. Code that wants
+# the guarantee "this cannot reach interpretability" depends on :cppgpt_model.
 cc_library(
     name = "cppgpt",
     visibility = ["//visibility:public"],
     deps = [
-        ":cppgpt_core",
         ":cppgpt_interp",
+        ":cppgpt_model",
     ],
 )
