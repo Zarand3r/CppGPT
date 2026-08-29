@@ -16,6 +16,7 @@
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/model_config.hpp"
 #include "cppgpt/optimizer.hpp"
+#include "cppgpt/patch.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/storage.hpp"
 
@@ -74,29 +75,6 @@ struct ActTensors {
 };
 inline constexpr int kNumActTensors = 23;
 
-// Per-layer slice of an activation shaped [L, B, T, C]. Consumers outside
-// model.cpp must use this rather than recomputing the stride: tools/inspect.cpp
-// derived it as `layer * T * C` and silently dropped the B factor, which was
-// correct only because that tool happens to build with B == 1. Three separate
-// re-derivations of a stride the model already knows is two too many.
-[[nodiscard]] inline const float* layer_slice(const float* base, int layer, int B, int T,
-                                              int C) noexcept {
-    return base + static_cast<std::size_t>(layer) * static_cast<std::size_t>(B) *
-                      static_cast<std::size_t>(T) * static_cast<std::size_t>(C);
-}
-
-// Per-(layer, head) slice of an attention tensor shaped [L, B, NH, T, T]. Same
-// reason as above, and the same bug had survived TWICE in tools/inspect.cpp on
-// this shape after the residual one was fixed — announcing the class retired
-// while two instances remained.
-[[nodiscard]] inline const float* head_slice(const float* base, int layer, int head, int B, int NH,
-                                             int T) noexcept {
-    const auto per_head = static_cast<std::size_t>(T) * static_cast<std::size_t>(T);
-    const auto per_layer = static_cast<std::size_t>(B) * static_cast<std::size_t>(NH) * per_head;
-    return base + static_cast<std::size_t>(layer) * per_layer +
-           static_cast<std::size_t>(head) * per_head;
-}
-
 class GPT2 {
 public:
     // Allocates the parameter and activation arenas for `cfg` at batch dims B, T.
@@ -125,7 +103,15 @@ public:
     // in [0,V)), filling activations. If `targets` is non-null, also computes the
     // softmax + cross-entropy and records `mean_loss`; pass nullptr for inference
     // (logits only — read them from acts().logits).
-    void forward(const int* tokens, const int* targets, int logits_at = -1);
+    //
+    // `patch` (default none) replaces ONE activation site mid-pass — the seam
+    // interchange interventions need, and the only thing in this class that
+    // exists for the interpretability layer. See cppgpt/patch.hpp for why no
+    // weight modification can express it. With `patch == nullptr` this function
+    // is bit-identical to the pre-seam build; //tests/unit:interpret_golden_test
+    // and //tests/integration:parity_test both pin that.
+    void forward(const int* tokens, const int* targets, int logits_at = -1,
+                 const Patch* patch = nullptr);
 
     // Zero the parameter-gradient and activation-gradient arenas. Call before
     // backward(), since every op's backward accumulates (+=).
@@ -188,7 +174,13 @@ public:
     [[nodiscard]] int batch() const noexcept { return B_; }    // fixed batch size
     [[nodiscard]] int seq_len() const noexcept { return T_; }  // fixed context length
     [[nodiscard]] const ParamTensors& params() const noexcept { return params_; }
-    [[nodiscard]] ParamTensors& params() noexcept { return params_; }  // mutable: optimizer / tests
+    // Mutable access is for the optimizer, tests, and `interpret.hpp`'s
+    // save_and_ablate — the ONLY interpretability code that writes to the model.
+    // Everything else in the interpretability layer reads through the const
+    // params()/acts() overloads, and new work must keep it that way: an
+    // intervention belongs in the forward pass behind an explicit patch
+    // argument, not in a caller reaching in here to rewrite weights.
+    [[nodiscard]] ParamTensors& params() noexcept { return params_; }
     [[nodiscard]] const ParamTensors& grads() const noexcept { return grads_; }
     [[nodiscard]] const ActTensors& acts() const noexcept { return acts_; }
     [[nodiscard]] float mean_loss() const noexcept { return mean_loss_; }

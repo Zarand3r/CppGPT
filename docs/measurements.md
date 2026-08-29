@@ -467,3 +467,36 @@ this component write into the output direction"; ablation answers "what breaks i
 
 **Reproduce:** the numbers are in `data/run.json` (`ablation`, `attribution.heads`), produced by
 `//tools:inspect`; see M-16 for the multi-prompt version.
+
+## M-18 · The intervention seam costs nothing measurable
+
+`IMPLEMENTATION_PLAN.md` Step 1 adds a `const Patch*` argument to `GPT2::forward` and three
+`apply_patch` calls inside the per-layer loop — 12 predictable branches per forward at L=4. Property
+P3 requires the unpatched path to stay bit-identical; this is the cost side of the same question.
+
+Same machine, same commit except for the seam (`git stash` A/B), `--config=release`, toy checkpoint,
+B=1 T=64, best-of-200 after warmup, two runs each:
+
+| build | tokens/s | GFLOP/s |
+|---|---|---|
+| pre-seam | 21,743 · 21,835 | 36.0 · 36.1 |
+| post-seam (`patch == nullptr`) | 26,039 · 22,489 | 43.1 · 37.2 |
+
+**No regression** — the post-seam build is never slower than the pre-seam one. But the honest
+statement stops there: the post-seam runs differ from each other by **15%**, which is larger than the
+pre/post gap at the low end (3%), so this measurement **cannot resolve** the cost of a null check and
+does not claim to. It rules out a regression; it does not establish "exactly zero".
+
+Note also that both figures exceed M-9's 31.4 GFLOP/s for the same command. M-9 was recorded on an
+earlier build; the difference is not attributable to this change and M-9 is left as the historical
+record rather than silently restated.
+
+**Not yet measured:** the cost of a forward that actually *applies* a patch (one `memcpy` of
+`B·T·C` = 8,192 floats against a 0.11 GFLOP forward). No tool exercises that path until Step 2 wires
+it into `//tools:inspect`; measuring it there is an acceptance item of that step rather than a
+number guessed here.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:profile -- --checkpoint $PWD/data/shakespeare.ckpt --seq 64 --reps 200
+```

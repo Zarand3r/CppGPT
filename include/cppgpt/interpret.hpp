@@ -11,6 +11,39 @@
 
 namespace cppgpt {
 
+// ---------------------------------------------------------------------------
+// Indexing the activation arena by layer and head
+// ---------------------------------------------------------------------------
+//
+// These live HERE, not in model.hpp, because nothing in training, inference or
+// checkpoint loading ever needs them: the forward pass walks layers in order and
+// already holds each pointer (`a.residual3 + ll * BTC`). Only an outside
+// observer poking at a FINISHED forward needs random access by layer index --
+// which is the interpretability layer, and its tools.
+
+// Per-layer slice of an activation shaped [L, B, T, C]. Consumers outside
+// model.cpp must use this rather than recomputing the stride: tools/inspect.cpp
+// derived it as `layer * T * C` and silently dropped the B factor, which was
+// correct only because that tool happens to build with B == 1. Three separate
+// re-derivations of a stride the model already knows is two too many.
+[[nodiscard]] inline const float* layer_slice(const float* base, int layer, int B, int T,
+                                              int C) noexcept {
+    return base + static_cast<std::size_t>(layer) * static_cast<std::size_t>(B) *
+                      static_cast<std::size_t>(T) * static_cast<std::size_t>(C);
+}
+
+// Per-(layer, head) slice of an attention tensor shaped [L, B, NH, T, T]. Same
+// reason as above, and the same bug had survived TWICE in tools/inspect.cpp on
+// this shape after the residual one was fixed — announcing the class retired
+// while two instances remained.
+[[nodiscard]] inline const float* head_slice(const float* base, int layer, int head, int B, int NH,
+                                             int T) noexcept {
+    const auto per_head = static_cast<std::size_t>(T) * static_cast<std::size_t>(T);
+    const auto per_layer = static_cast<std::size_t>(B) * static_cast<std::size_t>(NH) * per_head;
+    return base + static_cast<std::size_t>(layer) * per_layer +
+           static_cast<std::size_t>(head) * per_head;
+}
+
 // Logit lens (nostalgebraist, 2020): project the residual stream at `layer`
 // through the model's FINAL layernorm and its tied unembedding, answering "what
 // would the model predict if it stopped after this layer?" Watching the top-1
@@ -114,5 +147,23 @@ void save_and_ablate(GPT2& model, Ablation kind, int layer, int head, float* sav
 // Exact inverse of the matching save_and_ablate call: restores the parameters
 // bit-for-bit. Pass the same kind/layer/head and the buffer it filled.
 void restore_ablation(GPT2& model, Ablation kind, int layer, int head, const float* saved) noexcept;
+
+// ---------------------------------------------------------------------------
+// Interchange interventions (the donor half of the patch seam)
+// ---------------------------------------------------------------------------
+//
+// Read the current value of a patch site out of the activation arena so it can
+// be replayed as a `Patch` on a different prompt. That pairing IS the standard
+// three-pass workflow the field calls activation patching, interchange
+// intervention, causal tracing, or resample ablation — they are one operation:
+//
+//   1. forward(donor)                       2. capture_site(model, site, ...)
+//   3. forward(clean, ..., &patch)          -> measure how far the output moved
+//
+// Read-only with respect to the model; `out` is caller-owned and needs
+// patch_floats(model.config(), site, model.batch(), model.seq_len()) floats.
+//
+// `head` is ignored unless site == PatchSite::HeadOut.
+void capture_site(const GPT2& model, PatchSite site, int layer, int head, float* out) noexcept;
 
 }  // namespace cppgpt

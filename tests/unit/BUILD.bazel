@@ -124,6 +124,32 @@ cc_test(
     ],
 )
 
+# Step 0 of IMPLEMENTATION_PLAN.md: the pre-change baseline for every number the
+# interpretability layer produces. Synthetic model, so it is hermetic -- data/ is
+# gitignored and a test needing that checkpoint could not be green on a clean
+# checkout (engineering-lessons L11).
+# Step 1 of IMPLEMENTATION_PLAN.md: properties P1-P4 of the intervention seam.
+cc_test(
+    name = "patch_test",
+    size = "small",
+    srcs = ["patch_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+cc_test(
+    name = "interpret_golden_test",
+    size = "small",
+    srcs = ["interpret_golden_test.cpp"],
+    data = ["//tests/fixtures:interpret_golden.txt"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
 cc_test(
     name = "checkpoint_test",
     size = "small",

@@ -445,3 +445,63 @@ against the expected element count before any read.
 ### How we will know it was right
 If a future model format needs genuinely nested JSON, this stops scaling and the Python step returns.
 For safetensors — flat by design, because it exists to be read without a framework — it holds.
+
+---
+
+## D10 — Two layers, model and interpretability, enforced by the build
+
+**Decision.** `//:cppgpt` splits into `//:cppgpt_model` (train, inference, load) and
+`//:cppgpt_interp` (logit lens, direct logit attribution, KL, ablation, donor capture, and the
+helpers for indexing the activation arena). The umbrella `//:cppgpt` keeps every existing consumer
+working. The interpretability layer reads the model; the model reaching the other way is now a
+compile error rather than a review comment.
+
+### The probe that motivated it
+
+Adding `#include "cppgpt/interpret.hpp"` to `src/model.cpp` **compiled clean**. One `cc_library` with
+`glob(["src/**/*.cpp"])` exports every header to every source, so nothing but habit kept the
+dependency one-directional — and `bazel test //...` was green either way, so the boundary had never
+been tested. A gate never seen to fail is not a gate.
+
+After the split the same edit fails with `fatal error: 'cppgpt/interpret.hpp' file not found`.
+Verified in both directions, with the suite green (33/33).
+
+### What moved, and the leak this exposed
+
+The definition that settled the line is **core is what train, inference and load need**. Applied to
+the tree, it caught more than the new code:
+
+| | verdict |
+|---|---|
+| `layer_slice` / `head_slice` in `model.hpp` | **moved to `interpret.hpp`.** Zero callers inside the model. They were added because `tools/inspect.cpp` wrote the residual stride by hand as `layer * T * C`, dropping the `B` factor — identical to the correct answer at `B == 1`, so it was silently right in the only configuration that tool ran, and the same class of bug then survived twice more on the attention shape. The forward pass never needs them: it walks layers in order and already holds each pointer. Only an outside observer poking at a *finished* forward needs random access by layer. |
+| `verify.hpp` | still misplaced — test-only code shipped as library API. Tracked in `ROADMAP.md`; not fixed here. |
+| `patch.hpp` | **stays in `cppgpt_model`, as a bounded exception.** See below. |
+
+### Why `patch.hpp` is the one exception
+
+`GPT2::forward` calls `apply_patch`, so `model.cpp` compiles against that type wherever the header
+lives. Putting it in `cppgpt_interp` would make the model depend on the layer that depends on the
+model. The only design that removes the dependency entirely is a duplicate forward loop inside
+`interpret.cpp` — rejected, because it creates a **second numerical truth** in a repo whose
+constitution is built on parity.
+
+A three-layer split (`model` / `seam` / `interp`) was considered and rejected as structure solving a
+naming problem: `patch.hpp` includes only `core.hpp` and `model_config.hpp` and knows nothing about
+`GPT2`, so there is no cycle to break — only a word to be honest about.
+
+So the exception is stated rather than defined away, and kept as small as it can be: an enum, a POD,
+and three functions whose entire body is `memcpy` and asserts.
+
+### Cost
+
+The globs became exclusion lists, so a new `src/*.cpp` joins the model layer by default rather than
+by decision — switch to explicit source lists if the file count grows. Two targets also mean a
+consumer can depend on the wrong one, which is why the umbrella exists.
+
+### What this does NOT claim
+
+The build stops the model from *including* interpretability headers. It does not stop the
+interpretability layer from *writing* to the model: `save_and_ablate` still mutates weights through
+the non-const `params()` overload, documented at the accessor. That write access should leave the
+shipping path once ablation becomes a donor patch, surviving only in `interpret_test` as the
+independent implementation that keeps P2 non-circular (`IMPLEMENTATION_PLAN.md`).

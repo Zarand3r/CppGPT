@@ -235,4 +235,21 @@ void restore_ablation(GPT2& model, Ablation kind, int layer, int head,
     for (std::size_t i = 0; i < s.b_n; ++i) s.b[i] = saved[s.w_n + i];
 }
 
+void capture_site(const GPT2& model, PatchSite site, int layer, int head, float* out) noexcept {
+    const Config& cfg = model.config();
+    const int B = model.batch(), T = model.seq_len(), C = cfg.n_embd, NH = cfg.n_head;
+    ASSERT_MSG(layer >= 0 && layer < cfg.n_layer, "capture_site: layer out of range");
+    ASSERT(out != nullptr);
+
+    const ActTensors& a = model.acts();
+    // Each site is the layer's [B,T,C] slice of the activation the patch would
+    // overwrite. Same tensors, same strides as apply_patch's destinations --
+    // derived through layer_slice rather than re-computed, which is the rule
+    // that exists because this stride was mis-derived three times.
+    const float* base = (site == PatchSite::MlpOut)        ? a.fcproj
+                        : (site == PatchSite::AttnBlockOut) ? a.attproj
+                                                            : a.atty;
+    detail::capture_from(site, head, layer_slice(base, layer, B, T, C), out, B, T, C, NH);
+}
+
 }  // namespace cppgpt
