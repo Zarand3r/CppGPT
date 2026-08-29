@@ -191,61 +191,248 @@ removed the stride re-derivations. What remains:
 
 ---
 
-## M6 — Interpretability: causal methods and the rest of the viewer
+## M6 — Interpretability: from observation to explanation
 
-M5 built the **observation** layer. These sit on top of it and are not started. Kept here rather than
-in a side document because `ROADMAP.md` is the single source of truth for outstanding work.
+M5 built the **observation** layer: you can watch the prediction form. M6 answers the two questions
+the viewer currently invites but cannot settle. Every item below is tagged with which one it serves.
 
-### Not built, and why
+> **Q1 — What does this layer or head *represent*?**
+> **Q2 — *Why* does this component dominate the ablation sweep, and that one not at all?**
 
-- [ ] **Activation patching / causal tracing.** Re-run a forward with one activation replaced by its
-      value from a *different* prompt, and measure how much the output moves. This is the method that
-      turns "attention went here" into "this component caused the prediction" — the caveat the viewer
-      currently prints. **Needs a different API than everything in M5:** every existing feature reads a
-      finished dump, whereas patching must intervene *during* the forward. Expect a
-      `forward_with_patch(layer, tensor, position, replacement)` seam, which is also the natural place
-      a future GPU port would hook.
-- [x] **Ablation.** Done 2026-08-18: `save_and_ablate`/`restore_ablation` zero the weights that
-      carry a component, so no forward hook is needed. `inspect` sweeps all L·(NH+2) components.
-- [x] **Attribution / direct logit attribution.** Done 2026-08-18: exact decomposition (parts sum
-      to the logit, worst error 2.14e-08), zero extra forward passes.
-- [ ] **Neuron-level views.** Max-activating positions over `fch_gelu` (`[L,B,T,4C]`, already in the
-      arena). Cheap; deliberately skipped in M5 to keep the first viewer legible.
-- [x] **Per-layer KL divergence** — `layer_kl` in the dump (`step` = divergence this layer introduced,
-      `to_final` = distance remaining to the output), plus a viewer panel. On the Shakespeare
-      checkpoint layer 1 contributes 0.996 nats of the 1.011 total: the model commits at layer 1 and
-      layer 2 is near-identity (0.015).
-- [ ] **Tuned lens** (Belrose et al. 2023). The plain lens borrows the *final* layernorm for every
-      layer, so early layers are systematically distorted — the viewer says so. Fixing it properly
-      needs a learned affine probe per layer, i.e. a small training loop, which is why it is a
-      milestone and not a patch.
+Method choices are grounded in the literature (§ References at the end of this section). Where this
+repo can do something the field normally cannot, that is called out — it is the reason to build it
+here rather than read a paper about it.
 
-### Frontend improvements
+**Execution detail for the first three items** — the `forward_with_patch` seam, A1 and A2 — is
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): properties P1–P7, six steps with binary
+acceptance gates, and five design tensions (§D) that need your call before Step 2 lands. This page
+still owns the checkboxes.
 
-- [ ] **The M5 gate is still unmet.** Its own criterion is answering the three interpretability
-      questions *from the viewer*; they have so far been answered from JSON on the command line, which
-      is not the same claim. Either the viewer needs a summary panel that states them, or the gate
-      should be honestly reworded.
-- [ ] **Compare two prompts side by side.** The single highest-value UI addition: nearly every
-      interpretability question is differential ("what changes when I say X instead of Y").
-- [ ] **Generation, not just inspection.** The viewer shows one forward pass; watching the lens
-      evolve *as tokens are sampled* is the thing people actually want to see. Note this changes the
-      server's threat model — `n` and temperature become client-controlled numeric knobs (D5 flags
-      this as the test of whether that boundary was drawn in the right place).
-- [ ] **Attention aggregated across heads/layers**, and head *clustering* by the summary stats already
-      computed — BertViz's "model view" and AttentionViz's global perspective.
-- [ ] **Streaming / progress** for long prompts; currently the request is atomic.
-- [ ] **Deep-link a run** (prompt in the URL) so a finding can be shared, and an export button.
-- [ ] **Dark-mode canvas colours** are hardcoded `rgba(59,91,219,·)` in the attention drawing rather
-      than reading the theme token, so they do not adapt like the rest of the page.
+### The dividing line: real-time vs offline
 
-### Known limitations worth stating in the UI
+**Not cost — input.** At toy scale almost everything here is cheap.
 
-- [ ] The lens grid shows **top-1 only**; a position where the top two are near-tied looks as
-      confident as one that is certain. Shading encodes probability, but a margin column would be
-      honest.
-- [ ] `head_stats` are computed over the **causal prefix of one prompt** — they characterize this
-      input, not the head in general. Real head characterization needs many inputs.
+- **Real-time** — needs only *this prompt* (or only the *weights*). Runs inside the request
+  `tools/serve_viewer.py` already serves. Budget from M-9: one forward is **0.61 ms** at T=14 and
+  **3.37 ms** at T=64; today's request is 1 forward + the `L·(NH+2)` = 24-forward ablation sweep,
+  ~80 ms worst case. **Under ~50 forwards of one prompt belongs here.**
+- **Offline** — needs *a corpus*, *many prompts*, or *a training loop*. Emits a versioned artifact,
+  generated once and loaded by the viewer. Never run per request.
+
+Two facts settle the borderline cases:
+
+- **`ablation_stats` is offline because its answer is unshareable, not because it is slow** — 3,200
+  forwards in ~3 s (M-16). Its result is a corpus statistic no single prompt can re-derive. That is
+  the test, not the clock.
+- **At GPT-2 124M the real-time budget collapses.** One forward at T=512 is **4.34 s** (M-14), ~7,000×
+  the toy cost. Every real-time item is real-time *at toy scale only* until threading lands.
+
+### Two things stand between the current state and everything below
+
+- [ ] **The `forward_with_patch` seam.** `save_and_ablate` zeroes **weights**. That is why it needs no
+      hook — and why it can only ever express *zero* ablation. Mean ablation, donor patching
+      (a.k.a. resample ablation), and path patching are all **activation**-level interventions and none of
+      them are expressible today. One seam —
+      `forward_with_patch(layer, tensor, position, replacement)` — unlocks A1, A2, A3, A4 and B1 at
+      once, because they are all the same operation with a different choice of donor and sweep axis.
+      Build it first. It is also where a future GPU port hooks.
+- [ ] **A corpus-artifact channel for the viewer.** Every real-time feature is served by one
+      per-request `inspect` dump; every offline item produces an artifact that is *not* a function of
+      the prompt, and there is no convention for one — no schema, no version field, no loader, no
+      place on disk. The first offline item to land will invent it and the next four will inherit it
+      or fork it. Decide before A5/B3: extend the dump schema with an optional `corpus` section
+      `inspect` merges in, or give the viewer a second fetch. **Needs a `docs/DECISIONS.md` entry.**
+
+---
+
+### Lane A — real-time (one prompt or the weights alone, inside the viewer request)
+
+Done already: **ablation** (zero, weight-level), **direct logit attribution** (exact, sum-rule
+tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **positional-encoding panel**.
+
+- [ ] **A1 · Fix the ablation mode. [Q2] — highest priority on this page.**
+      The published sweep is **zero-ablation**, which the causal-scrubbing line of work considers
+      off-distribution *in an unprincipled manner*: it destroys properties of the activation
+      distribution, so the ablated model can look either worse or better than it should, and the
+      error has no known sign. The field's recommendation is a **corrupted-prompt donor** — patch the
+      component's output with its value on a prompt that differs in one controlled way — because that
+      isolates one feature while holding the rest of the machinery fixed. Zero and mean-over-donors
+      stay as comparisons; showing that the baseline changes the answer *is* the point.
+      This is a **correction to M-16 and M-17, not a new feature**: those numbers currently measure a
+      model driven off its own distribution.
+      *Cost:* free once the seam exists — same forward count, one scratch buffer, **no pool and no
+      RNG**, since the donor is a named prompt rather than a sample. *Gate:* report every baseline
+      side by side; a component whose rank changes between them is a finding, not noise.
+- [ ] **A2 · Conditional co-ablation (CoAx). [Q2] — the direct answer to "why does this head look
+      unimportant".**
+      Self-repair: remove a head and a dormant backup takes over, so the primary measures small
+      *and* the backup measures small on the intact model. Both look unimportant; neither is. CoAx
+      scores each remaining unit by **how much its ablation effect grows once a primary set is
+      removed** — label-free and output-grounded. Reported to raise backup-head recovery from 0.33 to
+      **0.91 ROC-AUC** on GPT-2-small's IOI circuit, beating self-repair-aware gradient scores (0.82).
+      **This repo is an unusually good substrate:** the field uses approximations because exhaustive
+      conditional sweeps are infeasible; here there are only `L·(NH+2)` = **24 components, so all 576
+      ordered pairs cost ~2 s at T=64**. Exhaustive, not sampled.
+      This is the method that explains **M-17's 22.9×** — the L0 block being far more damaging than
+      the sum of its heads *is* super-additivity, which is what CoAx measures directly rather than
+      noting as an anomaly.
+- [ ] **A3 · Path patching / direct-vs-indirect decomposition. [Q2]**
+      `docs/INTERPRETING.md` §3 states that attribution (direct effect) and ablation (total effect)
+      can disagree completely, and leaves the reader there. Path patching closes it: patch a component's
+      effect *along a specific downstream path* and you learn **through which later component** a head
+      acts. "Large ablation, small attribution" stops being a puzzle and becomes a named route.
+      *Cost:* one forward per path; cap the path set the way A4 caps its grid.
+- [ ] **A4 · Causal-tracing grid. [Q2]** — *the mechanism is A1's; only the UI is separate.*
+      The field's own naming settles this: activation patching, interchange intervention and
+      **resample ablation are the same operation**. Once A1 lands, tracing is that operation swept
+      over a position × layer grid rather than over components. *Cost:* 1 forward per site, so the
+      grid is `T·L` forwards — 56 (~34 ms) at T=14, 256 (~0.9 s) at T=64. **Cap the grid or it leaves
+      the lane.**
+- [ ] **A5 · Weight-based QK/OV circuit panels. [Q1] — the highest insight-per-line item in M6, and
+      the one this repo can do that GPT-2-scale work cannot.**
+      A head is a **QK circuit** (what it reads) and an **OV circuit** (what it writes). Both have
+      closed forms over the vocabulary:
+      - Full **OV** circuit `W_E · W_V · W_O · W_U` — "if the head attends to source char *i*, how
+        much does it push output char *j*?"
+      - Full **QK** circuit `W_E · W_Q · W_Kᵀ · W_Eᵀ` — "at dest char *i*, which source char does
+        this head look for?"
+
+      At GPT-2 these are 50257×50257 and nobody renders them. **Here `vocab_size` is 65, so each is a
+      65×65 matrix that fits on screen** — 16 heads, computed in microseconds, **prompt-independent**,
+      a property of the head rather than of one input. This is the single most direct answer to "what
+      does this head represent" available in this codebase.
+      Plus the two summary scores that make heads rankable: **copying score** = fraction of positive
+      real eigenvalues of the OV matrix (Elhage et al.), and **prefix-matching score** (Olsson et al.,
+      needs the offline probe B4). A head high on both **is** an induction head, by definition.
+      *Cost:* pure weight algebra, zero forwards, no corpus. *Gate:* the OV matrix of a head the
+      current viewer already calls a previous-token head should show what a previous-token head
+      should show — a non-circular check, since one measurement is from weights and one from attention.
+- [ ] **A6 · Neuron views for the current prompt. [Q1]** Top `fch_gelu` activations per position
+      (`[L,B,T,4C]`, already in the arena). The corpus-wide twin is B3.
+- [ ] **A7 · The component card. [Q1][Q2] — the consolidation the frontend needs.**
+      Click a head or MLP, get one panel: OV vocabulary matrix and copying score (A5), QK preference
+      (A5), corpus attention stats with **median not single-prompt** (B2), ablation effect in all
+      every baseline with median and activity rate (A1 + M-16), direct effect (done), the path it acts
+      through (A3), CoAx backup partners (A2), and top-activating contexts (B3). Today these numbers
+      exist in different tools, different files, and two different documents. **This is the item that
+      turns the viewer into an answer to Q1 and Q2 rather than a pile of panels.**
+      *Design precedent:* Anthropic's **HeadVis** (2026) uses exactly this workflow — pick a head
+      that is extreme on some metric, browse its patterns across dataset examples, then read the QK
+      and OV attributions. Adopt the shape.
+- [ ] **A8 · The M5 gate is still unmet.** Its criterion is answering the three interpretability
+      questions *from the viewer*; they were answered from JSON on the command line, which is not the
+      same claim. A7's summary panel satisfies it, or the gate should be honestly reworded.
+- [ ] **A9 · Compare two prompts side by side.** Nearly every interpretability question is
+      differential. Two requests, no new numerics — and the natural front end for A4.
+- [ ] **A10 · Generation, not just inspection.** Watching the lens evolve *as tokens are sampled* is
+      what people actually want. `n` forwards, so in-lane only for small `n`. Changes the server's
+      threat model — `n` and temperature become client-controlled numeric knobs (D5 flags this as the
+      test of whether that boundary was drawn in the right place).
+- [ ] **A11 · Attention aggregated across heads/layers**, and head *clustering* by the stats already
+      computed — BertViz's model view, AttentionViz's global view. Client-side, zero extra forwards.
+- [ ] **A12 · Streaming / progress** — the request is atomic today, which stops being acceptable once
+      A2 or A4 is in it.
+- [ ] **A13 · Deep-link a run** (prompt in the URL) plus an export button.
+- [ ] **A14 · Lens margin column.** The grid shows **top-1 only**; a near-tie looks as confident as a
+      certainty.
+- [ ] **A15 · Dark-mode canvas colours** are hardcoded `rgba(59,91,219,·)` in the attention drawing
+      instead of reading the theme token.
+
+---
+
+### Lane B — offline (corpus passes and training loops, into a versioned artifact)
+
+Done already: **`//tools:ablation_stats`** — 128 windows × 32 tokens, which established the
+median-and-activity-rate summary the rest of this lane should copy (M-16).
+
+- [ ] **B1 · Re-run the corpus ablation study under all three ablation modes. [Q2]** The offline half
+      of A1. M-16's headline — the single-prompt view overstating one head by **8×** its median — was
+      measured under zero ablation; whether it survives the donor baseline is unknown and is the first
+      thing to find out. *(Small: ~3 s per mode.)*
+- [ ] **B2 · Corpus-wide attention statistics. [Q1]** `head_stats` (entropy, mean distance, mass on
+      position 0) are computed over the **causal prefix of one prompt** — they characterise that
+      input, not the head. M-16 already showed what single-prompt numbers do to ablation; the same
+      correction is owed here **before any head is named in the UI**. *(Small.)*
+- [ ] **B3 · Max-activating examples. [Q1]** For each of the 2,048 MLP neurons, its top-activating
+      contexts over the corpus. Needs **no new model** — `fch_gelu` is already in the arena. One
+      corpus pass; artifact is per-neuron top-k contexts. *(Small.)*
+- [ ] **B4 · Induction-head probe. [Q1]** Repeated random sequences (Olsson et al.), giving the
+      **prefix-matching score** that completes A5's pair. A yes/no answer about whether a canonical
+      circuit exists in 4 layers — and if the answer is *no*, that is a result about a character-level
+      model, recorded, not a failure. *(Small.)*
+- [ ] **B5 · Attribution patching, and the measurement of its error. [Q2] — the one item here that is
+      a contribution rather than an application.**
+      `effect ≈ −∇a·a` scores every site from **1 forward + 1 backward** (the estimator is real-time;
+      this study is not). Edge attribution patching does the same for edges: two forwards and one
+      backward for the whole graph, versus one forward per edge. **The field uses this because
+      exhaustive ablation is infeasible — here it is affordable, so the approximation's error can be
+      measured rather than assumed.** Registered predictions of where it fails: M-17's non-additivity
+      (L0 block at 22.9× the sum of its heads), and gradient saturation, which is why EAP-IG
+      integrates along a path instead of taking a single gradient. *(Medium.)*
+- [ ] **B6 · Tuned lens. [Q1]** The plain lens borrows the *final* layernorm for every layer, so early
+      layers are systematically distorted — the viewer says so, `interpret.hpp` says so. The fix is
+      concrete: a per-layer **affine probe `ĥ = h + Wh + b`, `W` initialised to zero so it starts as
+      identity, trained to minimise KL to the final-layer distribution**. That is a small training
+      loop this repo can already run. Artifact is the probe weights; the lens itself stays real-time
+      once trained. *(Medium.)*
+- [ ] **B7 · Automated interpretation of neurons and heads. [Q1]** Generate a natural-language
+      explanation from B3's top contexts, then **score it by simulation** — predict activations from
+      the explanation alone and correlate with the real ones. The score is the point; unscored
+      explanations are the known failure mode of this technique, and even scored, it explains
+      *correlation with text*, not downstream causal effect.
+      ⚠️ **Constitution question:** this needs an external LLM. Keep it strictly offline and
+      out-of-band so the artifact is committed text and no binary gains a runtime dependency —
+      `docs/constitution.md` is human-frozen, so **this is your call, not an agent's.** *(Medium.)*
+- [ ] **B8 · Transcoders → attribution graphs. [Q1][Q2] — the field's current endpoint, and
+      deliberately last.**
+      A **transcoder** approximates an MLP's whole input→output map with a wider sparsely-activating
+      MLP; a **cross-layer transcoder** gives each feature a separate decoder per downstream layer.
+      That is what makes **attribution graphs** possible: nodes are features, token embeddings, output
+      logits and **error nodes**; edges are linear attributions through a *local replacement model*
+      that freezes attention patterns and layernorm denominators so feature interactions become
+      strictly linear. Validated by intervention (~0.72 Spearman between graph influence and measured
+      perturbation effect).
+      **Read the stated limitations before committing:** frozen attention means the method does not
+      explain QK circuits at all — precisely the "interesting part" for induction heads, and precisely
+      what A5 *does* cover here; error nodes can hide the critical step; pruned graphs still run to
+      hundreds of nodes. Add the scale caveat: SAE-family methods exist to resolve **superposition**,
+      and at `n_embd=128` in a model that beats a 5-gram by 8.9% the payoff is the least certain on
+      this page. For calibration, Anthropic's circuit tracing gave satisfying insight on roughly a
+      quarter of prompts on a production model. *(Large — hours.)*
+
+---
+
+### Deliberately not doing, and why
+
+- **Plain SAEs on the residual stream.** Transcoders (B8) dominate them for circuit work — they model
+  the MLP's transformation rather than reconstructing one point — and both inherit the **dark matter**
+  problem: a consistent fraction of activation variance no SAE explains, concentrated on the same
+  tokens across sizes and sparsities. If any dictionary method is built here, it is B8.
+- **Chasing benchmark faithfulness scores.** Circuit faithfulness metrics have been shown to be
+  **not robust** — the measured faithfulness of the *same* circuit moves with methodological choices.
+  Gates in this milestone are sum rules, bit-identity, and cross-method disagreement (A1, A5), not
+  a leaderboard number.
+- **Semantic-feature language.** `docs/INTERPRETING.md` §6 governs: character-level, 4 layers,
+  `n_embd` 128. Concept-level claims are unwarranted at this scale regardless of tooling.
+
+### References
+
+Ablation and causality — [Causal scrubbing](https://www.alignmentforum.org/posts/JvZhhzycHu2Yd57RN/causal-scrubbing-a-method-for-rigorously-testing) (Redwood, 2022; zero/mean ablation is off-distribution) ·
+[Path patching](https://arxiv.org/pdf/2304.05969) (Goldowsky-Dill et al., 2023) ·
+[The Hydra Effect](https://arxiv.org/pdf/2307.15771) (McGrath et al., 2023) ·
+[Conditional Co-Ablation](https://arxiv.org/abs/2607.01940) (2026; self-repair-aware importance) ·
+[Circuit faithfulness metrics are not robust](https://arxiv.org/pdf/2407.08734) (2024).
+Cheap approximations — [EAP-IG / Have Faith in Faithfulness](https://arxiv.org/abs/2403.17806) (2024).
+Heads — [A Mathematical Framework for Transformer Circuits](https://transformer-circuits.pub/2021/framework/index.html) (Elhage et al., 2021; QK/OV, copying score) ·
+[In-context Learning and Induction Heads](https://arxiv.org/pdf/2209.11895) (Olsson et al., 2022; prefix-matching score) ·
+[A Primer on the Inner Workings of Transformer-based LMs](https://arxiv.org/pdf/2405.00208) (2024) ·
+[HeadVis](https://transformer-circuits.pub/2026/headvis/index.html) (2026; the head-investigation UI).
+Lenses — [Tuned Lens](https://arxiv.org/abs/2303.08112) (Belrose et al., 2023).
+Features and circuits — [Transcoders find interpretable LLM feature circuits](https://arxiv.org/abs/2406.11944) (2024) ·
+[Circuit Tracing: Revealing Computational Graphs in Language Models](https://transformer-circuits.pub/2025/attribution-graphs/methods.html) (Anthropic, 2025; CLTs, attribution graphs, error nodes) ·
+[Decomposing the Dark Matter of Sparse Autoencoders](https://arxiv.org/html/2410.14670v1) (2024) ·
+[Automatically Interpreting Millions of Features](https://arxiv.org/pdf/2410.13928) (2024; explanation scoring) ·
+[Open Problems in Mechanistic Interpretability](https://arxiv.org/html/2501.16496) (2025).
 
 ---
 
@@ -309,7 +496,7 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **Byte-level BPE tokenizer.** Needed only to share GPT-2's 50257 vocabulary. Char-level is the
       MVP tokenizer; it already round-trips exactly and needs no assets. (Full spec, traps and
       fixtures: `docs/M3_INFERENCE_PLAN.md` M3-S3.)
-- [ ] **Load pretrained GPT-2 124M weights** (`convert_hf_gpt2.py` + `tools/import_hf`) and the
+- [ ] **Load pretrained GPT-2 124M weights** (`//tools:convert_hf` + `tools/import_hf`) and the
       token-exact-vs-HuggingFace gate. The mapping is fully researched and verified — Conv1D
       transposes, Q‖K‖V order, the layer-bisect fixture. (`M3-S2`, `M3-S5`.)
 - [ ] **KV cache** — an inference speedup, irrelevant at MVP context lengths. (`M3-S4`.)
@@ -385,6 +572,35 @@ was not. Everything below is on `main`, tested, and measured.
       bit-identical. A position rather than a "last" flag, because the token buffer is right-padded.
 - [ ] **S2: Unicode pre-tokenizer.** ASCII is exact today; `\p{L}`/`\p{N}` need generated property
       tables. Non-ASCII currently fails loudly, which is correct but limiting.
+
+### Resuming in a fresh session (2026-08-26)
+
+Everything below is on disk or on GitHub; nothing lives only in a conversation.
+`CLAUDE.md` auto-loads and routes to the skills, so a new session in this
+directory starts oriented.
+
+**Read in this order.** `docs/INTERPRETING.md` (how to read the interpretability tools, and what they do not support — the reasoning behind every panel) → `ROADMAP.md` (this file — the single source of truth for
+what is left) → `docs/EXPERIMENTS.md` (why the training runs were shaped as they
+were, with predictions registered before results) → `docs/DECISIONS.md` D1–D9
+(the architectural calls and the two that were reversed) →
+`docs/engineering-lessons.md` L1–L19 (the failure modes this repo has actually
+hit) → `docs/measurements.md` M-1…M-16 (every number, each with a reproduce
+command).
+
+**Open PRs, none merged.** #35 threading design (needs three decisions, no code),
+#36 viewer provenance, #37 architecture map (stacked on #36), #38 ablation
+variance. `git log --oneline origin/main..<branch>` shows each.
+
+**The mech-interp series is superseded by M6 above.** Its four remaining items
+(max-activating examples, attribution patching, the induction-head probe,
+transcoders/SAEs) are now B3, B5, B4 and B8 in a consolidated list that adds the
+methods a 2026-08-26 literature sweep turned up — resample ablation, conditional
+co-ablation, path patching, and weight-based QK/OV circuit panels — each tagged
+with whether it answers *what does this component represent* or *why does it
+dominate the ablation sweep*. Nothing is tracked in two places; M6 is where these
+live.
+
+**Working agreement:** modular PRs for review, not direct pushes to `main`.
 
 ### Genuinely open — the honest list (2026-08-20, tag `v0.3.0-gpt2`)
 

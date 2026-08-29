@@ -67,6 +67,22 @@ void direct_logit_attribution(const GPT2& model, int pos, int token, float* out_
                               float* out_mlps, float* out_embed, float* out_bias,
                               float* scratch) noexcept;
 
+// Softmax and KL over one position's logits.
+//
+// Shared rather than re-derived per tool: two tools that report KL in nats must
+// use the SAME softmax and the same denormal guard, or their numbers are not
+// comparable -- and comparing them is the entire point of measuring a component's
+// importance on one prompt against its importance across many. This repo already
+// has a lesson about duplicated tool code diverging.
+//
+// `out` receives V probabilities; caller-owned.
+void softmax_into(float* out, const float* logits, int V) noexcept;
+
+// KL(p || q) in nats. q is clamped away from zero: after a softmax no entry is
+// truly zero, but a denormal would produce inf and silently poison a whole
+// series of comparisons.
+[[nodiscard]] double kl_divergence(const float* p, const float* q, int V) noexcept;
+
 // ---------------------------------------------------------------------------
 // Ablation
 // ---------------------------------------------------------------------------

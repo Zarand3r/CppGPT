@@ -20,6 +20,7 @@ TRAIN="$TEST_SRCDIR/_main/tools/train"
 GENERATE="$TEST_SRCDIR/_main/tools/generate"
 INSPECT="$TEST_SRCDIR/_main/tools/inspect"
 EVAL="$TEST_SRCDIR/_main/tools/eval"
+ABLSTATS="$TEST_SRCDIR/_main/tools/ablation_stats"
 WORK="$TEST_TMPDIR/work"
 mkdir -p "$WORK"
 
@@ -164,6 +165,36 @@ if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
   fail "inspect ignored its size ceiling"
 fi
 grep -q "max-mb" "$WORK/huge.log" || fail "size-ceiling error does not say how to fix it"
+
+# ---------- ablation_stats: is a component important, or was it important once? ----
+"$ABLSTATS" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+            --prompts 6 --seq 8 --seed 3 --top 99 > "$WORK/abl.log" 2>&1 \
+  || fail "ablation_stats failed: $(tail -2 "$WORK/abl.log")"
+
+# Determinism is what makes two runs comparable, so it is checked, not assumed.
+"$ABLSTATS" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+            --prompts 6 --seq 8 --seed 3 --top 99 > "$WORK/abl2.log" 2>&1
+diff -q "$WORK/abl.log" "$WORK/abl2.log" > /dev/null || fail "ablation_stats is not deterministic"
+
+python3 - "$WORK/abl.log" <<'PYEOF'
+import re, sys
+txt = open(sys.argv[1]).read()
+rows = re.findall(r"^\s+(L\d+ (?:H\d+|MLP|attn))\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)%",
+                  txt, re.M)
+# 2 layers x (2 heads + MLP + attn block)
+assert len(rows) == 2 * (2 + 2), f"expected 8 components, parsed {len(rows)}"
+for name, mean, med, p90, mx, act in rows:
+    mean, med, p90, mx, act = float(mean), float(med), float(p90), float(mx), int(act)
+    # Quantiles must be ordered. A quantile index off by one, or sorting the wrong
+    # array, breaks this immediately -- and would otherwise look like plausible
+    # numbers in a plausible table.
+    assert med <= p90 <= mx, f"{name}: quantiles out of order ({med}, {p90}, {mx})"
+    assert mean >= 0 and med >= 0, f"{name}: KL cannot be negative"
+    assert mean <= mx, f"{name}: mean {mean} exceeds max {mx}"
+    assert 0 <= act <= 100, f"{name}: active fraction {act} out of range"
+assert "active on >=90%" in txt, "summary line missing"
+print("  ablation_stats contract ok")
+PYEOF
 
 # ---------- eval: the number is only meaningful next to a baseline ----------
 "$EVAL" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \

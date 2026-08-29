@@ -1,5 +1,8 @@
 #include "cppgpt/interpret.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include "cppgpt/core.hpp"
 #include "cppgpt/ops.hpp"
 
@@ -126,6 +129,30 @@ void direct_logit_attribution(const GPT2& model, int pos, int token, float* out_
     for (int c = 0; c < C; ++c)
         lnfb_term += static_cast<double>(p.lnfb[c]) * static_cast<double>(wte_row[c]);
     *out_bias = attrib(bsum) + static_cast<float>(lnfb_term);
+}
+
+void softmax_into(float* out, const float* logits, int V) noexcept {
+    ASSERT(out != nullptr && logits != nullptr && V > 0);
+    float mx = logits[0];
+    for (int i = 1; i < V; ++i) mx = std::fmax(mx, logits[i]);
+    double sum = 0.0;
+    for (int i = 0; i < V; ++i) {
+        const double e = std::exp(static_cast<double>(logits[i] - mx));
+        out[i] = static_cast<float>(e);
+        sum += e;
+    }
+    const double inv = 1.0 / sum;
+    for (int i = 0; i < V; ++i) out[i] = static_cast<float>(static_cast<double>(out[i]) * inv);
+}
+
+double kl_divergence(const float* p, const float* q, int V) noexcept {
+    ASSERT(p != nullptr && q != nullptr && V > 0);
+    double d = 0.0;
+    for (int i = 0; i < V; ++i) {
+        const double pi = p[i];
+        if (pi > 1e-12) d += pi * std::log(pi / std::max(static_cast<double>(q[i]), 1e-30));
+    }
+    return d;
 }
 
 std::size_t ablation_scratch(const Config& cfg) noexcept {

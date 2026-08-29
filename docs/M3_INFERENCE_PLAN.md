@@ -1,3 +1,21 @@
+> **SUPERSEDED 2026-08-19 — read `docs/GPT2_WEIGHTS_PLAN.md` and `docs/DECISIONS.md` D9 instead.**
+>
+> This plan was written before GPT-2 weight loading was built, and the thing that
+> got built differs from it in ways that matter. Kept because the *reasoning* is
+> still useful and because the repo keeps superseded plans visible rather than
+> editing them away — but nothing below should be treated as describing the code.
+>
+> | this plan says | what exists |
+> |---|---|
+> | `tools/import_hf.cpp` | **`tools/convert_hf.cpp`** |
+> | `scripts/convert_hf_gpt2.py` (Python conversion) | **no Python step** — safetensors is read directly in C++ (D9 reverses the original recommendation) |
+> | `gpt2_tokenizer.bin` intermediate | **none** — `vocab.json` + `merges.txt` are read directly |
+> | `gpt2_hf_logits.bin` / `gpt2_hf_hidden.bin` fixtures | **`scripts/check_gpt2_parity.py`**, which compares against a live fp64 reference instead of a committed fixture |
+> | `encoder.json` | HF ships **`vocab.json`**; `encoder.json` is OpenAI's original name |
+>
+> The parity gate also changed shape: not "agree with HF fp32 to within X" but
+> "at least as close to fp64 truth as HF fp32 is" — see `docs/measurements.md` M-14.
+
 # M3 — Feature-Complete GPT-2 + Pretrained Inference
 
 > ## ⚠️ SHELVED — out of MVP scope
