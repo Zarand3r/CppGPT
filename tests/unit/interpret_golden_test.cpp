@@ -27,23 +27,27 @@
 // results differ between versions. No build flag fixes that, and pinning a
 // golden per host defeats the purpose of a shared gate.
 //
-// WHAT THIS TEST STILL CATCHES. Measured, not assumed -- each of these was run
-// as a mutation against the committed fixture:
+// WHAT THIS TEST CATCHES, AND WHAT IT DOES NOT. Every line below was run as a
+// mutation against the committed fixture. Nothing here is inferred.
 //
-//   perturb ONE weight by one ulp .................. still FAILS
-//   skip one restore_ablation ...................... still FAILS
-//   ablate the MLP where the attn block was meant .. still FAILS
+//   drop a head from the ablation sweep ............ FAILS
+//   skip one restore_ablation ...................... FAILS
+//   ablate the MLP where the attn block was meant .. FAILS
+//   logit lens reads the wrong layer ............... FAILS
+//   perturb ONE weight by one ulp .................. PASSES  <- not caught
 //
-// The one-ulp weight case still fails because a perturbed INPUT amplifies
-// through three layers to well past 1e-5 relative, whereas the libm difference
-// is a last-bit wobble in a single late computation. So the tolerance
-// discriminates between the two rather than blunting the gate -- but that is an
-// empirical result about this model at this size, not a guarantee, and it
-// should be re-measured if the fixture model changes.
-//
-// Bit-exactness is still asserted where it is portable:
+// So this is a gate on SEMANTICS, not on arithmetic drift. The one-ulp case is
+// not caught because that perturbation moves the logits by less than the
+// relative tolerance and shows up only in the near-zero ablation KLs, where the
+// absolute floor correctly treats it as the noise it is. Losing it costs
+// nothing that is not covered better elsewhere:
 // //tests/unit:patch_test compares with `==` between values computed in the
 // SAME process on the SAME host, which the libm difference cannot reach.
+//
+// Two earlier drafts of this comment stated the one-ulp result wrongly in
+// opposite directions, each written before the mutation was run. Re-measure
+// these five lines if the tolerances or the fixture model change; do not
+// reason about them.
 //
 // Discrete fields -- token ids, top-1 indices -- are still compared EXACTLY.
 // A ranking change is a semantic change, never rounding.
@@ -236,10 +240,21 @@ std::vector<std::string> compute_golden() {
 // rounding. A float value is compared with a relative tolerance, for the libm
 // reason in the header comment.
 //
-// kRelTol is ~40x the 2.4e-7 drift CI actually exhibited, and ~4 orders of
-// magnitude below the smallest semantic change this test exists to catch (a
-// changed ablation baseline moves KL by whole nats).
+// Tolerance is the numpy-style `atol + rtol*|want|`, and BOTH terms are needed.
+//
+// kRelTol alone was not enough, which CI also proved: `abl.L0.H1` came back
+// 0x1.6cf8ccp-22 against a recorded 0x1.74f1a2p-22 -- a 2% RELATIVE difference
+// between two numbers that are both ~3.5e-7 nats, i.e. both numerically zero.
+// Ablating that head does nothing, so the KL is noise, and relative tolerance is
+// the wrong instrument on noise.
+//
+// kAbsTol is anchored to the repo's own scale, not chosen to make the test pass:
+// docs/measurements.md M-16 counts a component as ACTIVE at KL >= 0.01, so 1e-6
+// is four orders of magnitude below the smallest effect this codebase treats as
+// real. Logits are O(1), so the relative term governs them and the absolute term
+// is inert there.
 constexpr double kRelTol = 1e-5;
+constexpr double kAbsTol = 1e-6;
 
 bool line_matches(const std::string& got, const std::string& want) {
     const std::size_t gs = got.rfind(' '), ws = want.rfind(' ');
@@ -252,8 +267,7 @@ bool line_matches(const std::string& got, const std::string& want) {
     if (wv.find('x') == std::string::npos) return false;
 
     const double g = std::strtod(gv.c_str(), nullptr), w = std::strtod(wv.c_str(), nullptr);
-    const double denom = std::fabs(w) > 1e-30 ? std::fabs(w) : 1.0;
-    return std::fabs(g - w) / denom <= kRelTol;
+    return std::fabs(g - w) <= kAbsTol + kRelTol * std::fabs(w);
 }
 
 std::vector<std::string> read_fixture(const char* path) {
