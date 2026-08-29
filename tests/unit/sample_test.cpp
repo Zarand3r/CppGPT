@@ -51,14 +51,68 @@ int main() {
 
     // ---- top-k restriction: only the k highest-logit tokens ever appear ----
     {
-        const float logits[6] = {0.0f, 3.0f, 1.0f, 2.5f, -1.0f, 0.5f};  // top-2 = {1, 3}
+        // The excluded tokens sit just BELOW the cut (2.80 against a 2.90 threshold),
+        // not far below it. The earlier version used a 1.5 gap, which meant a
+        // threshold wrong by up to 1.5 admitted no new token and was invisible --
+        // a mutation lowering the threshold by 1.0 survived it. Margin in test
+        // data hides exactly the errors the test exists to find.
+        const float logits[6] = {0.0f, 3.00f, 2.90f, 2.80f, 2.70f, 0.5f};  // top-2 = {1, 2}
         Generator g(99ULL);
         bool restricted = true;
-        for (int i = 0; i < 200; ++i) {
+        for (int i = 0; i < 400; ++i) {
             const int t = sample(logits, 6, 1.0f, 2, g);
-            restricted = restricted && (t == 1 || t == 3);
+            restricted = restricted && (t == 1 || t == 2);
         }
         CHECK(restricted);
+
+        // ...and both eligible tokens must actually appear, or "restricted" would
+        // also pass for a threshold so high that only one token survives.
+        bool saw1 = false, saw2 = false;
+        for (int i = 0; i < 400; ++i) {
+            const int t = sample(logits, 6, 1.0f, 2, g);
+            saw1 = saw1 || (t == 1);
+            saw2 = saw2 || (t == 2);
+        }
+        CHECK(saw1 && saw2);
+
+        // The cut must land at exactly k tokens for every k, with near-tied logits
+        // either side. This is what pins the k-th-LARGEST index; picking from the
+        // wrong end of nth_element leaves the count wrong.
+        bool k_exact = true;
+        for (int k = 1; k <= 5; ++k) {
+            bool seen[6] = {false, false, false, false, false, false};
+            for (int i = 0; i < 600; ++i) seen[sample(logits, 6, 1.0f, k, g)] = true;
+            int n = 0;
+            for (const bool b : seen) n += b ? 1 : 0;
+            k_exact = k_exact && (n == k);
+        }
+        CHECK(k_exact);
+
+        // The same property over MANY random vectors, not one. Whether a given
+        // off-by-one partition index happens to leave the correct value at the
+        // position we read is a property of libstdc++'s partitioning for that
+        // exact input -- so one vector can pass by luck. Twenty cannot.
+        {
+            Generator rg(20260821ULL);
+            bool wide_exact = true;
+            for (int trial = 0; trial < 20 && wide_exact; ++trial) {
+                float wide[24];
+                // NEAR-TIED on purpose. With a wide spread the k-th eligible
+                // token can have negligible probability and never be drawn, so
+                // `n == k` fails on correct code -- which it did. The property
+                // under test is which tokens are ELIGIBLE, not how often each is
+                // chosen, so the logits must keep them all reachable.
+                for (int i2 = 0; i2 < 24; ++i2) wide[i2] = 0.2f * rg.normal();
+                for (int k = 1; k <= 6 && wide_exact; ++k) {
+                    bool seen[24] = {};
+                    for (int i2 = 0; i2 < 2000; ++i2) seen[sample(wide, 24, 1.0f, k, rg)] = true;
+                    int n = 0;
+                    for (const bool b : seen) n += b ? 1 : 0;
+                    wide_exact = wide_exact && (n == k);
+                }
+            }
+            CHECK(wide_exact);
+        }
     }
 
     // ---- frequency: over many draws, P(token 1) ≈ softmax over {0,1} ----

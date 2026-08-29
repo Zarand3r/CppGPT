@@ -56,6 +56,13 @@ const out = {};
 for (const [k,v] of Object.entries(els))
   out[k] = {html: (v.innerHTML||'').length, text: (v.textContent||'').length,
             kids: v.kids.length, drawn: !!v.drawn};
+// The residual-stream bar widths, in flow order. The panel CLAIMS width encodes
+// the norm; without pulling them out, nothing checks that claim.
+const bars = [];
+(function walk(n){ if(!n||!n.kids) return;
+  for (const c of n.kids){ if (c.className === 'streambar' && c.style && c.style.width)
+    bars.push(parseInt(c.style.width)); walk(c); } })(els['arch']);
+out.__streambars = bars;
 console.log(JSON.stringify(out));
 """
 
@@ -110,6 +117,7 @@ def main() -> int:
         # A canvas produces no innerHTML and no children — it is drawn into. Counting
         # only markup listed every chart as inert, which is exactly the kind of
         # misleading green this file exists to prevent.
+        bars = els.pop("__streambars", [])
         empty = sorted(k for k, v in els.items()
                        if not k.startswith("_t") and v["html"] == 0
                        and v["text"] == 0 and v["kids"] == 0 and not v["drawn"])
@@ -117,6 +125,41 @@ def main() -> int:
         print(f"  [{'PASS' if live else 'FAIL'}] panels rendered: {live} elements produced "
               f"content; inert: {empty if empty else 'none'}")
         fails += not live
+
+        # The stream encoding, checked against the dump rather than trusted. Ties
+        # are allowed: widths are integer pixels, so two close norms can round to
+        # the same width. What must never happen is the ORDER disagreeing.
+        dump = json.load(open(a.dump))
+        mid = dump.get("residual_mid") or []
+        end = dump.get("residual_norms") or []
+        if bars and mid and end:
+            p = dump["n_positions"] - 1
+            want = []
+            for l in range(len(end)):
+                want.append(mid[l][p])
+                want.append(end[l][p])
+            ok_len = len(bars) == len(want)
+            inversions = [i for i in range(1, min(len(bars), len(want)))
+                          if (bars[i] - bars[i - 1]) * (want[i] - want[i - 1]) < 0]
+            # Extremes must agree. Without this a CONSTANT width passes: every
+            # delta is zero, so the product test above is never negative and the
+            # check cannot tell "encodes the norm" from "encodes nothing".
+            # Verified by mutation -- a fixed 12px bar passed the first version.
+            extremes = (ok_len
+                        and bars.index(max(bars)) == want.index(max(want))
+                        and bars.index(min(bars)) == want.index(min(want)))
+            good = ok_len and not inversions and extremes
+            why = []
+            if not ok_len: why.append("length mismatch")
+            if inversions: why.append(f"inversions at {inversions}")
+            if ok_len and not extremes: why.append("widest/narrowest bar is not the "
+                                                   "largest/smallest norm")
+            print(f"  [{'PASS' if good else 'FAIL'}] residual bar width tracks the norm: "
+                  f"{len(bars)} bars vs {len(want)} writes"
+                  + ("" if good else " — " + ", ".join(why)))
+            fails += not good
+        else:
+            print("  [WARN] no residual bars found — the stream encoding is unchecked")
     print(f"\n  {'VIEWER OK' if not fails else f'{fails} FAILURES'}")
     return 1 if fails else 0
 

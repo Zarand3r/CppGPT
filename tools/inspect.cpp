@@ -45,8 +45,8 @@
 namespace {
 using namespace cppgpt;
 
-// 4 adds "run_url"; 3 added "pos_embed"; 2 "attribution"/"ablation"; 1 had none.
-constexpr int kSchemaVersion = 4;
+// 5 adds "residual_mid"; 4 "run_url"; 3 "pos_embed"; 2 "attribution"/"ablation".
+constexpr int kSchemaVersion = 5;
 
 std::string read_file(const std::string& path, const char* what) {
     std::ifstream f(path, std::ios::binary);
@@ -301,6 +301,31 @@ int main(int argc, char** argv) {
         // only because this tool happens to build with B == 1; a third
         // re-derivation of a stride the model already knows.
         const float* res = layer_slice(a.residual3, l, B_dim, T, C);
+        for (int t = 0; t < n_pos; ++t) {
+            if (t) js += ", ";
+            double ss = 0.0;
+            for (int c = 0; c < C; ++c) {
+                const double x = res[static_cast<std::size_t>(t) * C + c];
+                ss += x * x;
+            }
+            append_float(js, static_cast<float>(std::sqrt(ss)));
+        }
+        js += "]";
+    }
+    js += "],\n";
+
+    // A transformer block has TWO residual adds, not one: attention writes back,
+    // then the MLP writes back. residual3 is only the second, so a diagram drawn
+    // from it alone silently halves the structure. residual2 is the stream after
+    // the attention sublayer.
+    js += "  \"residual_mid\": [";
+    for (int l = 0; l < cfg.n_layer; ++l) {
+        if (l) js += ", ";
+        js += "[";
+        // [L, B, T, C] — the B factor is required. It was missing here, correct
+        // only because this tool happens to build with B == 1; a third
+        // re-derivation of a stride the model already knows.
+        const float* res = layer_slice(a.residual2, l, B_dim, T, C);
         for (int t = 0; t < n_pos; ++t) {
             if (t) js += ", ";
             double ss = 0.0;
