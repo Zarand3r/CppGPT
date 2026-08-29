@@ -11,10 +11,42 @@
 // change exactly these, so a semantic change shows up here as a diff rather
 // than as a number nobody re-read.
 //
-// WHY %a AND NOT %f. The whole plan is built on `==` rather than tolerances, so
-// the golden is written in C99 hex-float form, which is exact and round-trips.
-// A decimal golden would silently absorb the low-bit drift this test exists to
-// catch.
+// WHY HEX FLOATS, BUT COMPARED WITH A TOLERANCE.
+//
+// The values are written in C99 hex-float form (%a) because it round-trips
+// exactly, so the fixture records precisely what was computed. But they are
+// COMPARED with a small relative tolerance, and that is not a compromise -- a
+// bit-exact comparison here is not portable, and CI proved it:
+//
+//   want: lens.L0.p5.logit 0x1.46b70cp-3
+//   got:  lens.L0.p5.logit 0x1.46b708p-3     (~2.4e-7 relative, 4 ulps)
+//
+// The toolchain IS hermetic -- MODULE.bazel pins LLVM/Clang -- and all three
+// build configs (default, dev, release) agree with each other on one host. What
+// is NOT hermetic is libm: `gelu_new` calls tanhf, and glibc's transcendental
+// results differ between versions. No build flag fixes that, and pinning a
+// golden per host defeats the purpose of a shared gate.
+//
+// WHAT THIS TEST STILL CATCHES. Measured, not assumed -- each of these was run
+// as a mutation against the committed fixture:
+//
+//   perturb ONE weight by one ulp .................. still FAILS
+//   skip one restore_ablation ...................... still FAILS
+//   ablate the MLP where the attn block was meant .. still FAILS
+//
+// The one-ulp weight case still fails because a perturbed INPUT amplifies
+// through three layers to well past 1e-5 relative, whereas the libm difference
+// is a last-bit wobble in a single late computation. So the tolerance
+// discriminates between the two rather than blunting the gate -- but that is an
+// empirical result about this model at this size, not a guarantee, and it
+// should be re-measured if the fixture model changes.
+//
+// Bit-exactness is still asserted where it is portable:
+// //tests/unit:patch_test compares with `==` between values computed in the
+// SAME process on the SAME host, which the libm difference cannot reach.
+//
+// Discrete fields -- token ids, top-1 indices -- are still compared EXACTLY.
+// A ranking change is a semantic change, never rounding.
 //
 // WHY A SYNTHETIC MODEL AND NOT data/shakespeare.ckpt. `data/` is gitignored --
 // that checkpoint is 9.7 MB and is never committed. A test needing it could not
@@ -34,6 +66,8 @@
 // tests/fixtures/interpret_golden.txt, and say in the PR why the numbers moved.
 #include <cstddef>
 #include <cstdio>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -63,7 +97,7 @@ Config make_config() noexcept {
     return cfg;
 }
 
-// One golden line. Hex float, so equality is bit equality.
+// One golden line. Hex float: exact round-trip in the fixture, tolerant compare.
 void emit(std::vector<std::string>& out, const char* key, float v) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "%s %a", key, static_cast<double>(v));
@@ -197,6 +231,31 @@ std::vector<std::string> compute_golden() {
     return out;
 }
 
+// Compare one golden line. The key must match exactly. An integer value must
+// match exactly -- a changed token id or top-1 index is a semantic change, never
+// rounding. A float value is compared with a relative tolerance, for the libm
+// reason in the header comment.
+//
+// kRelTol is ~40x the 2.4e-7 drift CI actually exhibited, and ~4 orders of
+// magnitude below the smallest semantic change this test exists to catch (a
+// changed ablation baseline moves KL by whole nats).
+constexpr double kRelTol = 1e-5;
+
+bool line_matches(const std::string& got, const std::string& want) {
+    const std::size_t gs = got.rfind(' '), ws = want.rfind(' ');
+    if (gs == std::string::npos || ws == std::string::npos) return got == want;
+    if (got.compare(0, gs, want, 0, ws) != 0) return false;  // keys must match exactly
+
+    const std::string gv = got.substr(gs + 1), wv = want.substr(ws + 1);
+    if (gv == wv) return true;
+    // No "0x" => an integer field. Exact or nothing.
+    if (wv.find('x') == std::string::npos) return false;
+
+    const double g = std::strtod(gv.c_str(), nullptr), w = std::strtod(wv.c_str(), nullptr);
+    const double denom = std::fabs(w) > 1e-30 ? std::fabs(w) : 1.0;
+    return std::fabs(g - w) / denom <= kRelTol;
+}
+
 std::vector<std::string> read_fixture(const char* path) {
     std::vector<std::string> lines;
     std::FILE* f = std::fopen(path, "r");
@@ -225,7 +284,7 @@ int main() {
     bool identical = got.size() == want.size();
     if (identical)
         for (std::size_t i = 0; i < got.size(); ++i)
-            if (got[i] != want[i]) {
+            if (!line_matches(got[i], want[i])) {
                 identical = false;
                 std::fprintf(stderr, "  first diff at line %zu:\n    want: %s\n    got:  %s\n", i + 1,
                              want[i].c_str(), got[i].c_str());
