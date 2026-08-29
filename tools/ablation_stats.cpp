@@ -89,15 +89,26 @@ std::vector<std::uint16_t> read_tokens(const std::string& path) {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
-                         {"checkpoint", "data", "prompts", "seq", "seed", "top"});
+                         {"checkpoint", "data", "prompts", "seq", "seed", "top", "baseline"});
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string data(args.str("data", ""));
     if (ckpt.empty() || data.empty()) {
         std::fprintf(stderr,
                      "usage: ablation_stats --checkpoint X.ckpt --data corpus.bin\n"
-                     "                      [--prompts 64] [--seq 32] [--seed 1337] [--top 12]\n");
+                     "                      [--prompts 64] [--seq 32] [--seed 1337] [--top 12]\n"
+                     "                      [--baseline zero|donor]\n");
         return 2;
     }
+    // An unknown baseline is refused rather than defaulted: silently falling back
+    // to zero would report an off-distribution measurement under whatever name
+    // the caller asked for.
+    const std::string baseline(args.str("baseline", "zero"));
+    if (baseline != "zero" && baseline != "donor") {
+        std::fprintf(stderr, "ablation_stats: --baseline must be 'zero' or 'donor', got '%s'\n",
+                     baseline.c_str());
+        return 2;
+    }
+    const bool use_donor = (baseline == "donor");
     const int n_prompts = args.integer("prompts", 64);
     const int show = args.integer("top", 12);
     if (n_prompts < 2) {
@@ -147,34 +158,75 @@ int main(int argc, char** argv) {
     const std::size_t hi = toks.size() - static_cast<std::size_t>(T) - 1;
     const auto last = static_cast<std::size_t>(T - 1) * static_cast<std::size_t>(V);
 
+    // Every window start is drawn up front, so the donor for window p can be a
+    // FIXED function of p -- the next window in the same list. No second
+    // generator, no sampling inside the sweep, so the donor baseline is
+    // deterministic by construction rather than by seeding discipline. Windows
+    // are all T tokens, so a donor always matches the shape it replaces.
+    std::vector<std::size_t> starts(static_cast<std::size_t>(n_prompts));
+    for (auto& s : starts)
+        s = static_cast<std::size_t>(gen.uniform_int(0, static_cast<std::int64_t>(hi)));
+
+    std::vector<int> donor_win(static_cast<std::size_t>(T));
+    const std::size_t stride = use_donor ? patch_floats(cfg, PatchSite::AttnBlockOut, 1, T) : 0;
+    std::vector<float> repl(use_donor ? static_cast<std::size_t>(n_comp) * stride : 0);
+
     std::printf("ablation_stats: %s over %s\n", ckpt.c_str(), data.c_str());
-    std::printf("  L%d H%d V%d | %d prompts x %d tokens | %d components, %d forwards\n",
-                L, NH, V, n_prompts, T, n_comp, n_prompts * (n_comp + 1));
+    std::printf("  L%d H%d V%d | %d prompts x %d tokens | %d components, %d forwards | baseline %s\n",
+                L, NH, V, n_prompts, T, n_comp, n_prompts * (n_comp + 1 + (use_donor ? 1 : 0)),
+                baseline.c_str());
+
+    const auto fill = [&](std::vector<int>& dst, std::size_t start) {
+        for (int t = 0; t < T; ++t)
+            dst[static_cast<std::size_t>(t)] =
+                static_cast<int>(toks[start + static_cast<std::size_t>(t)]);
+    };
 
     for (int p = 0; p < n_prompts; ++p) {
-        const auto start = static_cast<std::size_t>(gen.uniform_int(0, static_cast<std::int64_t>(hi)));
-        for (int t = 0; t < T; ++t)
-            window[static_cast<std::size_t>(t)] = static_cast<int>(toks[start + static_cast<std::size_t>(t)]);
+        fill(window, starts[static_cast<std::size_t>(p)]);
+
+        if (use_donor) {
+            fill(donor_win, starts[static_cast<std::size_t>((p + 1) % n_prompts)]);
+            model.forward(donor_win.data(), nullptr);
+            for (int i = 0; i < n_comp; ++i) {
+                const Component c = component_at(cfg, i);
+                capture_site(model, c.site, c.layer, c.head,
+                             repl.data() + static_cast<std::size_t>(i) * stride);
+            }
+        }
 
         model.forward(window.data(), nullptr);
         softmax_into(p_base.data(), model.acts().logits + last, V);
 
-        for (int l = 0; l < L; ++l) {
-            for (int slot = 0; slot < per_layer; ++slot) {
-                const Ablation kind = (slot < NH)      ? Ablation::Head
-                                      : (slot == NH)   ? Ablation::Mlp
-                                                       : Ablation::AttnBlock;
-                const int head = (slot < NH) ? slot : -1;
-                save_and_ablate(model, kind, l, head, saved.data());
+        // component_at rather than a fourth hand-written enumeration: inspect,
+        // coax_sweep and this loop must agree on which index means which
+        // component, and the arithmetic written out separately in each is how
+        // one of them ends up measuring something else.
+        for (int i = 0; i < n_comp; ++i) {
+            const Component c = component_at(cfg, i);
+            if (use_donor) {
+                const Patch patch{c.site, c.layer, c.head,
+                                  repl.data() + static_cast<std::size_t>(i) * stride};
+                model.forward(window.data(), nullptr, -1, &patch, 1);
+            } else {
+                const Ablation kind = (c.site == PatchSite::HeadOut)  ? Ablation::Head
+                                      : (c.site == PatchSite::MlpOut) ? Ablation::Mlp
+                                                                      : Ablation::AttnBlock;
+                save_and_ablate(model, kind, c.layer, c.head, saved.data());
                 model.forward(window.data(), nullptr);
                 softmax_into(p_abl.data(), model.acts().logits + last, V);
-                restore_ablation(model, kind, l, head, saved.data());
-                const double d = kl_divergence(p_base.data(), p_abl.data(), V);
-                // A non-finite divergence means the ablated forward broke; that is
-                // a real result about the model, not a number to average away.
-                ASSERT_MSG(std::isfinite(d), "ablation_stats: KL is not finite");
-                stat[static_cast<std::size_t>(l * per_layer + slot)].add(d);
+                restore_ablation(model, kind, c.layer, c.head, saved.data());
+                const double dz = kl_divergence(p_base.data(), p_abl.data(), V);
+                ASSERT_MSG(std::isfinite(dz), "ablation_stats: KL is not finite");
+                stat[static_cast<std::size_t>(i)].add(dz);
+                continue;
             }
+            softmax_into(p_abl.data(), model.acts().logits + last, V);
+            const double d = kl_divergence(p_base.data(), p_abl.data(), V);
+            // A non-finite divergence means the ablated forward broke; that is
+            // a real result about the model, not a number to average away.
+            ASSERT_MSG(std::isfinite(d), "ablation_stats: KL is not finite");
+            stat[static_cast<std::size_t>(i)].add(d);
         }
     }
 
@@ -191,11 +243,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < n_show; ++i) {
         const int c = order[static_cast<std::size_t>(i)];
         const Samples& s = stat[static_cast<std::size_t>(c)];
-        const int l = c / per_layer, slot = c % per_layer;
         char name[24];
-        if (slot < NH) std::snprintf(name, sizeof(name), "L%d H%d", l, slot);
-        else if (slot == NH) std::snprintf(name, sizeof(name), "L%d MLP", l);
-        else std::snprintf(name, sizeof(name), "L%d attn", l);
+        component_label(cfg, c, name, sizeof(name));
         std::printf("  %-10s %9.4f %9.4f %9.4f %9.4f %8.0f%%\n", name, s.mean(),
                     s.quantile(0.5), s.quantile(0.9), s.quantile(1.0), 100.0 * s.active(0.01));
     }

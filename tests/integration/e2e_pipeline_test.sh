@@ -261,10 +261,46 @@ grep -q "max-mb" "$WORK/huge.log" || fail "size-ceiling error does not say how t
             --prompts 6 --seq 8 --seed 3 --top 99 > "$WORK/abl2.log" 2>&1
 diff -q "$WORK/abl.log" "$WORK/abl2.log" > /dev/null || fail "ablation_stats is not deterministic"
 
+# The donor baseline is deterministic too, and by CONSTRUCTION rather than by
+# seeding: the donor for window p is window p+1 of the same pre-drawn list, so
+# no second generator exists to seed wrong.
+"$ABLSTATS" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+            --prompts 6 --seq 8 --seed 3 --top 99 --baseline donor > "$WORK/abld.log" 2>&1 \
+  || fail "ablation_stats --baseline donor failed: $(tail -2 "$WORK/abld.log")"
+"$ABLSTATS" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+            --prompts 6 --seq 8 --seed 3 --top 99 --baseline donor > "$WORK/abld2.log" 2>&1
+diff -q "$WORK/abld.log" "$WORK/abld2.log" > /dev/null \
+  || fail "donor baseline is not deterministic"
+
+# ...and it must actually be a DIFFERENT measurement. If --baseline were ignored,
+# both runs would be zero ablation and every number would match, which is exactly
+# how a silently-ignored flag looks.
+# Match component ROWS only. The first attempt here grepped "^  L", which also
+# matched the header line ("L4 H4 V65 | ... baseline donor") -- and that line
+# differs between the two runs by the printed baseline name alone, so the diff
+# always found a difference and the check passed even with --baseline wired to a
+# constant. Verified by mutation: the gate now fails when the flag is ignored.
+ROWS='^  L[0-9]+(H[0-9]+|mlp|attn) '
+if diff -q <(grep -E "$ROWS" "$WORK/abl.log") <(grep -E "$ROWS" "$WORK/abld.log") > /dev/null; then
+  fail "--baseline donor produced the zero-ablation numbers; the flag is being ignored"
+fi
+
+# An unknown baseline is refused, not defaulted. Silently falling back to zero
+# would report an off-distribution measurement under the name the caller asked for.
+if "$ABLSTATS" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+               --prompts 4 --seq 8 --baseline nonsense > "$WORK/ablbad.log" 2>&1; then
+  fail "ablation_stats accepted --baseline nonsense"
+fi
+grep -q "must be 'zero' or 'donor'" "$WORK/ablbad.log" || fail "baseline refusal did not say why"
+
 python3 - "$WORK/abl.log" <<'PYEOF'
 import re, sys
 txt = open(sys.argv[1]).read()
-rows = re.findall(r"^\s+(L\d+ (?:H\d+|MLP|attn))\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)%",
+# Labels come from interpret.hpp's component_label, shared with inspect's coax
+# panel, so the format is "L0H1" / "L0mlp" / "L0attn" -- no space. This regex
+# caught the change when the three hand-written enumerations were centralised,
+# which is what it is for: the label IS the cross-tool contract.
+rows = re.findall(r"^\s+(L\d+(?:H\d+|mlp|attn))\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)%",
                   txt, re.M)
 # 2 layers x (2 heads + MLP + attn block)
 assert len(rows) == 2 * (2 + 2), f"expected 8 components, parsed {len(rows)}"

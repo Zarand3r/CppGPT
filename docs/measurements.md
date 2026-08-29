@@ -503,6 +503,11 @@ bazel run --config=release //tools:profile -- --checkpoint $PWD/data/shakespeare
 
 ## M-19 · The ablation baseline changes the answer — 21 of 24 components move
 
+> **⚠ Corrected by M-21.** Every donor number in this section is from ONE prompt pair, and that pair
+> is nearly self-similar (`ROMEO:\nWhat is` / `JULIET:\nWhy is`), so the whole donor column collapses
+> toward zero — `L0mlp` reads 0.0108 here against a corpus median of **6.79**, a 628× understatement.
+> The finding that the baseline reorders the ranking stands. **The specific ranking below does not.**
+
 `//tools:inspect` on the toy checkpoint, prompt `"ROMEO:\nWhat is"`, donor `"JULIET:\nWhy is"`
 (same 14 tokens — the model is built at `T = n_pos`, so a donor must match). Zero ablation silences a
 component by zeroing the weights that carry it; **resample ablation** substitutes the activations the
@@ -625,4 +630,72 @@ the feature is unambiguously offline.
 bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
   --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
 What is" --coax 1 --out /tmp/coax.json
+```
+
+## M-21 · The corpus under both baselines — and M-19 was a single-prompt artifact
+
+`//tools:ablation_stats --baseline zero|donor`, toy checkpoint, 128 windows × 32 tokens from the
+validation split. The donor for window *p* is window *p+1* in the same pre-drawn list — a fixed
+function of the index, so the run is deterministic with no second generator (verified: two runs
+byte-identical).
+
+### The zero column reproduces M-16 exactly
+
+`L0mlp` 5.0979 / 4.7624 / 9.0278 / 14.8799 / 100%, `L2H0` 0.1819 / 0.0784. Identical to M-16 to four
+decimals, which is the regression check on centralising the component enumeration into
+`component_at` — three hand-written copies became one and nothing moved.
+
+### Median KL, 128 windows
+
+| component | zero | donor | |
+|---|---|---|---|
+| **L0mlp** | **4.7624** | **6.7929** | #1 under both — the one robust result |
+| L3mlp | 0.5792 | 2.8883 | 3rd → 2nd, 5× larger |
+| L2mlp | 0.2780 | 0.9839 | |
+| L0attn | 1.7250 | 0.4747 | 2nd → 4th, 3.6× smaller |
+| L2H0 | 0.0784 | 0.1549 | 2× larger |
+
+Components active on ≥90% of prompts: **6 under zero, 9 under donor.**
+
+### M-16's headline survives, with its sign reversed
+
+M-16 said the single-prompt view **overstates** `L2H0` by 8×: `inspect` reports 0.6278 on the seed
+prompt against a median of 0.0784.
+
+Under the donor baseline the same comparison **understates** it by 5.1× — 0.0302 on the seed prompt
+against a median of 0.1549. The lesson holds and is stronger than M-16 put it: a single prompt is not
+merely unreliable in magnitude, **the direction of its error is not stable either.**
+
+### M-19 was itself a single-prompt claim, and it is badly unrepresentative
+
+M-19 reported that under a donor baseline `attn L0` falls from rank 1 to rank 6. That is true of that
+prompt and false of the model:
+
+| component | seed prompt (donor) | corpus median (donor) | |
+|---|---|---|---|
+| L0mlp | 0.0108 | 6.7929 | **628× understated** |
+| L3mlp | 0.0335 | 2.8883 | 86× understated |
+| L0attn | 0.0165 | 0.4747 | 29× understated |
+| L2H0 | 0.0302 | 0.1549 | 5× understated |
+
+The cause is the donor, not the baseline. `"ROMEO:\nWhat is"` and `"JULIET:\nWhy is"` share their
+structure almost entirely, so substituting one for the other changes *every* component's input barely
+at all, and the whole sweep collapses toward zero. Corpus donors are unrelated windows and produce
+real contrast.
+
+**So M-19's ranking is not a fact about the model.** Its conclusion that the baseline changes the
+ranking stands — 21 of 24 components move — but the specific claim that L0 attention is unimportant
+under a donor baseline does not survive 128 windows. Across the corpus `L0mlp` is the most important
+component under **both** baselines, by a wide margin, which is the finding M-16 already had.
+
+> This was written one step after `docs/INTERPRETING.md` §4 was extended to warn about exactly this
+> error. Writing the caution did not prevent making the mistake; running the corpus did.
+
+**Reproduce**
+```sh
+for b in zero donor; do
+  bazel run --config=release //tools:ablation_stats -- \
+    --checkpoint $PWD/data/shakespeare.ckpt --data $PWD/data/shakespeare.val.bin \
+    --prompts 128 --seq 32 --baseline $b --top 24
+done
 ```

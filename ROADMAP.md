@@ -351,7 +351,7 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
 Done already: **`//tools:ablation_stats`** — 128 windows × 32 tokens, which established the
 median-and-activity-rate summary the rest of this lane should copy (M-16).
 
-- [ ] **B1 · Re-run the corpus ablation study under all three ablation modes. [Q2]** The offline half
+- [x] **B1 · Corpus ablation under both baselines. [Q2]** — done 2026-08-29 (M-21). The offline half
       of A1. M-16's headline — the single-prompt view overstating one head by **8×** its median — was
       measured under zero ablation; whether it survives the donor baseline is unknown and is the first
       thing to find out. *(Small: ~3 s per mode.)*
