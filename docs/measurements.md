@@ -500,3 +500,58 @@ number guessed here.
 ```sh
 bazel run --config=release //tools:profile -- --checkpoint $PWD/data/shakespeare.ckpt --seq 64 --reps 200
 ```
+
+## M-19 · The ablation baseline changes the answer — 21 of 24 components move
+
+`//tools:inspect` on the toy checkpoint, prompt `"ROMEO:\nWhat is"`, donor `"JULIET:\nWhy is"`
+(same 14 tokens — the model is built at `T = n_pos`, so a donor must match). Zero ablation silences a
+component by zeroing the weights that carry it; **resample ablation** substitutes the activations the
+donor forward produced at that site.
+
+| rank | zero ablation | KL | resample (donor) | KL |
+|---|---|---|---|---|
+| 1 | **attn L0** | 3.6956 | **attn L2** | 0.1952 |
+| 2 | mlp L0 | 2.2065 | head L2H2 | 0.0615 |
+| 3 | mlp L3 | 2.1015 | mlp L2 | 0.0499 |
+| 4 | attn L2 | 1.0947 | mlp L3 | 0.0335 |
+| 5 | head L2H0 | 0.6278 | head L2H0 | 0.0302 |
+| 6 | mlp L2 | 0.5256 | **attn L0** | **0.0165** |
+
+**21 of 24 components change rank.** `attn L0` — M-17's "single most damaging edit in the model" —
+falls from rank 1 to rank 6, a **224× smaller** KL. `mlp L0`, which M-16 called one of only two
+components that are large *and* consistent, falls from rank 2 to rank 10.
+
+### What this does NOT mean
+
+It does not mean L0 is unimportant, and reading it that way would repeat the mistake §4 of
+`docs/INTERPRETING.md` warns about in a new costume.
+
+The two baselines answer different questions. Zeroing L0's attention asks *"what if this component
+were destroyed"* — the model has never seen that, and everything downstream breaks. Substituting L0's
+attention from another Shakespeare line asks *"what if this component had processed a different but
+similar input"*. These two prompts share their structure (`SPEAKER:\nQuestion-word is`), so L0's
+attention output is nearly the same either way, and swapping it barely moves anything.
+
+**A donor baseline measures only the part of a component's output that differs between the two
+prompts.** Choose a donor that differs in nothing that matters and every component looks irrelevant;
+choose one that differs in everything and you are back to noise. The donor is part of the
+measurement, which is why `inspect` records it in the dump and the viewer prints it.
+
+So M-16 and M-17 are not overturned — they are re-scoped. They measured destruction. This measures
+contrast, on one axis, chosen by hand.
+
+### Same-length constraint, and the honest name
+
+The literature's recommended corruption is *symmetric token replacement* — swap one semantically
+matched token, hold everything else fixed. A character-level model with a 65-symbol vocabulary has no
+semantic tokens to swap, so a donor prompt varies everything at once. That is **resample ablation**,
+not the controlled single-feature contrast the papers describe, and it is named accordingly
+everywhere in the tool and the UI.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --donor "JULIET:
+Why is" --out /tmp/donor.json
+```

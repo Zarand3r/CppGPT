@@ -46,7 +46,7 @@ namespace {
 using namespace cppgpt;
 
 // 5 adds "residual_mid"; 4 "run_url"; 3 "pos_embed"; 2 "attribution"/"ablation".
-constexpr int kSchemaVersion = 5;
+constexpr int kSchemaVersion = 6;
 
 std::string read_file(const std::string& path, const char* what) {
     std::ifstream f(path, std::ios::binary);
@@ -172,12 +172,13 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb", "ablate", "run-url"});
+                          "max-mb", "ablate", "run-url", "donor"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
     const std::string prompt(args.str("prompt", ""));
     const std::string out_path(args.str("out", ""));
+    const std::string donor_prompt(args.str("donor", ""));
     if (ckpt.empty() || vocab_path.empty() || prompt.empty() || out_path.empty()) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
@@ -229,6 +230,25 @@ int main(int argc, char** argv) {
         return 1;
     }
     const auto n_pos = static_cast<int>(ids.size());
+
+    // A donor prompt supplies the replacement activations for resample ablation.
+    // It must tokenise to the SAME length: the model is built at T = n_pos, so a
+    // donor of another length has activations of another shape. That is not a
+    // limitation we invented -- corrupted prompts in this literature are
+    // same-length by construction, because the point is to vary content while
+    // holding position and structure fixed.
+    std::vector<int> donor_ids;
+    if (!donor_prompt.empty()) {
+        donor_ids = tok.encode(donor_prompt);
+        if (static_cast<int>(donor_ids.size()) != n_pos) {
+            std::fprintf(stderr,
+                         "inspect: --donor is %zu tokens but --prompt is %d; they must match.\n"
+                         "  Resample ablation substitutes one run's activations into another, so\n"
+                         "  the two runs must have the same shape.\n",
+                         donor_ids.size(), n_pos);
+            return 1;
+        }
+    }
 
     const std::vector<int> layers = parse_selection(args.str("layers", ""), cfg.n_layer, "layers");
     const std::vector<int> heads = parse_selection(args.str("heads", ""), cfg.n_head, "heads");
@@ -624,16 +644,60 @@ int main(int argc, char** argv) {
     // and large ablation KL acts through later layers, not on the logit.
     //
     // This CLOBBERS the activation arena, so it must follow every baseline read.
-    js += "  \"ablation\": [";
+    const bool have_donor = !donor_ids.empty();
+    js += "  \"ablation_baseline\": \"";
+    js += have_donor ? "donor" : "zero";
+    js += "\",\n  \"donor_prompt\": ";
+    if (have_donor) {
+        js += "\"";
+        json_escape(js, donor_prompt);
+        js += "\"";
+    } else {
+        js += "null";
+    }
+    js += ",\n  \"ablation\": [";
     if (do_ablate) {
         const std::vector<double> p_base = softmax_of(a.logits + last_off);
         const auto top_base = static_cast<std::size_t>(dla_token);
         std::vector<float> saved(ablation_scratch(cfg));
+
+        // Cache every component's activations from ONE donor forward, before any
+        // clean forward overwrites the arena. This is the standard three-pass
+        // workflow: run the donor, keep what it produced, replay it into the
+        // clean run. Doing it per component instead would re-run the donor
+        // L*(NH+2) times for identical values.
+        const auto site_of = [](Ablation k) {
+            return k == Ablation::Mlp         ? PatchSite::MlpOut
+                   : k == Ablation::AttnBlock ? PatchSite::AttnBlockOut
+                                              : PatchSite::HeadOut;
+        };
+        const std::size_t stride = patch_floats(cfg, PatchSite::AttnBlockOut, B_dim, T);
+        const auto n_comp = static_cast<std::size_t>(cfg.n_layer) *
+                            static_cast<std::size_t>(cfg.n_head + 2);
+        std::vector<float> donor_cache;
+        if (have_donor) {
+            donor_cache.resize(n_comp * stride);
+            model.forward(donor_ids.data(), nullptr);
+            std::size_t i = 0;
+            for (int l = 0; l < cfg.n_layer; ++l) {
+                for (int h = 0; h < cfg.n_head; ++h)
+                    capture_site(model, PatchSite::HeadOut, l, h, donor_cache.data() + i++ * stride);
+                capture_site(model, PatchSite::MlpOut, l, -1, donor_cache.data() + i++ * stride);
+                capture_site(model, PatchSite::AttnBlockOut, l, -1,
+                             donor_cache.data() + i++ * stride);
+            }
+        }
+
         bool first = true;
+        std::size_t comp = 0;
         const auto sweep = [&](Ablation kind, const char* name, int layer, int head) {
+            // Zero baseline: the historical measurement, kept so the two can be
+            // compared. It silences the component by zeroing the weights that
+            // carry it, which is exact but takes the model off its own
+            // activation distribution (docs/INTERPRETING.md 4a).
             save_and_ablate(model, kind, layer, head, saved.data());
             model.forward(buf.data(), nullptr);
-            const std::vector<double> p = softmax_of(a.logits + last_off);
+            const std::vector<double> p_zero = softmax_of(a.logits + last_off);
             restore_ablation(model, kind, layer, head, saved.data());
 
             if (!first) js += ", ";
@@ -641,11 +705,38 @@ int main(int argc, char** argv) {
             js += "{\"kind\": \"";
             js += name;
             js += "\", \"layer\": " + std::to_string(layer) +
-                  ", \"head\": " + std::to_string(head) + ", \"kl\": ";
-            append_float(js, static_cast<float>(kl(p_base, p)));
+                  ", \"head\": " + std::to_string(head);
+            js += ", \"kl_zero\": ";
+            append_float(js, static_cast<float>(kl(p_base, p_zero)));
+            js += ", \"dtop_zero\": ";
+            append_float(js, static_cast<float>(p_zero[top_base] - p_base[top_base]));
+
+            double kl_sel = kl(p_base, p_zero);
+            double dtop_sel = p_zero[top_base] - p_base[top_base];
+
+            if (have_donor) {
+                const Patch patch{site_of(kind), layer, head,
+                                  donor_cache.data() + comp * stride};
+                model.forward(buf.data(), nullptr, -1, &patch);
+                const std::vector<double> p_donor = softmax_of(a.logits + last_off);
+                kl_sel = kl(p_base, p_donor);
+                dtop_sel = p_donor[top_base] - p_base[top_base];
+                js += ", \"kl_donor\": ";
+                append_float(js, static_cast<float>(kl_sel));
+                js += ", \"dtop_donor\": ";
+                append_float(js, static_cast<float>(dtop_sel));
+            }
+
+            // `kl`/`dtop` are the baseline named by "ablation_baseline". They are
+            // NOT a silent default: the viewer reads that field and prints which
+            // baseline it is shading, so a reader always knows which number this
+            // is. The per-baseline fields above are always present too.
+            js += ", \"kl\": ";
+            append_float(js, static_cast<float>(kl_sel));
             js += ", \"dtop\": ";
-            append_float(js, static_cast<float>(p[top_base] - p_base[top_base]));
+            append_float(js, static_cast<float>(dtop_sel));
             js += "}";
+            ++comp;
         };
         for (int l = 0; l < cfg.n_layer; ++l) {
             for (int h = 0; h < cfg.n_head; ++h) sweep(Ablation::Head, "head", l, h);

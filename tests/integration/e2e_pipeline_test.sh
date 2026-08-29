@@ -88,6 +88,38 @@ LC_ALL=C grep -qE '^[a-z ]+$' "$WORK/gen_a.txt" || fail "generated text escaped 
            --prompt "alpha be" --out "$WORK/run.json" --top-k 4 > "$WORK/inspect.log"
 [ -s "$WORK/run.json" ] || fail "inspect wrote no dump"
 
+# Resample ablation with the donor set to the prompt ITSELF. Substituting a
+# component's activations with the ones it just produced must be a no-op, so
+# every donor KL must be exactly zero.
+#
+# This is the gate on the flat component index. inspect caches all L*(NH+2)
+# sites from one donor forward and replays cache[i] into component i; if that
+# indexing ever slips, cache[j] lands in component i, the values differ, and the
+# KL stops being zero. Without this the sweep would emit a full table of
+# plausible-looking numbers measuring the wrong components -- the same silent
+# class as the patch-layer no-op that motivated validate_patch.
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --donor "alpha be" --out "$WORK/self.json" --top-k 4 \
+           > "$WORK/self.log"
+python3 - "$WORK/self.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ablation_baseline"] == "donor", d["ablation_baseline"]
+assert d["donor_prompt"] == "alpha be", d["donor_prompt"]
+bad = [r for r in d["ablation"] if r["kl_donor"] != 0.0]
+assert not bad, f"donor==prompt must be a no-op; {len(bad)} components moved: {bad[:3]}"
+assert d["ablation"], "empty sweep would make the check above vacuous"
+PYEOF
+[ $? -eq 0 ] || fail "self-donor identity failed"
+
+# A donor of a different LENGTH must be refused, not silently ignored.
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+              --prompt "alpha be" --donor "alpha" --out "$WORK/bad.json" \
+              > "$WORK/bad.log" 2>&1; then
+  fail "inspect accepted a donor of the wrong length"
+fi
+grep -q "they must match" "$WORK/bad.log" || fail "length refusal did not say why"
+
 # The dump's contract, checked rather than assumed: valid JSON, attention that is
 # a causal distribution, and a last-layer lens that agrees with the model's own
 # output. That last one is the non-circular check — at the final layer the lens IS
@@ -111,7 +143,7 @@ def _no_dupes(pairs):
 raw = open(sys.argv[1]).read()
 json.loads(raw, object_pairs_hook=_no_dupes)
 d = json.load(open(sys.argv[1]))
-assert d["schema"] == 5, f"unexpected schema {d['schema']}"
+assert d["schema"] == 6, f"unexpected schema {d['schema']}"
 n = d["n_positions"]
 assert n == len(d["tokens"]) > 0, "token count disagrees with n_positions"
 assert len(d["residual_norms"]) == d["config"]["n_layer"], "residual_norms has wrong layer count"

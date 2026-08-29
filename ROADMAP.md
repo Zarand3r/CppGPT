@@ -250,7 +250,10 @@ Two facts settle the borderline cases:
 Done already: **ablation** (zero, weight-level), **direct logit attribution** (exact, sum-rule
 tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **positional-encoding panel**.
 
-- [ ] **A1 · Fix the ablation mode. [Q2] — highest priority on this page.**
+- [x] **A1 · Fix the ablation mode. [Q2]** — done 2026-08-28. `inspect --donor` reports zero and
+      resample baselines side by side; **21 of 24 components change rank** and `attn L0` falls from
+      first to sixth (M-19). Mean ablation deliberately deferred to B1, where a corpus makes it
+      meaningful — a "mean" over one donor is that donor.
       The published sweep is **zero-ablation**, which the causal-scrubbing line of work considers
       off-distribution *in an unprincipled manner*: it destroys properties of the activation
       distribution, so the ablated model can look either worse or better than it should, and the
