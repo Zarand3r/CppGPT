@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <vector>
+#include <limits>
 
 #include "cppgpt/core.hpp"
 #include "cppgpt/ops.hpp"
@@ -250,6 +253,83 @@ void capture_site(const GPT2& model, PatchSite site, int layer, int head, float*
                         : (site == PatchSite::AttnBlockOut) ? a.attproj
                                                             : a.atty;
     detail::capture_from(site, head, layer_slice(base, layer, B, T, C), out, B, T, C, NH);
+}
+
+Component component_at(const Config& cfg, int index) noexcept {
+    ASSERT_MSG(index >= 0 && index < n_components(cfg), "component_at: index out of range");
+    const int per_layer = cfg.n_head + 2;
+    const int layer = index / per_layer;
+    const int slot = index % per_layer;
+    if (slot < cfg.n_head) return {PatchSite::HeadOut, layer, slot};
+    if (slot == cfg.n_head) return {PatchSite::MlpOut, layer, -1};
+    return {PatchSite::AttnBlockOut, layer, -1};
+}
+
+void component_label(const Config& cfg, int index, char* out, std::size_t cap) noexcept {
+    const Component c = component_at(cfg, index);
+    ASSERT(out != nullptr && cap >= 16);
+    if (c.site == PatchSite::HeadOut)
+        (void)std::snprintf(out, cap, "L%dH%d", c.layer, c.head);
+    else if (c.site == PatchSite::MlpOut)
+        (void)std::snprintf(out, cap, "L%dmlp", c.layer);
+    else
+        (void)std::snprintf(out, cap, "L%dattn", c.layer);
+}
+
+void coax_sweep(GPT2& model, const int* tokens, int pos, const float* replacements,
+                std::size_t stride, double* out_marginal, double* out_growth) noexcept {
+    const Config& cfg = model.config();
+    const int n = n_components(cfg), V = cfg.vocab_size;
+    ASSERT(replacements != nullptr && out_marginal != nullptr && out_growth != nullptr);
+    ASSERT_MSG(pos >= 0 && pos < model.seq_len(), "coax_sweep: pos out of range");
+
+    const auto off = static_cast<std::size_t>(pos) * static_cast<std::size_t>(V);
+    std::vector<float> p_clean(static_cast<std::size_t>(V)), p_i(static_cast<std::size_t>(V)),
+        p_j(static_cast<std::size_t>(V)), p_ij(static_cast<std::size_t>(V));
+
+    const auto patch_for = [&](int idx) {
+        const Component c = component_at(cfg, idx);
+        return Patch{c.site, c.layer, c.head,
+                     replacements + static_cast<std::size_t>(idx) * stride};
+    };
+
+    model.forward(tokens, nullptr);
+    softmax_into(p_clean.data(), model.acts().logits + off, V);
+
+    // Marginal effects first: E(j) = KL(clean || ablate j). These are also the
+    // |S| = 0 case of the conditional score, which is what makes the reduction
+    // testable rather than asserted.
+    for (int j = 0; j < n; ++j) {
+        const Patch pj = patch_for(j);
+        model.forward(tokens, nullptr, -1, &pj, 1);
+        softmax_into(p_j.data(), model.acts().logits + off, V);
+        out_marginal[j] = kl_divergence(p_clean.data(), p_j.data(), V);
+    }
+
+    for (int i = 0; i < n; ++i) {
+        // The reference for every pair in this row is the i-ablated output, NOT
+        // the clean one: the question is how much j moves the model that has
+        // already lost i.
+        const Patch pi = patch_for(i);
+        model.forward(tokens, nullptr, -1, &pi, 1);
+        softmax_into(p_i.data(), model.acts().logits + off, V);
+
+        for (int j = 0; j < n; ++j) {
+            if (i == j) {
+                // Silencing the same component twice is not a pair. Recording 0
+                // would read as "no interaction", which is a claim; NaN is not a
+                // number this can be confused with, and the writer skips it.
+                out_growth[static_cast<std::size_t>(i) * n + j] =
+                    std::numeric_limits<double>::quiet_NaN();
+                continue;
+            }
+            const Patch pair[2] = {patch_for(i), patch_for(j)};
+            model.forward(tokens, nullptr, -1, pair, 2);
+            softmax_into(p_ij.data(), model.acts().logits + off, V);
+            const double cond = kl_divergence(p_i.data(), p_ij.data(), V);
+            out_growth[static_cast<std::size_t>(i) * n + j] = cond - out_marginal[j];
+        }
+    }
 }
 
 }  // namespace cppgpt

@@ -154,7 +154,8 @@ void GPT2::init_weights(Generator& gen) {
     }
 }
 
-void GPT2::forward(const int* tokens, const int* targets, int logits_at, const Patch* patch) {
+void GPT2::forward(const int* tokens, const int* targets, int logits_at,
+                   const Patch* patches, int n_patches) {
     const int B = B_, T = T_;
     const int C = cfg_.n_embd, L = cfg_.n_layer, NH = cfg_.n_head, V = cfg_.vocab_size;
     const auto BTC = static_cast<std::size_t>(B) * T * C;
@@ -164,7 +165,7 @@ void GPT2::forward(const int* tokens, const int* targets, int logits_at, const P
     const ParamTensors& p = params_;
     const ActTensors& a = acts_;
 
-    if (patch != nullptr) validate_patch(*patch, L, NH);
+    validate_patches(patches, n_patches, L, NH);
 
     embedding_forward(a.encoded, tokens, p.wte, p.wpe, B, T, C, V);
 
@@ -206,15 +207,15 @@ void GPT2::forward(const int* tokens, const int* targets, int logits_at, const P
         layernorm_forward(ln1, ln1_mean, ln1_rstd, res, ln1w, ln1b, B, T, C);
         matmul_forward(qkv, ln1, qkvw, qkvb, B, T, C, 3 * C);
         attention_forward(atty, preatt, att, qkv, B, T, C, NH);
-        detail::apply_patch(patch, PatchSite::HeadOut, l, atty, B, T, C, NH);
+        detail::apply_patches(patches, n_patches, PatchSite::HeadOut, l, atty, B, T, C, NH);
         matmul_forward(attproj, atty, aprojw, aprojb, B, T, C, C);
-        detail::apply_patch(patch, PatchSite::AttnBlockOut, l, attproj, B, T, C, NH);
+        detail::apply_patches(patches, n_patches, PatchSite::AttnBlockOut, l, attproj, B, T, C, NH);
         residual_forward(residual2, res, attproj, static_cast<int>(BTC));
         layernorm_forward(ln2, ln2_mean, ln2_rstd, residual2, ln2w, ln2b, B, T, C);
         matmul_forward(fch, ln2, fcw, fcb, B, T, C, 4 * C);
         gelu_forward(fch_gelu, fch, static_cast<int>(BTC * 4));
         matmul_forward(fcproj, fch_gelu, fcprojw, fcprojb, B, T, 4 * C, C);
-        detail::apply_patch(patch, PatchSite::MlpOut, l, fcproj, B, T, C, NH);
+        detail::apply_patches(patches, n_patches, PatchSite::MlpOut, l, fcproj, B, T, C, NH);
         residual_forward(residual3, residual2, fcproj, static_cast<int>(BTC));
     }
 

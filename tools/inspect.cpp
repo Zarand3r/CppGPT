@@ -172,13 +172,14 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb", "ablate", "run-url", "donor"});
+                          "max-mb", "ablate", "run-url", "donor", "coax"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
     const std::string prompt(args.str("prompt", ""));
     const std::string out_path(args.str("out", ""));
     const std::string donor_prompt(args.str("donor", ""));
+    const bool do_coax = args.integer("coax", 0) != 0;  // matches --ablate's idiom
     if (ckpt.empty() || vocab_path.empty() || prompt.empty() || out_path.empty()) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
@@ -717,7 +718,7 @@ int main(int argc, char** argv) {
             if (have_donor) {
                 const Patch patch{site_of(kind), layer, head,
                                   donor_cache.data() + comp * stride};
-                model.forward(buf.data(), nullptr, -1, &patch);
+                model.forward(buf.data(), nullptr, -1, &patch, 1);
                 const std::vector<double> p_donor = softmax_of(a.logits + last_off);
                 kl_sel = kl(p_base, p_donor);
                 dtop_sel = p_donor[top_base] - p_base[top_base];
@@ -744,7 +745,56 @@ int main(int argc, char** argv) {
             sweep(Ablation::AttnBlock, "attn", l, -1);
         }
     }
-    js += "]\n}\n";
+    js += "]";
+
+    // Conditional co-ablation. Emitted only on --coax: it is n + n*n = 600
+    // forward passes at L4/NH4, roughly 25x the marginal sweep, which is why it
+    // is opt-in rather than part of every viewer request (M-20).
+    if (do_coax && do_ablate) {
+        const int n = n_components(cfg);
+        const std::size_t stride = patch_floats(cfg, PatchSite::AttnBlockOut, B_dim, T);
+        std::vector<float> repl(static_cast<std::size_t>(n) * stride, 0.0f);
+        if (have_donor) {
+            model.forward(donor_ids.data(), nullptr);
+            for (int i = 0; i < n; ++i) {
+                const Component c = component_at(cfg, i);
+                capture_site(model, c.site, c.layer, c.head,
+                             repl.data() + static_cast<std::size_t>(i) * stride);
+            }
+        }
+        std::vector<double> marg(static_cast<std::size_t>(n));
+        std::vector<double> growth(static_cast<std::size_t>(n) * static_cast<std::size_t>(n));
+        coax_sweep(model, buf.data(), n_pos - 1, repl.data(), stride, marg.data(), growth.data());
+
+        js += ",\n  \"coax\": {\"labels\": [";
+        char lab[16];
+        for (int i = 0; i < n; ++i) {
+            if (i) js += ", ";
+            component_label(cfg, i, lab, sizeof(lab));
+            js += "\"";
+            js += lab;
+            js += "\"";
+        }
+        // The diagonal is NaN -- not a pair -- and JSON has no NaN, so it is
+        // emitted as null. A 0 there would read as "no interaction", a claim
+        // about a pair that does not exist.
+        js += "], \"growth\": [";
+        for (int i = 0; i < n; ++i) {
+            if (i) js += ", ";
+            js += "[";
+            for (int j = 0; j < n; ++j) {
+                if (j) js += ", ";
+                const double v = growth[static_cast<std::size_t>(i) * n + j];
+                if (std::isnan(v))
+                    js += "null";
+                else
+                    append_float(js, static_cast<float>(v));
+            }
+            js += "]";
+        }
+        js += "]}";
+    }
+    js += "\n}\n";
 
     // run.json is consumed by serve_viewer.py and make-site.sh, so it gets the
     // same atomic write as every other cross-tool file (L5/L15). ofstream(trunc)
