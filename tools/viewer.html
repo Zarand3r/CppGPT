@@ -391,6 +391,14 @@ function drawArch() {
     return;
   }
   const at = (k, l, h) => D.ablation.find(r => r.kind === k && r.layer === l && r.head === h);
+  // Which baseline produced r.kl. Schema 6 always carries it; an older dump
+  // does not, and must NOT be rendered as if it did -- its numbers are
+  // zero-ablation, which measures a different thing (docs/INTERPRETING.md 4a).
+  const BASE = D.ablation_baseline || null;
+  const baseLabel = BASE === 'donor'
+    ? `resample ablation, donor ${JSON.stringify(D.donor_prompt || '')}`
+    : BASE === 'zero' ? 'zero ablation (off-distribution — see INTERPRETING 4a)'
+    : 'UNKNOWN BASELINE — dump predates schema 6';
   const mx = Math.max(...D.ablation.map(r => r.kl), 1e-9);
   const shade = kl => `rgba(232,89,12,${(Math.sqrt(Math.max(0, kl / mx)) * 0.85).toFixed(3)})`;
   const kl = D.layer_kl || [];
@@ -491,7 +499,7 @@ function drawArch() {
   $('#archcap').textContent =
     `${c.n_layer} layers x ${c.n_head} heads, n_embd ${c.n_embd}. Most load-bearing: ` +
     `${top.kind} L${top.layer}` + (top.head >= 0 ? '\u00b7H' + top.head : '') +
-    ` (KL ${top.kl.toFixed(2)}). Cell shading is ablation KL.`;
+    ` (KL ${top.kl.toFixed(2)}). Cell shading is ablation KL — ${baseLabel}.`;
   const chain = [];
   for (let l = 0; l < c.n_layer; l++) {
     if (mid.length) chain.push(mid[l].toFixed(1));
@@ -659,6 +667,11 @@ function drawAblate() {
   }
   const nl = D.config.n_layer, nh = D.config.n_head;
   const at = (kind, l, h) => AB.find(r => r.kind === kind && r.layer === l && r.head === h);
+  const B2 = D.ablation_baseline || null;
+  const b2Label = B2 === 'donor'
+    ? `resample ablation — activations substituted from donor ${JSON.stringify(D.donor_prompt || '')}`
+    : B2 === 'zero' ? 'zero ablation — off-distribution; see INTERPRETING 4a'
+    : 'UNKNOWN BASELINE — dump predates schema 6';
   const mx = Math.max(...AB.map(r => r.kl), 1e-9);
   const cell = r => {
     if (!r) return '<td class="kv" style="text-align:center">·</td>';
@@ -680,7 +693,10 @@ function drawAblate() {
   $('#ablate').innerHTML = h + '</table>';
   const top = AB.slice().sort((a, b) => b.kl - a.kl).slice(0, 3);
   $('#ablcap').textContent = 'most load-bearing: ' + top.map(r =>
-    `${r.kind} L${r.layer}${r.head >= 0 ? '·H' + r.head : ''} (KL ${r.kl.toFixed(2)})`).join(', ');
+    `${r.kind} L${r.layer}${r.head >= 0 ? '·H' + r.head : ''} (KL ${r.kl.toFixed(2)})`).join(', ') +
+    ` \u2014 ${b2Label}. Which baseline you pick changes this ranking: on the ` +
+    `seed prompt 21 of 24 components move (M-19), so "most load-bearing" is a ` +
+    `statement about a baseline, never about the model alone.`;
 }
 
 function drawKL() {

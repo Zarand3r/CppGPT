@@ -89,10 +89,42 @@ ablation — substitute the component's output from a randomly chosen other inpu
 so the replacement is drawn from the component's own empirical distribution.
 
 So M-16 and M-17 are honest measurements of a well-defined intervention, but that
-intervention is not the one the field would choose, and no claim here should be
-read as mode-independent until the same sweep has been run under resample
-ablation. Doing so needs an activation-level intervention that does not exist
-yet; `ROADMAP.md` M6-A1/B1 track it.
+intervention is not the one the field would choose.
+
+**That sweep has now been run, and the answer is that the baseline dominates.**
+`//tools:inspect --donor` substitutes a component's activations from a second
+prompt instead of zeroing its weights, and on the seed prompt **21 of 24
+components change rank** (M-19). `attn L0` — §5's "single most damaging edit" —
+falls from first to sixth, a 224× smaller KL.
+
+Do not read that as "L0 does not matter". The two baselines ask different
+questions:
+
+| baseline | question | failure mode |
+|---|---|---|
+| zero | what if this component were **destroyed**? | off-distribution; the model has never seen it |
+| resample (donor) | what if it had processed a **different but similar input**? | measures only what differs between the two prompts |
+
+Pick a donor that differs in nothing important and every component looks
+irrelevant. Pick one that differs in everything and the measurement is noise.
+**The donor is part of the measurement**, which is why the dump records it and
+the viewer prints it beside every number.
+
+One more limit worth naming. The literature's recommended corruption is
+*symmetric token replacement* — swap one semantically matched token, hold the
+rest fixed. This model is character-level with a 65-symbol vocabulary and has no
+semantic tokens to swap, so a donor prompt varies everything at once. What the
+tool does is **resample ablation**, not the controlled single-feature contrast
+the papers describe, and it is named that way rather than borrowing the stronger
+term.
+
+### Noising, not denoising
+
+Both baselines here damage a clean run and measure the fallout — *noising*, which
+asks whether a component is **necessary**. The mirror experiment, *denoising*,
+starts from a corrupted run and restores one component to ask whether it is
+**sufficient**. The two are not symmetric and can disagree; only the first is
+implemented.
 
 ## 4b. A component can look unimportant *because* it was important
 
