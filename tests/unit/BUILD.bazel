@@ -128,6 +128,17 @@ cc_test(
 # interpretability layer produces. Synthetic model, so it is hermetic -- data/ is
 # gitignored and a test needing that checkpoint could not be green on a clean
 # checkout (engineering-lessons L11).
+# Step 3 of IMPLEMENTATION_PLAN.md: property P5 and the component enumeration.
+cc_test(
+    name = "coax_test",
+    size = "small",
+    srcs = ["coax_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
 # Step 1 of IMPLEMENTATION_PLAN.md: properties P1-P4 of the intervention seam.
 cc_test(
     name = "patch_test",

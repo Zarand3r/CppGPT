@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -97,14 +98,14 @@ int main() {
                 m.forward(tok.data(), nullptr);  // refill the arena with clean values
                 capture_site(m, PatchSite::HeadOut, l, h, buf.data());
                 const Patch p{PatchSite::HeadOut, l, h, buf.data()};
-                m.forward(tok.data(), nullptr, -1, &p);
+                m.forward(tok.data(), nullptr, -1, &p, 1);
                 all_identical = all_identical && logits_identical(m, clean);
             }
             for (const auto site : {PatchSite::AttnBlockOut, PatchSite::MlpOut}) {
                 m.forward(tok.data(), nullptr);
                 capture_site(m, site, l, -1, buf.data());
                 const Patch p{site, l, -1, buf.data()};
-                m.forward(tok.data(), nullptr, -1, &p);
+                m.forward(tok.data(), nullptr, -1, &p, 1);
                 all_identical = all_identical && logits_identical(m, clean);
             }
         }
@@ -127,7 +128,7 @@ int main() {
                 restore_ablation(m, Ablation::Head, l, h, saved.data());
 
                 const Patch p{PatchSite::HeadOut, l, h, zeros.data()};
-                m.forward(tok.data(), nullptr, -1, &p);
+                m.forward(tok.data(), nullptr, -1, &p, 1);
 
                 all_identical = all_identical && logits_identical(m, by_weights);
                 for (std::size_t i = 0; i < clean.size(); ++i)
@@ -142,7 +143,7 @@ int main() {
     {
         std::vector<float> buf(block_floats, 0.5f);
         const Patch p{PatchSite::MlpOut, 1, -1, buf.data()};
-        m.forward(tok.data(), nullptr, -1, &p);
+        m.forward(tok.data(), nullptr, -1, &p, 1);
         CHECK(param_checksum(m) == params_before);
     }
 
@@ -157,7 +158,7 @@ int main() {
         std::vector<float> buf(block_floats, 0.25f);
         const int patched_layer = 2;
         const Patch p{PatchSite::MlpOut, patched_layer, -1, buf.data()};
-        m.forward(tok.data(), nullptr, -1, &p);
+        m.forward(tok.data(), nullptr, -1, &p, 1);
 
         bool prefix_identical = true;
         for (std::size_t i = 0; i < btc * static_cast<std::size_t>(patched_layer); ++i)
@@ -195,10 +196,10 @@ int main() {
         CHECK_DIES_WITH(capture_site(m, PatchSite::HeadOut, L, 0, buf.data()), "layer out of range");
 
         const Patch bad_head{PatchSite::HeadOut, 0, NH, buf.data()};
-        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &bad_head), "head out of range");
+        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &bad_head, 1), "head out of range");
 
         const Patch null_repl{PatchSite::MlpOut, 0, -1, nullptr};
-        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &null_repl), "replacement is null");
+        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &null_repl, 1), "replacement is null");
 
         // Found in the Step 1 review: a patch naming a layer that does not
         // exist used to match nothing, so the forward ran CLEAN and the caller
@@ -206,10 +207,29 @@ int main() {
         // worst failure available here -- every downstream number is wrong and
         // nothing says so. This is the check that it now aborts instead.
         const Patch bad_layer{PatchSite::MlpOut, L, -1, buf.data()};
-        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &bad_layer), "layer out of range");
+        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &bad_layer, 1), "layer out of range");
 
         const Patch neg_layer{PatchSite::MlpOut, -1, -1, buf.data()};
-        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &neg_layer), "layer out of range");
+        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &neg_layer, 1), "layer out of range");
+
+        // A patch pointer with a count of zero applies NOTHING and returns a
+        // clean result the caller reads as patched -- the same silent class as
+        // the out-of-range layer above, reachable by simply forgetting the count.
+        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, &neg_layer, 0),
+                        "pointer and count disagree");
+
+        // Two patches writing the same region: whichever is applied last would
+        // win silently, and the caller would report one intervention as two.
+        const Patch dup_a{PatchSite::HeadOut, 0, 1, buf.data()};
+        const Patch dup_b{PatchSite::HeadOut, 0, 1, buf.data()};
+        const Patch dup_set[2] = {dup_a, dup_b};
+        CHECK_DIES_WITH(m.forward(tok.data(), nullptr, -1, dup_set, 2), "same region");
+
+        // ...but two patches on DIFFERENT regions are the whole point of a set.
+        const Patch pair[2] = {{PatchSite::HeadOut, 0, 1, buf.data()},
+                               {PatchSite::MlpOut, 2, -1, buf.data()}};
+        m.forward(tok.data(), nullptr, -1, pair, 2);
+        CHECK(std::isfinite(m.acts().logits[0]));
     }
 
     return cppgpt::test::summary();

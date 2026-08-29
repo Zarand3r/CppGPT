@@ -266,8 +266,11 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
       *Cost:* free once the seam exists — same forward count, one scratch buffer, **no pool and no
       RNG**, since the donor is a named prompt rather than a sample. *Gate:* report every baseline
       side by side; a component whose rank changes between them is a finding, not noise.
-- [ ] **A2 · Conditional co-ablation (CoAx). [Q2] — the direct answer to "why does this head look
-      unimportant".**
+- [x] **A2 · Conditional co-ablation (CoAx). [Q2]** — done 2026-08-28. Explains M-17's 22.9×:
+      the L0 heads compensate for each other and `L0mlp` absorbs the block (M-20). **Exceeds the
+      real-time budget by ~10×** — 600 forwards, 327 ms at toy scale versus 30 ms without — so it is
+      opt-in via `--coax`, and at GPT-2 scale (43 min) it is offline outright. The lane rule below
+      stands; this item does not meet it, and says so rather than being quietly reclassified.
       Self-repair: remove a head and a dormant backup takes over, so the primary measures small
       *and* the backup measures small on the intact model. Both look unimportant; neither is. CoAx
       scores each remaining unit by **how much its ablation effect grows once a primary set is

@@ -136,9 +136,22 @@ better description of the 22.9× gap in §5 than "non-additivity".
 
 The correction is to score components *conditionally*: ablate a primary set
 first, then ask how much each remaining component's effect **grows**. With 24
-components in this model all 576 ordered pairs are affordable, so the exhaustive
-version is available here — the field uses approximations only because at real
-scale it is not. `ROADMAP.md` M6-A2.
+components all 576 ordered pairs are affordable, so the exhaustive version is
+available here — the field approximates only because at real scale it is not.
+
+**This has now been run (M-20), and it explains §5's 22.9×.** The L0 heads cover
+for each other: `L0H3` has a marginal effect of 0.027 but grows by **+0.210**
+the moment `L0H1` is gone — 8.6× its own isolated number. And silencing the whole
+`L0attn` block makes `L0mlp` grow **+2.60** nats. Removing one head leaves three
+siblings and the MLP to compensate; removing the block removes the compensators
+along with the function.
+
+Read the sign. **Positive growth is a backup** — the second component was idle
+until the first was removed. **Negative growth is mediation** — the second
+mattered only *through* the first, so breaking the first makes it matter less
+(silencing `L3mlp` makes `L0attn` matter 2.87 nats *less*). And it is
+directional: `growth(i,j)` and `growth(j,i)` are different numbers, because a
+backup takes over for its primary and not the reverse.
 
 ## 5. Ablation does not decompose
 
@@ -151,6 +164,10 @@ So there is no additive theory that predicts block importance from head
 importance, and any first-order approximation (including attribution patching)
 should be expected to fail on joint ablation while tracking single-component
 ablation. That is a testable prediction, not a caveat.
+
+§4b now carries the measured mechanism (M-20): the ratio is not a fact about
+addition, it is mutual compensation among the heads plus `L0mlp` absorbing the
+block. Non-additivity is the symptom; self-repair is the cause.
 
 ## 6. What this model can and cannot be asked
 

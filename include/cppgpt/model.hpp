@@ -104,14 +104,16 @@ public:
     // softmax + cross-entropy and records `mean_loss`; pass nullptr for inference
     // (logits only — read them from acts().logits).
     //
-    // `patch` (default none) replaces ONE activation site mid-pass — the seam
+    // `patches`/`n_patches` (default none) replace activation sites mid-pass — the seam
     // interchange interventions need, and the only thing in this class that
     // exists for the interpretability layer. See cppgpt/patch.hpp for why no
-    // weight modification can express it. With `patch == nullptr` this function
-    // is bit-identical to the pre-seam build; //tests/unit:interpret_golden_test
-    // and //tests/integration:parity_test both pin that.
+    // weight modification can express it. A SET rather than one, because
+    // conditional co-ablation holds a primary component silenced while measuring
+    // a second. With no patches this function is bit-identical to the pre-seam
+    // build; //tests/unit:interpret_golden_test and
+    // //tests/integration:parity_test both pin that.
     void forward(const int* tokens, const int* targets, int logits_at = -1,
-                 const Patch* patch = nullptr);
+                 const Patch* patches = nullptr, int n_patches = 0);
 
     // Zero the parameter-gradient and activation-gradient arenas. Call before
     // backward(), since every op's backward accumulates (+=).

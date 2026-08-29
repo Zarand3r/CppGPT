@@ -555,3 +555,74 @@ bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare
 What is" --donor "JULIET:
 Why is" --out /tmp/donor.json
 ```
+
+## M-20 · Conditional co-ablation explains M-17's 22.9×
+
+`//tools:inspect --coax 1`, toy checkpoint, prompt `"ROMEO:\nWhat is"`, zero baseline. For every
+ordered pair, how much does *j*'s effect **grow** once *i* is already silenced?
+`growth(i,j) = KL(ablate i ‖ ablate i and j) − KL(clean ‖ ablate j)`.
+
+### The anomaly, restated
+
+| | KL |
+|---|---|
+| ablate the whole L0 attention **block** | 3.6956 |
+| sum of its four **heads** ablated individually | 0.1614 |
+| ratio | **22.9×** |
+
+M-17 recorded this and could only say "no additive theory predicts block importance from head
+importance". CoAx says *why*.
+
+### The mechanism
+
+The L0 heads cover for each other. Each one's marginal effect is near zero because the others absorb
+its removal — and the moment a sibling is gone, the effect appears:
+
+| head | marginal KL | growth once a sibling is silenced |
+|---|---|---|
+| L0H0 | 0.0650 | **+0.1251** (once L0H3 is gone) |
+| L0H1 | 0.0621 | **+0.1867** (once L0H3 is gone) |
+| L0H3 | 0.0274 | **+0.2099** (once L0H1 is gone) — 8.6× its own marginal |
+| L0H2 | 0.0069 | +0.0013 |
+
+And one component absorbs the block as a whole: **silencing `L0attn` makes `L0mlp` grow +2.5977
+nats**, by far the largest single entry involving L0.
+
+So the 22.9× is not a curiosity about addition. Removing one head leaves three siblings and the MLP
+to compensate; removing the block removes the compensators along with the function. That is the
+hydra effect (McGrath et al. 2023) measured directly rather than inferred.
+
+### The strongest relationships found
+
+| silence | and this grows | nats |
+|---|---|---|
+| L1H0 | L0mlp | +5.1819 |
+| L1mlp | L0mlp | +4.4579 |
+| L0mlp | L1H0 | +4.2764 |
+| **L3mlp** | **L0attn** | **−2.8675** |
+
+`L0mlp` is the model's universal backup — almost anything you silence makes it matter more. The
+negative entry is the mirror case and is not noise: silencing `L3mlp` makes `L0attn` matter *less*,
+because L0attn's damage reached the output partly *through* L3mlp. Break the channel and the
+upstream component stops mattering. Direction matters and both are computed.
+
+### Cost, and where this actually belongs
+
+`n + n²` = 600 forward passes at L4/NH4.
+
+| | wall clock |
+|---|---|
+| `inspect --coax 0` | **30 ms** |
+| `inspect --coax 1` | **327 ms** |
+
+That is **~10× the ~50-forward real-time budget** `ROADMAP.md` sets for the interactive lane, which
+is why it is opt-in rather than part of every viewer request. At toy scale 327 ms is still usable
+interactively; at GPT-2 124M, where one forward is 4.34 s (M-14), the same sweep is **43 minutes** and
+the feature is unambiguously offline.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --coax 1 --out /tmp/coax.json
+```

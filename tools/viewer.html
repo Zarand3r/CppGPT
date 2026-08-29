@@ -178,6 +178,7 @@
         This is the quantity the residual norm below only approximates.
       </p>
       <div id="kl"></div>
+      <div id="coax"></div>
     </div>
 
     <div class="panel">
@@ -563,7 +564,7 @@ function drawProv() {
 }
 
 function render() {
-  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL();
+  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax();
   drawAttrib(); drawAblate(); drawPos(); drawProv(); drawArch();
 }
 
@@ -697,6 +698,41 @@ function drawAblate() {
     ` \u2014 ${b2Label}. Which baseline you pick changes this ranking: on the ` +
     `seed prompt 21 of 24 components move (M-19), so "most load-bearing" is a ` +
     `statement about a baseline, never about the model alone.`;
+}
+
+// Conditional co-ablation: which components take over when another is silenced.
+//
+// Why this panel exists. The ablation table ranks components in isolation, and
+// isolation is exactly where self-repair hides -- remove a component, a backup
+// takes over, and BOTH measure small. The pair is the unit of analysis, not the
+// component.
+//
+// Only present when the dump was produced with --coax (600 forward passes, ~10x
+// a normal request), so absence is normal and is stated rather than left blank.
+function drawCoax() {
+  const box = $('#coax');
+  if (!D.coax) {
+    box.innerHTML = '<h2>backup relationships</h2><p class="kv">not in this dump — ' +
+      'rerun inspect with <code>--coax 1</code> (about 10x the passes).</p>';
+    return;
+  }
+  const L = D.coax.labels, G = D.coax.growth;
+  const rows = [];
+  for (let i = 0; i < L.length; i++)
+    for (let j = 0; j < L.length; j++)
+      if (i !== j && G[i][j] !== null) rows.push([G[i][j], L[i], L[j]]);
+  rows.sort((a, b) => b[0] - a[0]);
+  const fmt = r => `<tr><td>${r[1]}</td><td>${r[2]}</td>` +
+    `<td style="text-align:right">${r[0] >= 0 ? '+' : ''}${r[0].toFixed(3)}</td></tr>`;
+  box.innerHTML = '<h2>backup relationships</h2>' +
+    '<p class="kv">How much each component\u2019s effect <em>grows</em> once another is ' +
+    'silenced. Large positive means the second was idle until the first was removed \u2014 ' +
+    'a backup. Negative means the opposite: the second mattered only <em>through</em> the ' +
+    'first. Directional: silencing A may reveal B without the reverse holding.</p>' +
+    '<table class="tbl"><tr><th>silence</th><th>and this grows</th><th>nats</th></tr>' +
+    rows.slice(0, 6).map(fmt).join('') +
+    '<tr><td colspan="3" style="padding-top:.4em">\u2026 most negative:</td></tr>' +
+    rows.slice(-3).reverse().map(fmt).join('') + '</table>';
 }
 
 function drawKL() {

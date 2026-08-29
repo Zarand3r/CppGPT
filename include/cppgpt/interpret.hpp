@@ -166,4 +166,69 @@ void restore_ablation(GPT2& model, Ablation kind, int layer, int head, const flo
 // `head` is ignored unless site == PatchSite::HeadOut.
 void capture_site(const GPT2& model, PatchSite site, int layer, int head, float* out) noexcept;
 
+// ---------------------------------------------------------------------------
+// The component enumeration
+// ---------------------------------------------------------------------------
+//
+// Every sweep in this file walks the same L*(NH+2) components in the same order:
+// per layer, each head, then the MLP, then the attention block. That ordering is
+// a CONTRACT -- `inspect` caches donor activations into a flat array indexed by
+// it, and a slip maps cache[j] onto component i, producing a full table of
+// plausible numbers measuring the wrong components.
+//
+// It lives here, once, for the same reason layer_slice does: the same index
+// arithmetic written out by hand in three places went wrong in two of them.
+struct Component {
+    PatchSite site;
+    int layer;
+    int head;  // -1 for the block sites
+};
+
+[[nodiscard]] inline int n_components(const Config& cfg) noexcept {
+    return cfg.n_layer * (cfg.n_head + 2);
+}
+
+[[nodiscard]] Component component_at(const Config& cfg, int index) noexcept;
+
+// Short label for a component, e.g. "L2H0", "L3mlp", "L0attn". Caller-owned
+// buffer of at least 16 chars.
+void component_label(const Config& cfg, int index, char* out, std::size_t cap) noexcept;
+
+// ---------------------------------------------------------------------------
+// Conditional co-ablation (CoAx)
+// ---------------------------------------------------------------------------
+//
+// Why a marginal sweep is not enough. When a component is silenced, a dormant
+// backup can take over and repair the damage. The primary then measures small
+// (the output barely moved) and the backup ALSO measures small on the intact
+// model (it was doing nothing). Both look irrelevant; neither is. This is the
+// hydra effect (McGrath et al. 2023), and it is why silencing a block is not the
+// sum of silencing its heads -- 22.9x apart at L0 in this model (M-17).
+//
+// CoAx scores the pair instead of the component: how much does j's effect GROW
+// once i is already silenced?
+//
+//   E(j)    = KL( clean            || ablate j          )
+//   E(j|i)  = KL( ablate i         || ablate i and j    )
+//   growth  = E(j|i) - E(j)
+//
+// Large positive growth means j takes over for i -- j was idle until i was
+// removed. That is a backup relationship, and it is directional: growth[i][j]
+// and growth[j][i] are different numbers and both are computed.
+//
+// `replacements` is [n_components * stride] and supplies each component's
+// substitute activations, so the BASELINE is a parameter rather than a constant:
+// all-zeros reproduces zero ablation, a donor forward's captures give resample
+// ablation. `stride` must be patch_floats(cfg, PatchSite::AttnBlockOut, B, T),
+// the largest site, so every component's slot is addressable the same way.
+//
+// Cost is n + n*n forward passes -- 600 at L4/NH4. Exhaustive rather than
+// sampled, which the field cannot afford at production scale and this model can.
+//
+// `out_marginal` receives [n], `out_growth` [n*n] in row-major (i, j) order,
+// both caller-owned. `pos` is the position whose distribution is compared.
+// Read-only with respect to the parameter arena.
+void coax_sweep(GPT2& model, const int* tokens, int pos, const float* replacements,
+                std::size_t stride, double* out_marginal, double* out_growth) noexcept;
+
 }  // namespace cppgpt

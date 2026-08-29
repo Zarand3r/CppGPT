@@ -77,6 +77,30 @@ inline void validate_patch(const Patch& patch, int n_layer, int n_head) noexcept
                "patch: head out of range");
 }
 
+// Validate a whole set, and reject two patches writing the same region.
+//
+// Without the duplicate check, `{HeadOut L0H1 = a, HeadOut L0H1 = b}` would
+// silently apply whichever came last and report a measurement of one
+// intervention as though it were two -- the same silent-wrong-answer shape as a
+// patch naming a layer that does not exist.
+//
+// The pointer and count must agree: `forward(..., &p)` with a defaulted count of
+// zero would apply NOTHING and return a clean result the caller reads as
+// patched.
+inline void validate_patches(const Patch* patches, int n, int n_layer, int n_head) noexcept {
+    ASSERT_MSG((patches == nullptr) == (n == 0), "patch set: pointer and count disagree");
+    ASSERT_MSG(n >= 0, "patch set: negative count");
+    for (int i = 0; i < n; ++i) {
+        validate_patch(patches[i], n_layer, n_head);
+        for (int j = 0; j < i; ++j)
+            ASSERT_MSG(!(patches[i].site == patches[j].site &&
+                         patches[i].layer == patches[j].layer &&
+                         (patches[i].site != PatchSite::HeadOut ||
+                          patches[i].head == patches[j].head)) ,
+                       "patch set: two patches write the same region");
+    }
+}
+
 namespace detail {
 
 // Write `patch->replacement` into `dest` when the patch targets (site, layer).
@@ -89,9 +113,9 @@ namespace detail {
 // A no-op when there is no patch, when it targets another site, or when it
 // targets another layer — so the call sites in the forward pass are
 // unconditional and the branch is one predictable compare per layer.
-inline void apply_patch(const Patch* patch, PatchSite site, int layer, float* dest, int B, int T,
-                        int C, int NH) noexcept {
-    if (patch == nullptr || patch->site != site || patch->layer != layer) return;
+inline void apply_one(const Patch* patch, PatchSite site, int layer, float* dest, int B, int T,
+                      int C, int NH) noexcept {
+    if (patch->site != site || patch->layer != layer) return;
     ASSERT(patch->replacement != nullptr);
 
     const auto bt = static_cast<std::size_t>(B) * static_cast<std::size_t>(T);
@@ -125,6 +149,19 @@ inline void capture_from(PatchSite site, int head, const float* src, float* out,
         std::memcpy(out + i * hs,
                     src + i * static_cast<std::size_t>(C) + static_cast<std::size_t>(head) * hs,
                     hs * sizeof(float));
+}
+
+// Apply every patch in the set that targets (site, layer).
+//
+// A SET rather than a single patch because conditional co-ablation silences a
+// primary component and then measures a second one, which means two live
+// interventions in one forward. Order within the set does not matter: each patch
+// writes a disjoint region (a distinct site, layer, or head), and a set with two
+// patches on the SAME region is a caller error that validate_patches rejects
+// rather than resolving by whichever happens to be written last.
+inline void apply_patches(const Patch* patches, int n, PatchSite site, int layer, float* dest, int B,
+                          int T, int C, int NH) noexcept {
+    for (int i = 0; i < n; ++i) apply_one(&patches[i], site, layer, dest, B, T, C, NH);
 }
 
 }  // namespace detail
