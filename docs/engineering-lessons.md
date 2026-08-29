@@ -307,6 +307,16 @@ every row — which was *correct, merely slower*. That was closed by asserting t
 ("rows other than `logits_at` are left stale"), which until then was a claim with no test. **A
 performance feature verified only for correctness is unverified.**
 
+**Corollary — a comparison that can be satisfied by "nothing changed".** Added 2026-08-24, because
+the rule above did not prevent it. A check that the residual bars track the norm was written as
+`(bar[i] - bar[i-1]) * (norm[i] - norm[i-1]) < 0` → inversion. A **constant** bar width passes it:
+every delta is zero, the product is never negative, and the check cannot tell "encodes the norm"
+from "encodes nothing". Verified by mutation — a fixed 12px bar passed.
+
+Any test phrased over *differences* has this hole, because zero is not negative. Pin the **extremes**
+as well: the largest input must map to the largest output and the smallest to the smallest. That
+single addition rejects both the constant and the inverted encoding.
+
 **Mechanical check.** `tools/mutation_suite.sh` runs a curated battery over the load-bearing files and
 reports survivors. Prose did not prevent recurrence here — the same author wrote all three — so the
 rule ships with something that runs.
