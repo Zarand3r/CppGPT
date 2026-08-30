@@ -249,6 +249,14 @@ void GPT2::forward(const int* tokens, const int* targets, int logits_at,
         double sum = 0.0;
         for (std::size_t bt = 0; bt < BT; ++bt) sum += a.losses[bt];
         mean_loss_ = static_cast<float>(sum / static_cast<double>(BT));
+
+        // A non-finite loss means training has diverged, and every step after it
+        // is noise written into a checkpoint that looks like a checkpoint. The
+        // constitution requires this abort; until now it was a promise with no
+        // enforcement. Fail here rather than let a NaN propagate through
+        // backward, through AdamW's moments (where one NaN poisons a parameter
+        // permanently), and into a saved file.
+        ASSERT_MSG(std::isfinite(mean_loss_), "GPT2::forward: loss is not finite (training diverged)");
     }
 }
 
