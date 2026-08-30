@@ -120,6 +120,78 @@ if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
 fi
 grep -q "they must match" "$WORK/bad.log" || fail "length refusal did not say why"
 
+# ---------- inspect --coax: the conditional co-ablation matrix ----------
+# coax_test covers the library. This covers the EMISSION -- the labels array, the
+# row-major layout, and the NaN diagonal becoming null rather than 0. None of
+# that is exercised by a unit test, and a transposed or mis-shaped matrix would
+# still be valid JSON full of plausible numbers.
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --coax 1 --out "$WORK/coax.json" --top-k 4 \
+           > "$WORK/coax.log" 2>&1 || fail "inspect --coax failed: $(tail -2 "$WORK/coax.log")"
+python3 - "$WORK/coax.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+
+def lab_of(r):
+    return f"L{r['layer']}" + (f"H{r['head']}" if r["head"] >= 0
+                               else ("mlp" if r["kind"] == "mlp" else "attn"))
+
+c = d["coax"]
+L, G = c["labels"], c["growth"]
+n = len(L)
+assert n == len(d["ablation"]), f"coax has {n} labels but the sweep has {len(d['ablation'])}"
+assert len(set(L)) == n, f"duplicate component labels: {L}"
+assert len(G) == n and all(len(r) == n for r in G), "growth is not n x n"
+
+# The diagonal is not a pair. null, never 0 -- a 0 would read as "no interaction".
+assert all(G[i][i] is None for i in range(n)), "diagonal must be null"
+assert all(G[i][j] is not None for i in range(n) for j in range(n) if i != j), \
+    "off-diagonal must be a number"
+
+# Row-major and directional. If the matrix were mirrored or transposed on the way
+# out, every backup relationship would read as mutual.
+asym = [(i, j) for i in range(n) for j in range(n) if i != j and G[i][j] != G[j][i]]
+assert asym, "growth is symmetric -- it should not be; a mirrored emission looks like this"
+
+# ORIENTATION, pinned by a structural identity rather than by trusting the code.
+#
+# Asymmetry alone does not fix orientation: a TRANSPOSED matrix is still
+# asymmetric, and that mutation survived the check above. This one cannot be
+# transposed past.
+#
+# Ablating an attention BLOCK writes attproj directly, which subsumes anything a
+# head in that layer did. So once the block is silenced, additionally silencing
+# one of its heads changes nothing: E(head | block) = 0, and therefore
+#
+#     growth[block][head] = 0 - E(head) = -E(head)   exactly.
+#
+# The reverse cell is a different quantity entirely. Verified against the real
+# checkpoint for all 16 block/head pairs before being written down.
+kz = {}
+for r in d["ablation"]:
+    kz[lab_of(r)] = r["kl_zero"]
+idx = {name: i for i, name in enumerate(L)}
+checked = 0
+for name, i in idx.items():
+    if not name.endswith("attn"):
+        continue
+    layer = name[1:-4]
+    for h_name, j in idx.items():
+        if not h_name.startswith(f"L{layer}H"):
+            continue
+        want = -kz[h_name]
+        got = G[i][j]
+        assert abs(got - want) < 1e-6, \
+            f"growth[{name}][{h_name}] = {got} but block subsumption requires {want}"
+        checked += 1
+assert checked > 0, "no block/head pairs found -- the orientation check ran on nothing"
+
+# Labels must match the enumeration the ablation array uses, in the same order.
+assert L == [lab_of(r) for r in d["ablation"]], \
+    f"coax labels disagree with the ablation order:\n  {L}\n  {[lab_of(r) for r in d['ablation']]}"
+PYEOF
+[ $? -eq 0 ] || fail "coax emission contract failed"
+
 # The dump's contract, checked rather than assumed: valid JSON, attention that is
 # a causal distribution, and a last-layer lens that agrees with the model's own
 # output. That last one is the non-circular check — at the final layer the lens IS

@@ -229,13 +229,15 @@ Two facts settle the borderline cases:
 
 ### Two things stand between the current state and everything below
 
-- [ ] **The `forward_with_patch` seam.** `save_and_ablate` zeroes **weights**. That is why it needs no
+- [x] **The intervention seam — done 2026-08-27 (D10, M-18).** `save_and_ablate` zeroes **weights**. That is why it needs no
       hook — and why it can only ever express *zero* ablation. Mean ablation, donor patching
       (a.k.a. resample ablation), and path patching are all **activation**-level interventions and none of
       them are expressible today. One seam —
-      `forward_with_patch(layer, tensor, position, replacement)` — unlocks A1, A2, A3, A4 and B1 at
-      once, because they are all the same operation with a different choice of donor and sweep axis.
-      Build it first. It is also where a future GPU port hooks.
+      Shipped as a defaulted `(patches, count)` argument on `GPT2::forward` plus three `apply_patch`
+      calls — eight substantive lines in the model layer, with `patch.hpp` a stated exception to the
+      two-layer boundary the build now enforces (D10). A SET rather than one patch, because
+      co-ablation holds a primary silenced while measuring a second. A1, A2 and B1 were built on it;
+      A3 and A4 need no further core work. It is also where a future GPU port hooks.
 - [ ] **A corpus-artifact channel for the viewer.** Every real-time feature is served by one
       per-request `inspect` dump; every offline item produces an artifact that is *not* a function of
       the prompt, and there is no convention for one — no schema, no version field, no loader, no
