@@ -120,6 +120,18 @@ if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
 fi
 grep -q "they must match" "$WORK/bad.log" || fail "length refusal did not say why"
 
+# An out-of-vocab donor must ERROR, not abort. CharTokenizer::encode ASSERTs on a
+# byte it does not know -- right for a library invariant, wrong for a CLI flag.
+# CI found this by passing a donor whose letters the corpus lacked, and inspect
+# core-dumped. Both --prompt and --donor are guarded now.
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+              --prompt "alpha be" --donor "ALPHA BE" --out "$WORK/oov.json" \
+              > "$WORK/oov.log" 2>&1; then
+  fail "inspect accepted an out-of-vocab donor"
+fi
+grep -q "vocabulary does not contain" "$WORK/oov.log" \
+  || fail "out-of-vocab donor did not name the missing characters (aborted?): $(tail -2 "$WORK/oov.log")"
+
 # ---------- inspect --coax: the conditional co-ablation matrix ----------
 # coax_test covers the library. This covers the EMISSION -- the labels array, the
 # row-major layout, and the NaN diagonal becoming null rather than 0. None of
