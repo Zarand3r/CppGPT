@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -310,6 +312,41 @@ int main() {
         for (std::size_t i = 0; i < wo.param_count(); ++i)
             unmoved = unmoved && (wo.params().wte[i] == before[i]);
         CHECK(unmoved);
+    }
+
+    // A checkpoint must never contain a non-finite parameter.
+    //
+    // Not an abort: writing a bad file is a failure of THIS operation, and the
+    // reason matters, so it is a Result -- which is the shape save_checkpoint
+    // already had. ErrorCode::NanOrInf existed in core.hpp with a description
+    // and no producer until 2026-08-30.
+    //
+    // Without it the file is indistinguishable from a good one: right magic,
+    // right version, right param_count, and a checksum that validates the NaNs
+    // faithfully. It loads without complaint and generates garbage.
+    {
+        Config c{};
+        c.max_seq_len = 8;
+        c.vocab_size = 7;
+        c.n_layer = 1;
+        c.n_head = 1;
+        c.n_embd = 8;
+        Generator gg(11ULL);
+        GPT2 m(c, 1, 4);
+        m.init_weights(gg);
+
+        const std::string good = tmp_path("finite.ckpt");
+        CHECK(m.save_checkpoint(good.c_str()).has_value());  // control: writes when finite
+
+        m.params().wte[3] = std::numeric_limits<float>::quiet_NaN();
+        const std::string bad = tmp_path("nan.ckpt");
+        const auto r = m.save_checkpoint(bad.c_str());
+        CHECK(!r.has_value());
+        CHECK(r.error() == ErrorCode::NanOrInf);
+        // Refused means refused: no file, not a truncated or partial one.
+        std::FILE* leftover = std::fopen(bad.c_str(), "rb");
+        CHECK(leftover == nullptr);
+        if (leftover != nullptr) (void)std::fclose(leftover);
     }
 
     return cppgpt::test::summary();

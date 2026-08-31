@@ -392,6 +392,25 @@ void GPT2::ensure_moment_arenas() noexcept {
 
 Result<void> GPT2::save_checkpoint(const char* path, std::uint32_t tokenizer_kind,
                                    std::uint64_t vocab_fingerprint) const noexcept {
+    // A checkpoint containing a non-finite parameter is never valid, under any
+    // circumstance -- unlike a diverged loss, which is a legitimate outcome of a
+    // bad learning rate. So this is a CONTRACT on the artifact, not a runtime
+    // policy: refuse to write, and say why.
+    //
+    // It matters because the file would otherwise be indistinguishable from a
+    // good one: correct magic, correct version, correct param_count, and a
+    // checksum that validates the NaNs faithfully. It would load without
+    // complaint and generate garbage.
+    //
+    // ErrorCode::NanOrInf was declared in core.hpp with a description and
+    // returned by nothing. The vocabulary was designed for this and never wired
+    // up.
+    //
+    // Cost is one pass over the parameters against writing them all -- 124M
+    // predictable comparisons versus a 475 MB write.
+    for (std::size_t i = 0; i < param_count_; ++i)
+        if (!std::isfinite(params_.wte[i])) return err(ErrorCode::NanOrInf);
+
     const bool has_m = (m_ != nullptr);
     const std::size_t nbytes = param_count_ * sizeof(float);
 
