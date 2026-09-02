@@ -30,6 +30,7 @@
 #include <fstream>
 #include <numeric>
 #include <sstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -206,7 +207,7 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb", "ablate", "run-url", "donor", "coax"});
+                          "max-mb", "ablate", "run-url", "donor", "coax", "circuits"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
@@ -214,6 +215,7 @@ int main(int argc, char** argv) {
     const std::string out_path(args.str("out", ""));
     const std::string donor_prompt(args.str("donor", ""));
     const bool do_coax = args.integer("coax", 0) != 0;  // matches --ablate's idiom
+    const int circuit_top = args.integer("circuits", 8);  // 0 disables
     if (ckpt.empty() || vocab_path.empty() || prompt.empty() || out_path.empty()) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
@@ -829,6 +831,63 @@ int main(int argc, char** argv) {
             js += "]";
         }
         js += "]}";
+    }
+    // Weight-space head circuits: what each head reads for and writes, as a
+    // property of the WEIGHTS rather than of this prompt. Every other panel in
+    // this dump describes one forward pass; these describe the head.
+    //
+    // Only the strongest entries of each row are emitted. The full tables are
+    // V^2 per head per circuit -- 2.5e9 at GPT-2's vocabulary, and even here
+    // 16 heads x 2 circuits x 65^2 is 135k floats nobody reads exhaustively.
+    if (circuit_top > 0) {
+        const int n_top = std::min(circuit_top, V);
+        std::vector<float> tbl(circuit_floats(cfg));
+        std::vector<int> idx(static_cast<std::size_t>(V));
+
+        const auto emit_rows = [&](const char* name) {
+            js += "\"";
+            js += name;
+            js += "\": [";
+            for (int t = 0; t < V; ++t) {
+                if (t) js += ", ";
+                const float* row = tbl.data() + static_cast<std::size_t>(t) * V;
+                for (int i = 0; i < V; ++i) idx[static_cast<std::size_t>(i)] = i;
+                std::partial_sort(idx.begin(), idx.begin() + n_top, idx.end(),
+                                  [&](int a, int b) { return row[a] > row[b]; });
+                js += "[";
+                for (int i = 0; i < n_top; ++i) {
+                    if (i) js += ", ";
+                    const int k = idx[static_cast<std::size_t>(i)];
+                    const int one[1] = {k};
+                    js += "{\"t\": \"";
+                    json_escape(js, tok.decode(std::span<const int>(one, 1)));
+                    js += "\", \"v\": ";
+                    append_float(js, row[k]);
+                    js += "}";
+                }
+                js += "]";
+            }
+            js += "]";
+        };
+
+        js += ",\n  \"circuits\": [";
+        bool first_c = true;
+        for (int l = 0; l < cfg.n_layer; ++l)
+            for (int h = 0; h < cfg.n_head; ++h) {
+                if (!first_c) js += ", ";
+                first_c = false;
+                js += "{\"layer\": " + std::to_string(l) + ", \"head\": " + std::to_string(h);
+                ov_circuit(model, l, h, tbl.data());
+                js += ", \"copying\": ";
+                append_float(js, copying_score(tbl.data(), V));
+                js += ", ";
+                emit_rows("ov");
+                qk_circuit(model, l, h, tbl.data());
+                js += ", ";
+                emit_rows("qk");
+                js += "}";
+            }
+        js += "]";
     }
     js += "\n}\n";
 

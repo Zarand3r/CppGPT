@@ -100,8 +100,6 @@ void residual_backward_cpu(float* da, float* db, const float* dout, int N) noexc
     }
 }
 
-// Canonical GPT-2 LayerNorm epsilon (protocol-fixed, not a tunable).
-constexpr float kLayerNormEps = 1e-5f;
 
 void layernorm_forward_cpu(float* out, float* mean, float* rstd, const float* inp,
                            const float* weight, const float* bias, int B, int T, int C) noexcept {

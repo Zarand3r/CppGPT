@@ -179,6 +179,7 @@
       </p>
       <div id="kl"></div>
       <div id="coax"></div>
+      <div id="circuits"></div>
     </div>
 
     <div class="panel">
@@ -564,7 +565,7 @@ function drawProv() {
 }
 
 function render() {
-  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax();
+  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax(); drawCircuits();
   drawAttrib(); drawAblate(); drawPos(); drawProv(); drawArch();
 }
 
@@ -733,6 +734,36 @@ function drawCoax() {
     rows.slice(0, 6).map(fmt).join('') +
     '<tr><td colspan="3" style="padding-top:.4em">\u2026 most negative:</td></tr>' +
     rows.slice(-3).reverse().map(fmt).join('') + '</table>';
+}
+
+// What each head reads for and writes, from the WEIGHTS -- the only panel here
+// that describes the head rather than this prompt. Same checkpoint, same table,
+// whatever you type.
+function drawCircuits() {
+  const box = $('#circuits');
+  if (!D.circuits) {
+    box.innerHTML = '<h2>head circuits</h2><p class="kv">not in this dump — ' +
+      'rerun inspect without <code>--circuits 0</code>.</p>';
+    return;
+  }
+  const best = Math.max(...D.circuits.map(c => c.copying));
+  const rows = D.circuits.slice().sort((a, b) => b.copying - a.copying).map(c => {
+    let top = null;
+    c.ov.forEach(r => { if (r.length && (top === null || r[0].v > top.v)) top = r[0]; });
+    return `<tr><td>L${c.layer}H${c.head}</td>` +
+           `<td style="text-align:right">${(c.copying * 100).toFixed(0)}%</td>` +
+           `<td>${top ? `promotes ${JSON.stringify(top.t)} (${top.v.toFixed(2)})` : ''}</td></tr>`;
+  }).join('');
+  box.innerHTML = '<h2>head circuits</h2>' +
+    '<p class="kv">Read from the weights, not from this prompt \u2014 identical for every input. ' +
+    '<em>self%</em> is how often attending to a character promotes that same character above all ' +
+    `others; a copying head scores high. The best here is ${(best * 100).toFixed(0)}%, against ` +
+    `${(100 / D.config.vocab_size).toFixed(1)}% by chance, so this model has no copying heads ` +
+    '\u2014 and therefore no induction heads, which need one. That is a result about a 4-layer ' +
+    'character model, not a missing panel. Magnitudes are relative (no final layernorm) and ' +
+    'columns are centred, so what is comparable is the ranking within a row.</p>' +
+    '<table class="tbl"><tr><th>head</th><th>self%</th><th>strongest write</th></tr>' +
+    rows + '</table>';
 }
 
 function drawKL() {

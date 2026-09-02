@@ -128,6 +128,18 @@ cc_test(
 # interpretability layer produces. Synthetic model, so it is hermetic -- data/ is
 # gitignored and a test needing that checkpoint could not be green on a clean
 # checkout (engineering-lessons L11).
+# M6-A5: weight-space head circuits. Purity, constructed cases with known
+# answers, and agreement with a real forward where attention is one-hot.
+cc_test(
+    name = "circuits_test",
+    size = "small",
+    srcs = ["circuits_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
 # Step 3 of IMPLEMENTATION_PLAN.md: property P5 and the component enumeration.
 cc_test(
     name = "coax_test",
