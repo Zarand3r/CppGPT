@@ -298,6 +298,8 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
       the lane.**
 - [ ] **A5 · Weight-based QK/OV circuit panels. [Q1] — the highest insight-per-line item in M6, and
       the one this repo can do that GPT-2-scale work cannot.**
+      *The viewer today answers Q2 well and Q1 barely — see `docs/INTERPRETING_EXAMPLE.md`, which
+      walks every existing panel and ends with what is missing. A5, A6 and A7 are that gap.*
       A head is a **QK circuit** (what it reads) and an **OV circuit** (what it writes). Both have
       closed forms over the vocabulary:
       - Full **OV** circuit `W_E · W_V · W_O · W_U` — "if the head attends to source char *i*, how

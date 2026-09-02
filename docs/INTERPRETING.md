@@ -4,6 +4,10 @@ What the viewer and `//tools:inspect` actually measure, what follows from it, an
 mostly — what does not. Every number cited here is owned by
 [`docs/measurements.md`](measurements.md); this file owns the *reasoning*.
 
+For a panel-by-panel walkthrough on a real prompt, with the numbers and what each
+one does and does not support, see
+[`INTERPRETING_EXAMPLE.md`](INTERPRETING_EXAMPLE.md).
+
 The short version: **the panels are honest about single forward passes and the
 reader supplies the overreach.** Almost every mistake available here is the same
 one — treating a measurement of one input as a property of the model.

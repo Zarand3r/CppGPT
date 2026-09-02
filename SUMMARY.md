@@ -125,5 +125,6 @@ no schema, no loader, no place on disk. Needs a `DECISIONS.md` entry before B2/B
 
 **Where the detail lives.** `ROADMAP.md` (the work) · `IMPLEMENTATION_PLAN.md` (execution) ·
 `docs/INTERPRETING.md` (how to read the tools, and what they do not support) ·
+`docs/INTERPRETING_EXAMPLE.md` (a worked walkthrough, panel by panel) ·
 `docs/measurements.md` (every number, with a reproduce command) · `docs/DECISIONS.md` (D1–D10) ·
 `docs/engineering-lessons.md` (L1–L19) · `docs/constitution.md` (human-frozen deal-breakers).
