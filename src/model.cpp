@@ -249,6 +249,14 @@ void GPT2::forward(const int* tokens, const int* targets, int logits_at,
         double sum = 0.0;
         for (std::size_t bt = 0; bt < BT; ++bt) sum += a.losses[bt];
         mean_loss_ = static_cast<float>(sum / static_cast<double>(BT));
+
+        // A non-finite loss means training has diverged, and every step after it
+        // is noise written into a checkpoint that looks like a checkpoint. The
+        // constitution requires this abort; until now it was a promise with no
+        // enforcement. Fail here rather than let a NaN propagate through
+        // backward, through AdamW's moments (where one NaN poisons a parameter
+        // permanently), and into a saved file.
+        ASSERT_MSG(std::isfinite(mean_loss_), "GPT2::forward: loss is not finite (training diverged)");
     }
 }
 
@@ -384,6 +392,25 @@ void GPT2::ensure_moment_arenas() noexcept {
 
 Result<void> GPT2::save_checkpoint(const char* path, std::uint32_t tokenizer_kind,
                                    std::uint64_t vocab_fingerprint) const noexcept {
+    // A checkpoint containing a non-finite parameter is never valid, under any
+    // circumstance -- unlike a diverged loss, which is a legitimate outcome of a
+    // bad learning rate. So this is a CONTRACT on the artifact, not a runtime
+    // policy: refuse to write, and say why.
+    //
+    // It matters because the file would otherwise be indistinguishable from a
+    // good one: correct magic, correct version, correct param_count, and a
+    // checksum that validates the NaNs faithfully. It would load without
+    // complaint and generate garbage.
+    //
+    // ErrorCode::NanOrInf was declared in core.hpp with a description and
+    // returned by nothing. The vocabulary was designed for this and never wired
+    // up.
+    //
+    // Cost is one pass over the parameters against writing them all -- 124M
+    // predictable comparisons versus a 475 MB write.
+    for (std::size_t i = 0; i < param_count_; ++i)
+        if (!std::isfinite(params_.wte[i])) return err(ErrorCode::NanOrInf);
+
     const bool has_m = (m_ != nullptr);
     const std::size_t nbytes = param_count_ * sizeof(float);
 

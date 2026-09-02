@@ -1,0 +1,7 @@
+{
+  "n_layer": 2,
+  "n_head": 2,
+  "n_embd": 8,
+  "vocab_size": 17,
+  "n_positions": 16
+}

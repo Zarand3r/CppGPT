@@ -168,6 +168,40 @@ TopK top_k_of(const float* logits, int V, int k) {
 
 }  // namespace
 
+// Refuse an out-of-vocab string instead of letting CharTokenizer::encode abort.
+//
+// encode() ASSERTs on a byte it does not know, which is correct for a library
+// invariant and wrong for user input: a CLI flag should produce an error and an
+// exit code, not a core dump. CI found this the first time --donor was given a
+// word whose letters the corpus did not contain. tools/serve_viewer.py already
+// guards the prompt this way; the CLI did not, so the same input aborted.
+//
+// Returns true when every byte is in the vocabulary; otherwise prints which
+// characters are missing and returns false.
+[[nodiscard]] bool vocab_covers(const CharTokenizer& tok, const std::string& text, const char* what) {
+    const std::string_view v = tok.vocab();
+    std::string missing;
+    for (const char c : text)
+        if (v.find(c) == std::string_view::npos &&
+            missing.find(c) == std::string::npos)
+            missing.push_back(c);
+    if (missing.empty()) return true;
+
+    std::string shown;
+    for (const char c : missing) {
+        if (!shown.empty()) shown += ' ';
+        if (c == '\n')      shown += "'\\n'";
+        else if (c == '\t') shown += "'\\t'";
+        else { shown += '\''; shown += c; shown += '\''; }
+    }
+    std::fprintf(stderr,
+                 "inspect: --%s uses characters this model's vocabulary does not contain: %s\n"
+                 "  It is a character-level model trained on one corpus, so it knows only the\n"
+                 "  characters that corpus contained.\n",
+                 what, shown.c_str());
+    return false;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
@@ -224,6 +258,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (!vocab_covers(tok, prompt, "prompt")) return 1;
     const std::vector<int> ids = tok.encode(prompt);
     if (ids.empty() || static_cast<int>(ids.size()) > cfg.max_seq_len) {
         std::fprintf(stderr, "inspect: prompt is %zu tokens; must be 1..%d\n", ids.size(),
@@ -240,6 +275,7 @@ int main(int argc, char** argv) {
     // holding position and structure fixed.
     std::vector<int> donor_ids;
     if (!donor_prompt.empty()) {
+        if (!vocab_covers(tok, donor_prompt, "donor")) return 1;
         donor_ids = tok.encode(donor_prompt);
         if (static_cast<int>(donor_ids.size()) != n_pos) {
             std::fprintf(stderr,

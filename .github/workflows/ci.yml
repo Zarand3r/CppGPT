@@ -96,6 +96,15 @@ jobs:
           $B/prepare /tmp/ci_corpus.txt /tmp/ci --val-frac 0.1
           $B/train --data /tmp/ci.train.bin --layers 2 --heads 2 --embd 64 --ctx 32 \
                    --batch 8 --steps 30 --ckpt /tmp/ci.ckpt
+          # --donor and --coax so the panels that READ them are actually rendered.
+          # The donor is a permutation of the prompt's OWN characters: this is a
+          # character-level model trained on one small corpus, and a donor with a
+          # letter the corpus lacks is refused (which is how this line was first
+          # written wrong -- "the lord" aborted inspect before the guard existed).
+          # Without both, drawCoax takes its "not in this dump" branch and the
+          # baseline label takes its "predates schema 6" branch, so the real code
+          # paths for the two newest features are never exercised in CI.
           $B/inspect --checkpoint /tmp/ci.ckpt --vocab /tmp/ci.vocab \
-                     --prompt "the king" --out /tmp/ci_run.json --top-k 5
+                     --prompt "the king" --donor "king the" --coax 1 \
+                     --out /tmp/ci_run.json --top-k 5
           python3 tools/check_viewer.py --html tools/viewer.html --dump /tmp/ci_run.json --require-dump

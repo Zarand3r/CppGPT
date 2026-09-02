@@ -63,3 +63,17 @@ sh_test(
         "//tools:train",
     ],
 )
+
+# convert_hf against a committed synthetic HF checkpoint. The real file is 522 MB
+# and uncommittable; this fixture is 12 KB and covers the two behaviours that
+# matter -- the Conv1D transpose and the tensor reconciliation -- neither of
+# which had any test.
+sh_test(
+    name = "convert_hf_test",
+    size = "small",
+    srcs = ["convert_hf_test.sh"],
+    data = [
+        "//tools:convert_hf",
+        "//tests/fixtures:hf_tiny",
+    ],
+)

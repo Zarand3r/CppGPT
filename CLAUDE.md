@@ -31,6 +31,21 @@ These skills are provided by the **`eng-skills`** plugin (marketplace `Zarand3r/
 
 Skip the heavy workflow for small mechanical edits, but preserve the non-negotiable rules below.
 
+## Standing obligation — keep `SUMMARY.md` current
+
+**[`SUMMARY.md`](SUMMARY.md) is the one-page view of this project**: objective, requirements, system
+design with a block diagram, and the roadmap with status. It is what a new reader (human or agent)
+should be handed first.
+
+**Update it after every significant development** — a merged PR, a milestone item finished or
+started, a design decision, a new constraint, a measurement that changes the plan. Not after every
+commit; after anything that would make the page wrong.
+
+Keep it **short and plain**. It is a summary, not a duplicate: state the conclusion and point at the
+document that owns the detail (`ROADMAP.md` owns the work, `docs/measurements.md` owns the numbers,
+`docs/DECISIONS.md` owns the rationale). If a section is growing past a screen, the detail belongs in
+the owning document and the summary should shrink back.
+
 ## Standing obligation — review→codify loop
 
 This repo maintains **[`docs/engineering-lessons.md`](docs/engineering-lessons.md)**: rules distilled

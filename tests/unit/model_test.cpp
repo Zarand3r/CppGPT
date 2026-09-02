@@ -2,6 +2,7 @@
 // the forward is deterministic (bit-for-bit), and gpt2_backward's gradients match
 // finite differences of the loss end to end — including wte, whose gradient flows
 // through both the tied classifier and the embedding (weight tying).
+#include <limits>
 #include "cppgpt/model.hpp"
 
 #include <cmath>
@@ -265,6 +266,31 @@ int main() {
         std::vector<int> tgt(tok.size(), 0);
         CHECK_DIES_WITH(m.forward(tok.data(), tgt.data(), /*logits_at=*/T - 1),
                         "cannot compute a loss");
+    }
+
+    // A diverged run must abort, not write NaN into a checkpoint.
+    //
+    // docs/constitution.md requires a NaN/Inf-loss abort. It was a promise with
+    // no enforcement until 2026-08-30: nothing in GPT2::forward checked, so a
+    // run that diverged kept stepping, AdamW's moments absorbed the NaN
+    // permanently, and save_checkpoint wrote a file that looks like a
+    // checkpoint. The message is matched because a bare death test would pass
+    // for any abort, including one that happens before the loss is reached.
+    {
+        Config c{};
+        c.max_seq_len = 8;
+        c.vocab_size = 7;
+        c.n_layer = 1;
+        c.n_head = 1;
+        c.n_embd = 8;
+        Generator gg(7ULL);
+        GPT2 nan_model(c, 1, 4);
+        nan_model.init_weights(gg);
+        std::vector<int> tk(4, 0), tg(4, 1);
+        // A single infinity in the embedding is enough: it reaches the logits,
+        // the softmax, and the loss.
+        nan_model.params().wte[0] = std::numeric_limits<float>::infinity();
+        CHECK_DIES_WITH(nan_model.forward(tk.data(), tg.data()), "loss is not finite");
     }
 
     return cppgpt::test::summary();

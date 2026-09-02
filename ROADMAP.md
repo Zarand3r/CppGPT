@@ -229,13 +229,15 @@ Two facts settle the borderline cases:
 
 ### Two things stand between the current state and everything below
 
-- [ ] **The `forward_with_patch` seam.** `save_and_ablate` zeroes **weights**. That is why it needs no
+- [x] **The intervention seam — done 2026-08-27 (D10, M-18).** `save_and_ablate` zeroes **weights**. That is why it needs no
       hook — and why it can only ever express *zero* ablation. Mean ablation, donor patching
       (a.k.a. resample ablation), and path patching are all **activation**-level interventions and none of
       them are expressible today. One seam —
-      `forward_with_patch(layer, tensor, position, replacement)` — unlocks A1, A2, A3, A4 and B1 at
-      once, because they are all the same operation with a different choice of donor and sweep axis.
-      Build it first. It is also where a future GPU port hooks.
+      Shipped as a defaulted `(patches, count)` argument on `GPT2::forward` plus three `apply_patch`
+      calls — eight substantive lines in the model layer, with `patch.hpp` a stated exception to the
+      two-layer boundary the build now enforces (D10). A SET rather than one patch, because
+      co-ablation holds a primary silenced while measuring a second. A1, A2 and B1 were built on it;
+      A3 and A4 need no further core work. It is also where a future GPU port hooks.
 - [ ] **A corpus-artifact channel for the viewer.** Every real-time feature is served by one
       per-request `inspect` dump; every offline item produces an artifact that is *not* a function of
       the prompt, and there is no convention for one — no schema, no version field, no loader, no
@@ -296,6 +298,8 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
       the lane.**
 - [ ] **A5 · Weight-based QK/OV circuit panels. [Q1] — the highest insight-per-line item in M6, and
       the one this repo can do that GPT-2-scale work cannot.**
+      *The viewer today answers Q2 well and Q1 barely — see `docs/INTERPRETING_EXAMPLE.md`, which
+      walks every existing panel and ends with what is missing. A5, A6 and A7 are that gap.*
       A head is a **QK circuit** (what it reads) and an **OV circuit** (what it writes). Both have
       closed forms over the vocabulary:
       - Full **OV** circuit `W_E · W_V · W_O · W_U` — "if the head attends to source char *i*, how
@@ -351,7 +355,7 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
 Done already: **`//tools:ablation_stats`** — 128 windows × 32 tokens, which established the
 median-and-activity-rate summary the rest of this lane should copy (M-16).
 
-- [ ] **B1 · Re-run the corpus ablation study under all three ablation modes. [Q2]** The offline half
+- [x] **B1 · Corpus ablation under both baselines. [Q2]** — done 2026-08-29 (M-21). The offline half
       of A1. M-16's headline — the single-prompt view overstating one head by **8×** its median — was
       measured under zero ablation; whether it survives the donor baseline is unknown and is the first
       thing to find out. *(Small: ~3 s per mode.)*
@@ -485,7 +489,7 @@ on this page.
 
 | Item | Source | Disposition |
 |---|---|---|
-| **5 constitution clauses have no enforcing test** — per-op PyTorch fixtures, every-intermediate-activation parity, the alloc-counter hook, NaN/Inf-loss abort, the `ldd` allow-list | `docs/review-audit.md` 2026-08-03 | ⬜ **Needs your decision.** Each is either "write the test" or "reword the clause", and `docs/constitution.md` is human-frozen — rewording is not an agent's call. The cheapest two are genuinely small: a one-line `ASSERT(std::isfinite(mean_loss_))` in `GPT2::forward`, and an `ldd` check in CI. |
+| **3 constitution clauses have no enforcing test** — per-op PyTorch fixtures, every-intermediate-activation parity, the alloc-counter hook. *(NaN/Inf-loss abort: done 2026-08-30, `ASSERT_MSG(std::isfinite(mean_loss_))` in `GPT2::forward`, pinned by a death test in `model_test`. `ldd` allow-list: done, `tools/check_ldd.sh` in CI.)* | `docs/review-audit.md` 2026-08-03 | ⬜ **Needs your decision.** Each is either "write the test" or "reword the clause", and `docs/constitution.md` is human-frozen — rewording is not an agent's call. The cheapest two are genuinely small: a one-line `ASSERT(std::isfinite(mean_loss_))` in `GPT2::forward`, and an `ldd` check in CI. |
 | `kFnvOffset64` is the textbook FNV-1a-64 basis with a digit dropped | `docs/engineering-lessons.md` L6 | ⬜ **Deferred by design** — it still functions as a hash, and fixing it invalidates every existing checkpoint's checksum. Bundle with the next `kCheckpointVersion` bump. Tracked at the point of use in `checkpoint.hpp`. |
 | `docs/M3_INFERENCE_PLAN.md` risk/invariant/slice IDs are unprefixed (`R1`, `S1`) and collide with `PLAN.md`'s `DR-n` | `docs/review-audit.md` 2026-08-03 | ⬜ Rename to `M3-Rn` / `M3-In` / `M3-Sn`. Cosmetic while the doc is shelved; do it if M3 is ever revived. |
 | `write_token_bin` did tmp+rename but **no `fsync`** — the rule from the lesson whose incident is that very function | `docs/engineering-lessons.md` L5 | ✅ **Fixed** — fsync of file and containing directory. |
@@ -619,7 +623,7 @@ Consolidated so it is not scattered across sections. Everything here is open
 | 2 | **KV cache / right-sized window** | `generate_absolute` pays a full `T=1024` forward per step regardless of prompt length. The algorithmic half of (1); they compound. |
 | 3 | **S2 — Unicode pre-tokenizer** | ASCII is exact; `\p{L}`/`\p{N}` need generated property tables. Non-ASCII currently *fails loudly*, which is correct but limits the tokenizer to English-ish text. |
 | 4 | **Run `review-codify-loop`** | Required by `CLAUDE.md` after any review with ≥3 findings; the 2026-08-18 audit produced five. `docs/engineering-lessons.md` still has no entry for this period's dominant failure mode. |
-| 5 | **Unit tests for tool code** | `convert_hf` and `dump_logits` have **zero** tests (2026-08-20 review). `convert_hf`'s transpose and 148/160 reconciliation are covered only by the real 522 MB download. Unblocked by a small synthetic safetensors fixture — contained, not blocked. Note is at the point of use in `tools/convert_hf.cpp`. |
+| 5 | **Unit tests for tool code** | `dump_logits` has **zero** tests. *(`convert_hf`: done 2026-08-30 — `//tests/integration:convert_hf_test` against a committed 24 KB synthetic safetensors fixture, covering the Conv1D transpose, the tensor reconciliation, and the refusal path; four mutations verified to fail it.)* Unblocked by a small synthetic safetensors fixture — contained, not blocked. Note is at the point of use in `tools/convert_hf.cpp`. |
 | 6 | **`gelu` is 22.5% of a forward** | Now the largest single op. Canonical GPT-2 pins the formula, so this needs a *decision*, not an optimisation. |
 | 7 | **`notebooks/` on `origin/main`** | Committed in error (`c4aeaa8`); 3 files, 24 KB, no secrets. One command to remove. |
 | 8 | **`m1-train` stale branch** | 5 commits, content long since superseded. |

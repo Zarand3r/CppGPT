@@ -4,6 +4,10 @@ What the viewer and `//tools:inspect` actually measure, what follows from it, an
 mostly — what does not. Every number cited here is owned by
 [`docs/measurements.md`](measurements.md); this file owns the *reasoning*.
 
+For a panel-by-panel walkthrough on a real prompt, with the numbers and what each
+one does and does not support, see
+[`INTERPRETING_EXAMPLE.md`](INTERPRETING_EXAMPLE.md).
+
 The short version: **the panels are honest about single forward passes and the
 reader supplies the overreach.** Almost every mistake available here is the same
 one — treating a measurement of one input as a property of the model.
@@ -74,7 +78,10 @@ model are both large and consistent.
 and →first characterise **this prompt**, not the head. Calling something "a
 previous-token head" from one input is the standard error in this field.
 
-**Before believing any single-prompt number, check its median.**
+**Before believing any single-prompt number, check its median.** And note that
+the error's *direction* is not stable: under zero ablation the seed prompt
+**overstates** `L2H0` by 8×, and under a donor baseline the same comparison
+**understates** it by 5× (M-21). "Unreliable in magnitude" undersells it.
 
 ## 4a. Every ablation number here is a *zero*-ablation number
 
@@ -109,6 +116,17 @@ Pick a donor that differs in nothing important and every component looks
 irrelevant. Pick one that differs in everything and the measurement is noise.
 **The donor is part of the measurement**, which is why the dump records it and
 the viewer prints it beside every number.
+
+That is not a hypothetical. The first donor pair chosen for this repo —
+`ROMEO:\nWhat is` against `JULIET:\nWhy is` — shares its structure almost
+entirely, and the whole sweep collapsed: `L0mlp` measured **0.0108** on that pair
+against a corpus median of **6.79** (M-21). A 628× understatement, from a donor
+that looked like a reasonable contrast.
+
+**Run the corpus before believing a donor result, exactly as §4 says to run it
+before believing a single-prompt result.** Across 128 windows `L0mlp` is the most
+important component under *both* baselines. The baseline changes the ranking; it
+does not change that.
 
 One more limit worth naming. The literature's recommended corruption is
 *symmetric token replacement* — swap one semantically matched token, hold the
