@@ -99,8 +99,8 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ✅ | Donor (resample) ablation, baseline named in the UI | merged (#41) |
 | ✅ | Conditional co-ablation — explains M-17's 22.9× as self-repair | merged (#42) |
 | ✅ | Corpus study under both baselines; corrected M-19 | PR #43 open |
-| ⬜ | **A5 — QK/OV circuit panels.** Best value left: prompt-independent, zero forwards, and a 65×65 matrix that fits on screen only because this model is small | next |
-| ⬜ | **A7 — component card.** Consolidates numbers that today live in four outputs | next |
+| ✅ | **A5 — QK/OV circuit panels.** Prompt-independent, zero forwards. Found **no copying heads**, so no induction heads (M-22) | PR #44 |
+| ⬜ | **A7 — component card.** Consolidates numbers that today live in seven panels | next |
 | ⬜ | A3 path patching · A4 causal-tracing grid · A6 neuron views · A8–A15 viewer work | |
 | ⬜ | B2 corpus attention stats · B3 max-activating examples · B4 induction probe | needs the artifact channel |
 | ⬜ | B5 attribution patching + error study · B6 tuned lens · B8 transcoders | |

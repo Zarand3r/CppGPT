@@ -332,4 +332,179 @@ void coax_sweep(GPT2& model, const int* tokens, int pos, const float* replacemen
     }
 }
 
+namespace {
+
+// ln1 applied to one token embedding, into `out` [C]. The layernorm is exact
+// here: the input really is that one row of wte, so mean and variance are known
+// rather than frozen from some forward pass.
+void ln1_of_token(const GPT2& model, int layer, int token, float* out) noexcept {
+    const Config& cfg = model.config();
+    const auto C = static_cast<std::size_t>(cfg.n_embd);
+    const ParamTensors& p = model.params();
+    const float* x = p.wte + static_cast<std::size_t>(token) * C;
+    const float* w = p.ln1w + static_cast<std::size_t>(layer) * C;
+    const float* b = p.ln1b + static_cast<std::size_t>(layer) * C;
+
+    double mean = 0.0;
+    for (std::size_t i = 0; i < C; ++i) mean += static_cast<double>(x[i]);
+    mean /= static_cast<double>(C);
+    double var = 0.0;
+    for (std::size_t i = 0; i < C; ++i) {
+        const double d = static_cast<double>(x[i]) - mean;
+        var += d * d;
+    }
+    var /= static_cast<double>(C);
+    const double rstd = 1.0 / std::sqrt(var + static_cast<double>(kLayerNormEps));
+    for (std::size_t i = 0; i < C; ++i)
+        out[i] = static_cast<float>((static_cast<double>(x[i]) - mean) * rstd *
+                                        static_cast<double>(w[i]) +
+                                    static_cast<double>(b[i]));
+}
+
+// One head's slice of qkvw. `third` selects Q (0), K (1) or V (2): the qkv
+// vector is [Q | K | V] each of width C, and head h owns [h*hs, (h+1)*hs)
+// within each -- the same convention attention_forward reads.
+const float* qkv_head(const GPT2& model, int layer, int head, int third) noexcept {
+    const Config& cfg = model.config();
+    const auto C = static_cast<std::size_t>(cfg.n_embd);
+    const auto hs = C / static_cast<std::size_t>(cfg.n_head);
+    // qkvw is [3C, C] in [out, in] order, so the row index is the out-feature.
+    const std::size_t row = static_cast<std::size_t>(third) * C +
+                            static_cast<std::size_t>(head) * hs;
+    return model.params().qkvw + static_cast<std::size_t>(layer) * 3 * C * C + row * C;
+}
+
+}  // namespace
+
+std::size_t circuit_floats(const Config& cfg) noexcept {
+    const auto V = static_cast<std::size_t>(cfg.vocab_size);
+    return V * V;
+}
+
+void ov_circuit(const GPT2& model, int layer, int head, float* out) noexcept {
+    const Config& cfg = model.config();
+    const int V = cfg.vocab_size, C = cfg.n_embd, NH = cfg.n_head;
+    ASSERT_MSG(layer >= 0 && layer < cfg.n_layer, "ov_circuit: layer out of range");
+    ASSERT_MSG(head >= 0 && head < NH, "ov_circuit: head out of range");
+    ASSERT(out != nullptr);
+
+    const auto Cz = static_cast<std::size_t>(C);
+    const auto hs = Cz / static_cast<std::size_t>(NH);
+    const ParamTensors& p = model.params();
+    const float* wv = qkv_head(model, layer, head, 2);
+    const float* wo = p.attprojw + static_cast<std::size_t>(layer) * Cz * Cz;
+    const std::size_t lo = static_cast<std::size_t>(head) * hs;
+
+    std::vector<float> x(Cz), v(hs), y(Cz);
+    for (int t = 0; t < V; ++t) {
+        ln1_of_token(model, layer, t, x.data());
+
+        // v = x . W_V^T, one head's rows only.
+        for (std::size_t i = 0; i < hs; ++i) {
+            double s = 0.0;
+            for (std::size_t j = 0; j < Cz; ++j)
+                s += static_cast<double>(x[j]) * static_cast<double>(wv[i * Cz + j]);
+            v[i] = static_cast<float>(s);
+        }
+        // y = v . W_O^T. Head h reaches the residual only through attprojw's
+        // input columns [lo, lo+hs) -- the block save_and_ablate zeroes, so the
+        // weight view here and the ablation view stay consistent by definition.
+        for (std::size_t o = 0; o < Cz; ++o) {
+            double s = 0.0;
+            for (std::size_t i = 0; i < hs; ++i)
+                s += static_cast<double>(v[i]) * static_cast<double>(wo[o * Cz + lo + i]);
+            y[o] = static_cast<float>(s);
+        }
+        // logits through the tied unembedding. No final layernorm: its scale is
+        // input-dependent, so magnitudes are relative and the row ranking is not.
+        for (int k = 0; k < V; ++k) {
+            double s = 0.0;
+            const float* u = p.wte + static_cast<std::size_t>(k) * Cz;
+            for (std::size_t o = 0; o < Cz; ++o)
+                s += static_cast<double>(y[o]) * static_cast<double>(u[o]);
+            out[static_cast<std::size_t>(t) * static_cast<std::size_t>(V) +
+                static_cast<std::size_t>(k)] = static_cast<float>(s);
+        }
+    }
+
+    // Centre each COLUMN: subtract, for every target token, its mean over all
+    // sources.
+    //
+    // WHY. Without it the table is dominated by the unembedding rather than by
+    // the head. Measured on the Shakespeare checkpoint, L0H1's top promotion was
+    // the character '&' in 21 of 65 rows and 'Q' in a further 16 -- over half the
+    // table was two rare characters, which have large embedding norms and so win
+    // a dot product against almost any direction.
+    //
+    // The correction is principled rather than cosmetic: a constant offset per
+    // target is shared by every source, so by construction it carries no
+    // information about what THIS head does with THIS source. Removing it leaves
+    // exactly the source-dependent part, which is the question the panel asks.
+    const auto Vz = static_cast<std::size_t>(V);
+    for (int k = 0; k < V; ++k) {
+        double mean = 0.0;
+        for (int t = 0; t < V; ++t)
+            mean += static_cast<double>(out[static_cast<std::size_t>(t) * Vz +
+                                            static_cast<std::size_t>(k)]);
+        mean /= static_cast<double>(V);
+        for (int t = 0; t < V; ++t) {
+            float& e = out[static_cast<std::size_t>(t) * Vz + static_cast<std::size_t>(k)];
+            e = static_cast<float>(static_cast<double>(e) - mean);
+        }
+    }
+}
+
+void qk_circuit(const GPT2& model, int layer, int head, float* out) noexcept {
+    const Config& cfg = model.config();
+    const int V = cfg.vocab_size, C = cfg.n_embd, NH = cfg.n_head;
+    ASSERT_MSG(layer >= 0 && layer < cfg.n_layer, "qk_circuit: layer out of range");
+    ASSERT_MSG(head >= 0 && head < NH, "qk_circuit: head out of range");
+    ASSERT(out != nullptr);
+
+    const auto Cz = static_cast<std::size_t>(C);
+    const auto hs = Cz / static_cast<std::size_t>(NH);
+    const float* wq = qkv_head(model, layer, head, 0);
+    const float* wk = qkv_head(model, layer, head, 1);
+    const float scale = 1.0f / std::sqrt(static_cast<float>(hs));
+
+    // Project every token once into q- and k-space, then take all V^2 dot
+    // products. Doing it per pair would repeat the projection V times.
+    std::vector<float> x(Cz), q(static_cast<std::size_t>(V) * hs),
+        k(static_cast<std::size_t>(V) * hs);
+    for (int tk = 0; tk < V; ++tk) {
+        ln1_of_token(model, layer, tk, x.data());
+        for (std::size_t i = 0; i < hs; ++i) {
+            double sq = 0.0, sk = 0.0;
+            for (std::size_t j = 0; j < Cz; ++j) {
+                sq += static_cast<double>(x[j]) * static_cast<double>(wq[i * Cz + j]);
+                sk += static_cast<double>(x[j]) * static_cast<double>(wk[i * Cz + j]);
+            }
+            q[static_cast<std::size_t>(tk) * hs + i] = static_cast<float>(sq);
+            k[static_cast<std::size_t>(tk) * hs + i] = static_cast<float>(sk);
+        }
+    }
+    for (int d = 0; d < V; ++d)
+        for (int s = 0; s < V; ++s) {
+            double acc = 0.0;
+            for (std::size_t i = 0; i < hs; ++i)
+                acc += static_cast<double>(q[static_cast<std::size_t>(d) * hs + i]) *
+                       static_cast<double>(k[static_cast<std::size_t>(s) * hs + i]);
+            out[static_cast<std::size_t>(d) * static_cast<std::size_t>(V) +
+                static_cast<std::size_t>(s)] = static_cast<float>(acc) * scale;
+        }
+}
+
+float copying_score(const float* ov, int V) noexcept {
+    ASSERT(ov != nullptr && V > 0);
+    int hits = 0;
+    for (int t = 0; t < V; ++t) {
+        const float* row = ov + static_cast<std::size_t>(t) * static_cast<std::size_t>(V);
+        int best = 0;
+        for (int k = 1; k < V; ++k)
+            if (row[k] > row[best]) best = k;
+        hits += (best == t) ? 1 : 0;
+    }
+    return static_cast<float>(hits) / static_cast<float>(V);
+}
+
 }  // namespace cppgpt

@@ -167,6 +167,62 @@ void restore_ablation(GPT2& model, Ablation kind, int layer, int head, const flo
 void capture_site(const GPT2& model, PatchSite site, int layer, int head, float* out) noexcept;
 
 // ---------------------------------------------------------------------------
+// Weight-space head circuits (QK and OV)
+// ---------------------------------------------------------------------------
+//
+// Every other function in this file describes what a component did on ONE
+// prompt. These two describe the head itself: they read only weights, so the
+// same checkpoint always gives the same answer and no forward pass is involved.
+// That is the difference between "this head attended here, once" and "this head
+// is the kind of thing that does X".
+//
+// A head reads through its QK circuit and writes through its OV circuit
+// (Elhage et al., A Mathematical Framework for Transformer Circuits, 2021).
+// Composed end to end over the vocabulary both are [V, V] tables:
+//
+//   OV[t][k]  attending to token t adds this much to the logit of token k
+//   QK[t][s]  at destination token t, this is the attention score for source s
+//
+// At GPT-2's V = 50257 these are 2.5e9 entries and nobody renders them. At this
+// model's V = 65 they are 65x65 and fit on a screen, which is the whole reason
+// this is worth building here.
+//
+// WHAT IS EXACT AND WHAT IS NOT. Both tables apply the layer's ln1 to each token
+// embedding, so the "read" half is exact. Two approximations remain, and they
+// are why the panel says "direct path":
+//
+//   * The residual stream at layer l is a token embedding only at layer 0, and
+//     only ignoring the position embedding. Deeper layers read everything
+//     written before them, so the table describes one TERM of what the head
+//     does, not the whole of it.
+//   * OV omits the final layernorm, whose scale is input-dependent. Magnitudes
+//     are therefore relative; the ranking within a row is not affected.
+//
+// OV is COLUMN-CENTRED: each target token's mean over all sources is removed.
+// Without it the table shows the unembedding, not the head -- rare characters
+// have large embedding norms and win a dot product against almost any direction,
+// and on the Shakespeare checkpoint two of them took the top slot in over half
+// the rows (M-22). A constant per-target offset is shared by every source, so it
+// cannot carry information about what this head does with a particular source.
+//
+// `out` is caller-owned, [V*V] floats, row-major with the SOURCE token as the
+// row. Read-only with respect to the model; nothing here allocates.
+[[nodiscard]] std::size_t circuit_floats(const Config& cfg) noexcept;
+
+void ov_circuit(const GPT2& model, int layer, int head, float* out) noexcept;
+void qk_circuit(const GPT2& model, int layer, int head, float* out) noexcept;
+
+// Fraction of source tokens whose own logit is the largest entry in their OV
+// row -- "attending to t promotes t above everything else".
+//
+// This is NOT Elhage's eigenvalue-based copying score. That one summarises the
+// OV matrix by the fraction of its eigenvalues that are positive, which needs a
+// nonsymmetric eigensolver this repo does not have and could not test cheaply.
+// The diagonal-argmax fraction answers the same question directly, and is named
+// for what it measures rather than borrowing the more familiar term.
+[[nodiscard]] float copying_score(const float* ov, int V) noexcept;
+
+// ---------------------------------------------------------------------------
 // The component enumeration
 // ---------------------------------------------------------------------------
 //

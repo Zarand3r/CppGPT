@@ -699,3 +699,52 @@ for b in zero donor; do
     --prompts 128 --seq 32 --baseline $b --top 24
 done
 ```
+
+## M-22 · This model has no copying heads, and the raw OV table shows the unembedding
+
+`//tools:inspect --circuits`, toy checkpoint. The OV circuit composes
+`ln1 → W_V → W_O → W_U` over the vocabulary: *attending to character `t` promotes character `k` by
+this much*. It reads **only weights**, so it describes the head rather than a prompt.
+
+**Copying score — the fraction of characters whose own logit tops their row:**
+
+| head | score |
+|---|---|
+| L0H1 | **0.092** (6 of 65) |
+| L0H2, L0H3 | 0.031 |
+| the other thirteen | 0.000 |
+
+Chance is 1/65 = 0.015, so the best head is ~6× chance and still negligible. **There are no copying
+heads in this model**, and therefore no induction heads either — an induction head needs a copying OV
+circuit by definition (Olsson et al. 2022). That is a result about a 4-layer character model whose
+regularities are n-gram statistics, capitalisation and line structure, none of which require copying
+a token forward.
+
+### The correction that had to come first
+
+Before column-centring the table measured the unembedding, not the head. On L0H1 the character `&`
+was the top promotion in **21 of 65 rows** and `Q` in a further 16 — over half the table was two rare
+characters, which have large embedding norms and so win a dot product against almost any direction.
+
+Centring each column (removing, for every target, its mean over all sources) cut that to 18 of 65 and
+raised the copying score from 0.062 to 0.092.
+
+The justification is a priori rather than a fit to the outcome: a constant offset per target is shared
+by every source, so it cannot carry information about what one head does with one source. It was
+applied once, for that reason, and the residual concentration (`Q` 10, `&` 8, `E` 8) was left alone
+rather than tuned away.
+
+### What the table is not
+
+Exact for the read half — the layer's own `ln1` is applied to each embedding. Two approximations
+remain, both stated in the panel: the residual stream is a token embedding only at **layer 0** and
+only ignoring position, so for deeper layers this is one *term* of what the head does; and the final
+layernorm is omitted, its scale being input-dependent, so magnitudes are relative while rankings
+within a row are not.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --out /tmp/circ.json
+```

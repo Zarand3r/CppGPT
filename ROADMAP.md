@@ -296,8 +296,10 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
       over a position × layer grid rather than over components. *Cost:* 1 forward per site, so the
       grid is `T·L` forwards — 56 (~34 ms) at T=14, 256 (~0.9 s) at T=64. **Cap the grid or it leaves
       the lane.**
-- [ ] **A5 · Weight-based QK/OV circuit panels. [Q1] — the highest insight-per-line item in M6, and
-      the one this repo can do that GPT-2-scale work cannot.**
+- [x] **A5 · Weight-based QK/OV circuit panels. [Q1]** — done 2026-09-02 (M-22). Prompt-independent,
+      zero forwards. Result: **no copying heads** (best 0.092 against 0.015 chance), so no induction
+      heads either. Column-centring was required first — the raw table showed the unembedding, with
+      two rare characters taking the top slot in over half the rows.
       *The viewer today answers Q2 well and Q1 barely — see `docs/INTERPRETING_EXAMPLE.md`, which
       walks every existing panel and ends with what is missing. A5, A6 and A7 are that gap.*
       A head is a **QK circuit** (what it reads) and an **OV circuit** (what it writes). Both have
