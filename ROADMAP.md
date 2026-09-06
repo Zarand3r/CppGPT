@@ -464,8 +464,8 @@ Three facts frame it, and none are pessimism for its own sake:
   linear probes match or beat SAE probes, and on OthelloGPT — a small model with known ground truth,
   the closest analogue to this repo — SAEs recovered 9 of 180 features.
 
-- [x] **M7-1 · SVD of the OV/QK circuits.** Done 2026-09-06 (M-23). Weights-only, but **685 ms** —
-      the Jacobi SVD dominates a request, which is what makes M7-2 worth doing. **The
+- [x] **M7-1 · SVD of the OV/QK circuits.** Done 2026-09-06 (M-23). Weights-only, **63 ms** of a 90 ms
+      request in a release build (M-24). An earlier figure of 685 ms was the debug binary. **The
       structure claim is retracted** (M-23): a random head on the same trained embeddings reaches
       0.654 against the real head's 0.684, so the category structure belongs to the vocabulary
       geometry every head shares, not to the head. Three errors found by adversarial review — swapped
@@ -473,8 +473,10 @@ Three facts frame it, and none are pessimism for its own sake:
       randomised the embeddings too. What survives: the leading singular value grows ~3,000× with
       training.
 - [x] **M7-2 · Cache weight-space panels per checkpoint.** Done 2026-09-06 (M-23). The panel is
-      prompt-independent, so `serve_viewer` computes it once at startup: **1,238 ms → 538 ms** per
-      request, 2.3×. No invalidation logic — the server serves one checkpoint for its lifetime.
+      prompt-independent, so `serve_viewer` computes it once at startup: **90 ms → 27 ms** per request
+      (M-24). No invalidation logic — the server serves one checkpoint for its lifetime. Note the
+      honest version: this was argued for on a 685 ms figure that was the debug build. At 63 ms saved
+      it is kept for being fifteen gated lines, not because latency demanded it.
 - [ ] **M7-3 · The corpus-artifact channel.** **Decision made — D11**: binary envelope with a
       checkpoint-style header and checksum identity, merged by `inspect` so the viewer still opens one
       file. Implementation open; ship it with M7-4 so the channel has a real consumer rather than

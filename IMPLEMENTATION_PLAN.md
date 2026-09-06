@@ -46,17 +46,18 @@ Almost everything here is **fit offline, apply real-time**. That is the shape to
 | Causal validation (Step 6) | — | 1 forward per intervention |
 | Attention SAEs (Step 7) | training loop, hours | one matmul |
 
-**Measured (M-23).** The weight-space panel costs **685 ms** of a 1,274 ms request — the Jacobi
-decomposition is nearly all of it — and its output is **byte-identical across different prompts**,
-verified. A first timing said 96 ms and was taken before the SVD landed; that wrong number was nearly
-used to argue Step 2 was not worth doing. Step 2 caches it: **1,238 ms → 538 ms**, 2.3×.
+**Measured (M-24).** The weight-space panel costs **63 ms** of a 90 ms request in a release build,
+and its output is **byte-identical across different prompts**, verified. Two earlier figures were
+wrong in opposite directions — 96 ms taken before the SVD existed, then 685 ms taken through
+`bazel-bin/`, which is a symlink to whichever config built last and was pointing at the debug binary.
+Time through `bazel-out/k8-opt/bin/`, never `bazel-bin/`.
 
 ---
 
 ## The steps at a glance
 
 - [x] **Step 1** — SVD of the OV/QK circuits. Done (M-23). Gates P1, P2 green; six mutations verified.
-- [x] **Step 2** — Cache the weight-space panel at server startup. Done: 1,238 ms → 538 ms.
+- [x] **Step 2** — Cache the weight-space panel at server startup. Done: 90 ms → 27 ms (M-24).
 - [ ] **Step 3** — The corpus-artifact channel. **Decided (D11)**, not built. Ship with Step 4.
 - [ ] **Step 4** — Max-activating examples over `fch_gelu` — the first artifact consumer. Gates P3.
 - [ ] **Step 5** — Linear probes for candidate directions. Gates P4.

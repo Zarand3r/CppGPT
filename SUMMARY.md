@@ -101,7 +101,7 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ✅ | Conditional co-ablation — explains M-17's 22.9× as self-repair | merged (#42) |
 | ✅ | Corpus study under both baselines; corrected M-19 | PR #43 open |
 | ✅ | **A5 — QK/OV circuit panels.** Found **no copying heads**, so no induction heads (M-22) | PR #44 |
-| ✅ | **M7-1 SVD of the circuits · M7-2 caching** (1,238→538 ms) · **D11** artifact format decided | PR #44 |
+| ✅ | **M7-1 SVD of the circuits · M7-2 caching** (90→27 ms) · **D11** artifact format decided | PR #44 |
 | ⬜ | **A7 — component card.** Consolidates numbers that today live in seven panels | next |
 | ⬜ | A3 path patching · A4 causal-tracing grid · A6 neuron views · A8–A15 viewer work | |
 | ⬜ | B2 corpus attention stats · B3 max-activating examples · B4 induction probe | needs the artifact channel |

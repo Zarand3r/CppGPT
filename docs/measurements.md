@@ -229,6 +229,17 @@ than 634 s.
 
 ## M-11 · Model quality vs baselines
 
+> **Checkpoint identity.** This row measures `data/shakespeare-v1-1.82nats.ckpt` — the M-8 model.
+> `data/shakespeare.ckpt` has since been overwritten by Run B's best checkpoint (M-13), so the
+> reproduce command below now prints Run B's numbers and **the opposite headline**. Verified:
+> the two files differ, and the command run against `shakespeare.ckpt` today reports *"beats the best
+> n-gram by 8.9%"* where this row says *"loses by 7.9%"*.
+>
+> `docs/EXPERIMENTS.md` pre-registered this exact hazard in writing — that `shakespeare.ckpt` is what
+> the viewer serves and an overwrite would silently change published panels — and it happened anyway.
+> Every row below that says "toy checkpoint" means whichever file that path held when it was written;
+> M-16 onward are Run B.
+
 `//tools:eval`, `--config=release`, the M-8 toy checkpoint (L4 H4 C128 V65 ctx64) over the full
 TinyShakespeare validation split. Deterministic: sequential non-overlapping windows, 110,592 of
 111,539 tokens scored (947 dropped as a partial trailing batch, and reported rather than hidden).
@@ -821,4 +832,56 @@ bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare
 What is" --out /tmp/svd.json
 # the corrected statistics, including the trained-embeddings/random-head null:
 .venv/bin/python3 scripts/svd_purity.py data/shakespeare.ckpt data/shakespeare.vocab /tmp/untrained.ckpt
+```
+
+## M-24 · What `inspect` actually costs, and a measurement method that was wrong
+
+`//tools:inspect`, toy checkpoint, prompt `"ROMEO:\nWhat is"`, **release build**, best of 10.
+
+| | wall |
+|---|---|
+| `--ablate 0 --circuits 0` | 14 ms |
+| + the 24-forward ablation sweep | 27 ms |
+| + circuits and their SVD (default) | **90 ms** |
+| + `--coax 1` (600 forwards) | 396 ms |
+
+The weight-space panel costs **63 ms**; a full request is **90 ms**.
+
+### The method that was wrong
+
+Figures of 685 ms for the panel and 1,238 ms for a request were published in `ROADMAP.md`,
+`IMPLEMENTATION_PLAN.md` and `SUMMARY.md` — **15× too large**. Every one of them timed
+`bazel-bin/tools/inspect`, and **`bazel-bin/` is a symlink to whichever configuration built last**. A
+`bazel build //...` between the `--config=release` build and the measurement silently repointed it at
+the debug binary.
+
+Side by side at the same commit and prompt:
+
+| build | full request |
+|---|---|
+| `bazel-out/k8-fastbuild/` (debug) | 828 ms |
+| `bazel-out/k8-opt/` (release) | **94 ms** |
+
+**8.8×.** Debug is not a slower release build for timing purposes; it is a different measurement.
+
+Time through the explicit config path — `bazel-out/k8-opt/bin/tools/...` — or `bazel run
+--config=release`, never `bazel-bin/`. M-20's CoAx figures (30 ms / 327 ms) are sound because the
+symlink happened to point at release; the release numbers above (27 ms / 396 ms) confirm them.
+
+### What this changes
+
+M7-2's cache was argued for on 685 ms of a 1,238 ms request. The real saving is **63 ms of 90 ms** —
+still 3.3×, but on a request that was already interactive. It stays because it is fifteen lines
+gated by a mutation-tested invariant, not because latency demanded it, and the roadmap now says that
+instead of keeping the argument that motivated it.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:inspect
+B=bazel-out/k8-opt/bin/tools/inspect          # NOT bazel-bin/
+for f in "--ablate 0 --circuits 0" "--circuits 0" "" "--coax 1"; do
+  time $B --checkpoint $PWD/data/shakespeare.ckpt --vocab $PWD/data/shakespeare.vocab \
+    --prompt "ROMEO:
+What is" $f --out /tmp/t.json
+done
 ```
