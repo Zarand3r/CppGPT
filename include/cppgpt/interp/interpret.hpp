@@ -114,6 +114,16 @@ void softmax_into(float* out, const float* logits, int V) noexcept;
 // KL(p || q) in nats. q is clamped away from zero: after a softmax no entry is
 // truly zero, but a denormal would produce inf and silently poison a whole
 // series of comparisons.
+//
+// PRECONDITION: both p and q are normalised distributions. The result is
+// non-negative only under that condition -- against an unnormalised q it can and
+// does go negative (checked: p={.5,.5}, q={.9,.9} gives -0.588). Every caller
+// here passes softmax_into output, which is normalised by construction, so this
+// is a documented domain rather than a check: verifying it would cost a pass
+// over V on every component of every sweep to restate what softmax guarantees.
+//
+// Terms with p below 1e-12 are skipped. They contribute at most ~1e-12*log(1e18)
+// each, and skipping them is what keeps a denormal from dominating the sum.
 [[nodiscard]] double kl_divergence(const float* p, const float* q, int V) noexcept;
 
 // ---------------------------------------------------------------------------
