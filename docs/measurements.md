@@ -824,6 +824,31 @@ of the weights alone, and `e2e_pipeline_test` proves the consequence the server 
 response assembled from a cached panel plus a `--circuits 0` run equals one that computed everything.
 Verified by mutation: making `ov_circuit` read a single activation makes that gate fail.
 
+### A defect the tests missed, found by adversarial review
+
+`svd_square` **aborted the process** on exactly-rank-deficient input from n=6 upward — an 8×8 matrix
+of ones, whose answer it computes correctly at n=5. Two independent causes, both confirmed by
+reproduction:
+
+- The convergence guard was purely **per-pair relative**: `|apq| <= tol*sqrt(app*aqq)` compares a
+  pair against itself, so the threshold shrank in lockstep with the column it judged. A column of
+  pure rounding residue never converged — each rotation halved it and halved the threshold. On the
+  8×8 all-ones case the loop reached a bit-exact fixed point and spun to the sweep cap, which is an
+  `ASSERT`, which is a `SIGABRT`.
+- `tau*tau` overflows to `+inf` above 1.34e154, giving an **identity rotation** that still counted as
+  progress — so no sweep cap could ever terminate it.
+
+**The unit test contained the failing case and did not catch it.** Its rank-1 block was pinned to
+`n = 5`, below the threshold. Changing that single constant to 8 turns the test into a crash. A
+degenerate-input test that runs at one small size is not a degenerate-input test; it is now run at
+n = 5, 6, 8, 16, 32 and 65.
+
+Fixed with an absolute convergence floor tied to the largest column norm, plus an overflow-safe
+rotation. **The published numbers above are unaffected** — verified bit-identical, worst singular
+value change 0.00e+00 across all 64 directions — because real OV/QK tables are rank-deficient by
+*rounding*, not exactly, and float noise gives their null-space columns a floor that never triggered
+the livelock. The defect was in the public API, not in what this measurement used it for.
+
 ### Why this measurement exists
 
 `IMPLEMENTATION_PLAN.md` P6 requires negative and partial results to be recorded with the same detail

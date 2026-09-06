@@ -531,6 +531,28 @@ void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept {
     // meaningless basis on the screen labelled as a direction.
     constexpr int kMaxSweeps = 60;
     constexpr double kTol = 1e-14;
+
+    // The scale every convergence test is measured against.
+    //
+    // A purely PER-PAIR relative test livelocks. Adversarial review found this:
+    // `|apq| <= kTol*sqrt(app*aqq)` compares a pair against itself, so the
+    // threshold shrinks in lockstep with the column it is judging. A column that
+    // is nothing but rounding residue never converges -- each rotation halves it
+    // and halves the threshold, forever. On an 8x8 matrix of ones the loop
+    // reached a bit-exact fixed point and spun until the sweep cap aborted the
+    // PROCESS. It reproduced from n=6 upward, and the unit test missed it only
+    // because that block was pinned to n=5.
+    //
+    // The fix is an absolute floor: a column negligible against the LARGEST
+    // column in the matrix is already converged, whatever its own norm is.
+    double scale = 0.0;
+    for (std::size_t k = 0; k < nz; ++k) {
+        double nk = 0.0;
+        for (std::size_t i = 0; i < nz; ++i) nk += w[i * nz + k] * w[i * nz + k];
+        scale = std::fmax(scale, std::sqrt(nk));
+    }
+    const double floor2 = (scale * 1e-15) * (scale * 1e-15);  // squared, to compare with app/aqq
+
     int sweep = 0;
     for (; sweep < kMaxSweeps; ++sweep) {
         bool rotated = false;
@@ -543,17 +565,45 @@ void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept {
                     aqq += xq * xq;
                     apq += xp * xq;
                 }
-                // Already orthogonal (or both columns vanish): nothing to do.
-                if (std::fabs(apq) <= kTol * std::sqrt(app * aqq) || apq == 0.0) continue;
+                // Already orthogonal, both columns vanish, or one is negligible
+                // against the matrix as a whole.
+                if (apq == 0.0) continue;
+                if (app <= floor2 || aqq <= floor2) continue;
+                if (std::fabs(apq) <= kTol * std::sqrt(app * aqq)) continue;
 
                 // The rotation that zeroes apq. Written via tau/t rather than
                 // atan2 for the usual numerical reason: it stays accurate when
                 // the two column norms are nearly equal.
                 const double tau = (aqq - app) / (2.0 * apq);
-                const double tt = (tau >= 0.0 ? 1.0 : -1.0) /
-                                  (std::fabs(tau) + std::sqrt(1.0 + tau * tau));
+                // tau*tau overflows to +inf above sqrt(DBL_MAX) ~ 1.34e154, which
+                // gives t = 0 and an IDENTITY rotation -- a no-op that still
+                // counted as progress, so the loop could never terminate at any
+                // sweep cap. Above the threshold the exact formula degenerates to
+                // its asymptote t -> 1/(2|tau|), which is what is used.
+                //
+                // DEFENCE IN DEPTH, and deliberately not separately gated: with
+                // the two guards above in place this branch appears unreachable.
+                // |tau| > 1e150 needs |apq| < |aqq-app|/2e150, while the relative
+                // guard needs |apq| > 1e-14*sqrt(app*aqq); together those require
+                // aqq/app < 2.5e-273, and the absolute floor already requires
+                // aqq/app > 1e-30. Removing it does not fail any test.
+                //
+                // It stays anyway. That reachability argument is arithmetic about
+                // floating-point edge cases, which is exactly the kind of
+                // reasoning that turns out to be wrong, and the cost of being
+                // wrong here is an infinite loop that kills the process.
+                constexpr double kTauMax = 1e150;
+                const double sign = (tau >= 0.0 ? 1.0 : -1.0);
+                const double tt = (std::fabs(tau) > kTauMax)
+                                      ? sign / (2.0 * std::fabs(tau))
+                                      : sign / (std::fabs(tau) + std::sqrt(1.0 + tau * tau));
                 const double c = 1.0 / std::sqrt(1.0 + tt * tt);
                 const double sn = c * tt;
+
+                // A rotation that is numerically the identity changes nothing, so
+                // reporting it as progress is what turns a fixed point into an
+                // infinite loop. Belt and braces alongside the two guards above.
+                if (sn == 0.0) continue;
 
                 for (std::size_t i = 0; i < nz; ++i) {
                     const double xp = w[i * nz + p], xq = w[i * nz + q];

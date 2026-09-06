@@ -146,8 +146,13 @@ int main() {
     }
 
     // ---- DEGENERATE INPUTS terminate and stay well-formed ----
-    {
-        const int n = 5;
+    //
+    // The sizes here are the point. An adversarial review found svd_square
+    // ABORTING THE PROCESS on exactly-rank-deficient input from n=6 upward, and
+    // this block passed only because it was pinned to n=5 -- below the threshold
+    // where the defect appears. A degenerate-input test that runs at one small
+    // size is not a degenerate-input test. Every size below is checked.
+    for (const int n : {5, 6, 8, 16, 32, 65}) {
         std::vector<float> z(static_cast<std::size_t>(n) * n, 0.0f);
         std::vector<float> u(z.size()), s(static_cast<std::size_t>(n)), vt(z.size());
         svd_square(z.data(), n, u.data(), s.data(), vt.data());
@@ -171,6 +176,17 @@ int main() {
             rest_zero = rest_zero && s[static_cast<std::size_t>(i)] < 1e-3f;
         CHECK(rest_zero);
         CHECK(reconstruction_error(r1.data(), u.data(), s.data(), vt.data(), n) < 1e-3);
+
+        // An exactly-rank-1 matrix of identical entries: the case that aborted.
+        // Its answer is known exactly -- s = {n, 0, 0, ...}.
+        std::vector<float> ones(static_cast<std::size_t>(n) * n, 1.0f);
+        svd_square(ones.data(), n, u.data(), s.data(), vt.data());
+        CHECK(std::fabs(static_cast<double>(s[0]) - n) < 1e-3);
+        bool ones_rest_zero = true;
+        for (int i = 1; i < n; ++i)
+            ones_rest_zero = ones_rest_zero && s[static_cast<std::size_t>(i)] < 1e-3f;
+        CHECK(ones_rest_zero);
+        CHECK(reconstruction_error(ones.data(), u.data(), s.data(), vt.data(), n) < 1e-3);
     }
 
     // ---- THE INPUT IS NOT MODIFIED ----
