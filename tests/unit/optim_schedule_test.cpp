@@ -83,9 +83,9 @@ int main() {
     // gradients reach the weights unreported.
     {
         std::vector<float> g{1.0f, std::nanf("")};
-        CHECK_DIES(IGNORE(clip_grad_norm(g.data(), 2, 1.0f)));
+        CHECK_DIES_WITH(IGNORE(clip_grad_norm(g.data(), 2, 1.0f)), "gradients are not finite");
         std::vector<float> gi{std::numeric_limits<float>::infinity(), 0.0f};
-        CHECK_DIES(IGNORE(clip_grad_norm(gi.data(), 2, 1.0f)));
+        CHECK_DIES_WITH(IGNORE(clip_grad_norm(gi.data(), 2, 1.0f)), "gradients are not finite");
     }
 
     // ---- cosine_lr: warmup == 0 goes straight to the cosine phase ----

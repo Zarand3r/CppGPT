@@ -51,7 +51,7 @@ int main() {
     }
     // an unknown flag must abort, not be ignored
     {
-        CHECK_DIES(make({"prog", "--stpes", "10"}, {"steps", "lr"}));  // typo
+        CHECK_DIES_WITH(make({"prog", "--stpes", "10"}, {"steps", "lr"}), "unknown flag");  // typo
     }
     // a known flag set passes cleanly
     {
@@ -61,7 +61,7 @@ int main() {
     // a malformed number is an error, not a silent 0
     {
         const auto a = make({"prog", "--steps", "12abc"}, {"steps"});
-        CHECK_DIES((void)a.integer("steps", 0));
+        CHECK_DIES_WITH((void)a.integer("steps", 0), "an integer");
     }
     return cppgpt::test::summary();
 }

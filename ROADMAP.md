@@ -519,7 +519,11 @@ Three facts frame it, and none are pessimism for its own sake:
       `stat -c%s`, `cmp`, `sed`, `grep`). `//scripts` already pins a hermetic Python toolchain.
 - [ ] **10 of 14 CLI flags can be ignored** and the e2e stays green — including `--clip` (clipping
       silently disabled) and `--top-k` (greedy silently becomes sampling).
-- [ ] **9 `CHECK_DIES` for 96 `ASSERT` sites**, incl. the `INT_MAX` guard and the lens layer bound.
+- [x] **Every death test now matches its message — 2026-09-06.** The 8 remaining bare `CHECK_DIES`
+      were converted to `CHECK_DIES_WITH`; a bare one passes for *any* abort, which this repo has
+      already been bitten by. Verified: replacing a guard with an unrelated abort now fails the test
+      where it previously passed. (Coverage breadth — 28 death tests against ~96 `ASSERT` sites — is
+      still open; this closes the *quality* half.)
 - [ ] **The document-ownership rule is violated by every document it governs** — measurements appear
       in `DECISIONS.md`, `PLAN.md`, `ROADMAP.md`, both example READMEs and both milestone plans.
 
