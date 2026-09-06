@@ -180,6 +180,7 @@
       <div id="kl"></div>
       <div id="coax"></div>
       <div id="circuits"></div>
+      <div id="neurons"></div>
     </div>
 
     <div class="panel">
@@ -565,7 +566,7 @@ function drawProv() {
 }
 
 function render() {
-  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax(); drawCircuits();
+  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax(); drawCircuits(); drawNeurons();
   drawAttrib(); drawAblate(); drawPos(); drawProv(); drawArch();
 }
 
@@ -783,6 +784,39 @@ function drawCircuits() {
     'larger. Signs are arbitrary in an SVD and are oriented so the largest write is positive.</p>' +
     '<table class="tbl"><tr><th>direction</th><th>strength</th><th>reads</th><th>writes</th></tr>' +
     dirRows + '</table>';
+}
+
+// Max-activating contexts per MLP neuron, from a corpus pass (M7-4).
+//
+// The only panel here built from a CORPUS rather than one prompt, which is what
+// makes it worth having: every other per-component number on this page is a
+// single-prompt claim, and this repo has retracted two of those.
+//
+// It still reports a CORRELATION. What a neuron fires on is not what it causes,
+// and nothing here establishes the second. Naming a neuron from these contexts
+// is the standard error in this field (INTERPRETING.md 4).
+function drawNeurons() {
+  const box = $('#neurons');
+  if (!D.neurons) {
+    box.innerHTML = '<h2>neuron contexts</h2><p class="kv">not in this dump — build one with ' +
+      '<code>neuron_stats</code> and pass <code>--corpus</code>. An artifact from a different ' +
+      'checkpoint is refused, not rendered.</p>';
+    return;
+  }
+  const N = D.neurons;
+  const rows = N.shown.map(e =>
+    `<tr><td>L${e.layer}\u00b7${e.unit}</td>` +
+    `<td style="text-align:right">${e.top[0].act.toFixed(2)}</td>` +
+    `<td>${e.top.slice(0, 3).map(x => `<code>${JSON.stringify(x.text.slice(-16))}</code>`).join(' ')}</td></tr>`
+  ).join('');
+  box.innerHTML = '<h2>neuron contexts</h2>' +
+    `<p class="kv">The corpus contexts that most activate each MLP neuron, over ${N.count} ` +
+    `neurons keeping the top ${N.top_k} each; the ${N.shown.length} with the highest peak are ` +
+    'shown. <strong>This is what a neuron fires on, not what it does.</strong> Firing together ' +
+    'is a correlation; whether the neuron\u2019s activation causes anything downstream is not ' +
+    'established by this panel and needs an intervention. Reading a name off these strings is the ' +
+    'error this repo has already made twice.</p>' +
+    '<table class="tbl"><tr><th>neuron</th><th>peak</th><th>fires on</th></tr>' + rows + '</table>';
 }
 
 function drawKL() {

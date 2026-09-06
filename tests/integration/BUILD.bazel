@@ -57,6 +57,7 @@ sh_test(
     srcs = ["e2e_pipeline_test.sh"],
     data = [
         "//tools:ablation_stats",
+        "//tools:neuron_stats",
         "//tools:eval",
         "//tools:generate",
         "//tools:inspect",

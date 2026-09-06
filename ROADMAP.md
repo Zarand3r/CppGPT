@@ -477,11 +477,13 @@ Three facts frame it, and none are pessimism for its own sake:
       (M-24). No invalidation logic — the server serves one checkpoint for its lifetime. Note the
       honest version: this was argued for on a 685 ms figure that was the debug build. At 63 ms saved
       it is kept for being fifteen gated lines, not because latency demanded it.
-- [ ] **M7-3 · The corpus-artifact channel.** **Decision made — D11**: binary envelope with a
-      checkpoint-style header and checksum identity, merged by `inspect` so the viewer still opens one
-      file. Implementation open; ship it with M7-4 so the channel has a real consumer rather than
-      being built speculatively.
-- [ ] **M7-4 · Max-activating examples** — the first artifact consumer (was B3).
+- [x] **M7-3 · The corpus-artifact channel.** Done 2026-09-06 (D11, M-26). Binary envelope, checksum
+      identity, `Result` on load, merged by `inspect`. Shipped with M7-4 so it has a real consumer.
+      Five mutations fail its tests, including one the first version of the test missed — bounding an
+      allocation sized from an unvalidated header (L3).
+- [x] **M7-4 · Max-activating examples.** Done 2026-09-06 (M-26). 2,048 neurons over 128 windows,
+      852 KB artifact, 0 dead neurons. The panel reports what a neuron *fires on* and says plainly
+      that this is a correlation — the causal half is M7-6.
 - [ ] **M7-5 · Linear probes** for candidate directions, on properties this model could plausibly
       encode: capitalisation, line structure, punctuation, speaker labels.
 - [ ] **M7-6 · Causal validation.** A direction is a hypothesis until steering confirms it, against a

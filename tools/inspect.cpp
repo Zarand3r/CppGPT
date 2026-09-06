@@ -37,6 +37,7 @@
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
 #include "cppgpt/dataloader.hpp"
+#include "cppgpt/interp/artifact.hpp"
 #include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
@@ -207,7 +208,8 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb", "ablate", "run-url", "donor", "coax", "circuits"});
+                          "max-mb", "ablate", "run-url", "donor", "coax", "circuits", "corpus",
+                          "neurons"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
@@ -216,6 +218,8 @@ int main(int argc, char** argv) {
     const std::string donor_prompt(args.str("donor", ""));
     const bool do_coax = args.integer("coax", 0) != 0;  // matches --ablate's idiom
     const int circuit_top = args.integer("circuits", 8);  // 0 disables
+    const std::string corpus_path(args.str("corpus", ""));
+    const int neuron_top = args.integer("neurons", 12);
     if (ckpt.empty() || vocab_path.empty() || prompt.empty() || out_path.empty()) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
@@ -958,6 +962,89 @@ int main(int argc, char** argv) {
                 js += "]}";
             }
         js += "]";
+    }
+    // Corpus artifact (D11), merged in so the viewer still opens one file. The
+    // identity check lives in read_artifact: an artifact from a different
+    // training run renders perfectly and describes another model, so a mismatch
+    // is refused here rather than rendered.
+    if (!corpus_path.empty()) {
+        const auto blob = read_artifact(corpus_path.c_str(), ArtifactKind::NeuronTopK, h.checksum);
+        if (!blob) {
+            std::fprintf(stderr,
+                         "inspect: --corpus '%s' rejected: %s\n"
+                         "  It must be a NeuronTopK artifact built from THIS checkpoint.\n",
+                         corpus_path.c_str(), describe(blob.error()));
+            return 1;
+        }
+        if (blob->size() < sizeof(NeuronTopKHeader)) {
+            std::fprintf(stderr, "inspect: --corpus '%s' is too short to hold a header\n",
+                         corpus_path.c_str());
+            return 1;
+        }
+        NeuronTopKHeader nh{};
+        std::memcpy(&nh, blob->data(), sizeof(nh));
+        const auto want = sizeof(nh) + static_cast<std::size_t>(nh.n_neurons) *
+                                           static_cast<std::size_t>(nh.top_k) *
+                                           neuron_entry_bytes(nh.ctx_len);
+        if (nh.reserved != 0 || blob->size() != want) {
+            std::fprintf(stderr,
+                         "inspect: --corpus '%s' payload is %zu bytes; its own header describes "
+                         "%zu\n",
+                         corpus_path.c_str(), blob->size(), want);
+            return 1;
+        }
+
+        // Rank neurons by peak activation and emit only the strongest, since the
+        // full table is 2,048 neurons and nobody reads it exhaustively.
+        const auto entry_bytes = neuron_entry_bytes(nh.ctx_len);
+        std::vector<int> order(nh.n_neurons);
+        std::vector<float> peak(nh.n_neurons);
+        for (std::uint32_t i = 0; i < nh.n_neurons; ++i) {
+            std::memcpy(&peak[i],
+                        blob->data() + sizeof(nh) +
+                            static_cast<std::size_t>(i) * nh.top_k * entry_bytes,
+                        sizeof(float));
+            order[i] = static_cast<int>(i);
+        }
+        const int n_show = std::min(neuron_top, static_cast<int>(nh.n_neurons));
+        std::partial_sort(order.begin(), order.begin() + n_show, order.end(),
+                          [&](int a, int b) { return peak[a] > peak[b]; });
+
+        js += ",\n  \"neurons\": {\"count\": " + std::to_string(nh.n_neurons);
+        js += ", \"top_k\": " + std::to_string(nh.top_k) + ", \"shown\": [";
+        for (int i = 0; i < n_show; ++i) {
+            if (i) js += ", ";
+            const int ni = order[static_cast<std::size_t>(i)];
+            js += "{\"neuron\": " + std::to_string(ni);
+            js += ", \"layer\": " + std::to_string(ni / (4 * C));
+            js += ", \"unit\": " + std::to_string(ni % (4 * C)) + ", \"top\": [";
+            for (std::uint32_t j = 0; j < nh.top_k; ++j) {
+                if (j) js += ", ";
+                const char* rec = blob->data() + sizeof(nh) +
+                                  (static_cast<std::size_t>(ni) * nh.top_k + j) * entry_bytes;
+                float act = 0.0f;
+                std::int32_t focus = -1;
+                std::memcpy(&act, rec, sizeof(act));
+                std::memcpy(&focus, rec + sizeof(float), sizeof(focus));
+                js += "{\"act\": ";
+                append_float(js, act);
+                js += ", \"text\": \"";
+                std::string ctx;
+                for (std::uint32_t c = 0; c < nh.ctx_len; ++c) {
+                    std::int32_t id = -1;
+                    std::memcpy(&id, rec + sizeof(float) + sizeof(std::int32_t) +
+                                         static_cast<std::size_t>(c) * sizeof(std::int32_t),
+                                sizeof(id));
+                    if (id < 0 || id >= V) continue;  // padding before the window start
+                    const int one[1] = {id};
+                    ctx += tok.decode(std::span<const int>(one, 1));
+                }
+                json_escape(js, ctx);
+                js += "\", \"focus\": " + std::to_string(focus) + "}";
+            }
+            js += "]}";
+        }
+        js += "]}";
     }
     js += "\n}\n";
 

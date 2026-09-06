@@ -104,7 +104,8 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ✅ | **M7-1 SVD of the circuits · M7-2 caching** (90→27 ms) · **D11** artifact format decided | PR #44 |
 | ⬜ | **A7 — component card.** Consolidates numbers that today live in seven panels | next |
 | ⬜ | A3 path patching · A4 causal-tracing grid · A6 neuron views · A8–A15 viewer work | |
-| ⬜ | B2 corpus attention stats · B3 max-activating examples · B4 induction probe | needs the artifact channel |
+| ✅ | **M7-3 artifact channel · M7-4 max-activating examples** — 2,048 neurons over a corpus (M-26) | PR #44 |
+| ⬜ | B2 corpus attention stats · B4 induction probe | the channel now exists |
 | ⬜ | B5 attribution patching + error study · B6 tuned lens · B8 transcoders | |
 
 **M7 — representation and concept interpretability, started.** M7-1 (SVD of the head circuits) is

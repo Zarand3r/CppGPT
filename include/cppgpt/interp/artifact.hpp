@@ -43,6 +43,42 @@ struct ArtifactHeader {
 };
 static_assert(sizeof(ArtifactHeader) == 40, "ArtifactHeader must be exactly 40 bytes on disk");
 
+// ---------------------------------------------------------------------------
+// NeuronTopK payload
+// ---------------------------------------------------------------------------
+//
+// For every MLP neuron, the contexts from a corpus that activated it most. This
+// is the classic first question about a neuron -- "what does it fire on" -- and
+// it needs no new model, because `fch_gelu` is already in the activation arena.
+//
+// Layout, all little-endian, immediately after the envelope header:
+//
+//   uint32 n_neurons     L * 4C
+//   uint32 top_k         entries kept per neuron
+//   uint32 ctx_len       characters of context stored per entry
+//   uint32 reserved      zero
+//   then n_neurons * top_k records, neuron-major, each entry ranked descending:
+//     float32 activation
+//     int32   focus        index within ctx of the position that fired
+//     int32   ctx[ctx_len] token ids, right-aligned so focus is the last real one
+//
+// A neuron that never activated has entries with activation 0 and focus -1;
+// they are kept rather than omitted so a record's offset is arithmetic rather
+// than a lookup, and so "this neuron is dead" is representable.
+struct NeuronTopKHeader {
+    std::uint32_t n_neurons;
+    std::uint32_t top_k;
+    std::uint32_t ctx_len;
+    std::uint32_t reserved;
+};
+static_assert(sizeof(NeuronTopKHeader) == 16, "NeuronTopKHeader must be 16 bytes on disk");
+
+// Bytes one entry occupies: activation + focus + ctx_len token ids.
+[[nodiscard]] inline std::size_t neuron_entry_bytes(std::uint32_t ctx_len) noexcept {
+    return sizeof(float) + sizeof(std::int32_t) +
+           static_cast<std::size_t>(ctx_len) * sizeof(std::int32_t);
+}
+
 // Write atomically (tmp + rename + fsync), like every other cross-tool file here.
 [[nodiscard]] Result<void> write_artifact(const char* path, ArtifactKind kind,
                                           std::uint64_t checkpoint_checksum,

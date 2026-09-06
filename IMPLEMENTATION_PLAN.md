@@ -58,8 +58,8 @@ Time through `bazel-out/k8-opt/bin/`, never `bazel-bin/`.
 
 - [x] **Step 1** — SVD of the OV/QK circuits. Done (M-23). Gates P1, P2 green; six mutations verified.
 - [x] **Step 2** — Cache the weight-space panel at server startup. Done: 90 ms → 27 ms (M-24).
-- [ ] **Step 3** — The corpus-artifact channel. **Decided (D11)**, not built. Ship with Step 4.
-- [ ] **Step 4** — Max-activating examples over `fch_gelu` — the first artifact consumer. Gates P3.
+- [x] **Step 3** — The corpus-artifact channel. Done (D11, M-26). Gates P3.
+- [x] **Step 4** — Max-activating examples over `fch_gelu`. Done (M-26).
 - [ ] **Step 5** — Linear probes for candidate directions. Gates P4.
 - [ ] **Step 6** — Causal validation: a direction is a hypothesis until steering confirms it. Gates P5.
 - [ ] **Step 7** — Attention SAEs, *only if* Steps 4–6 leave something specific unexplained.

@@ -919,3 +919,50 @@ The header had enumerated "two approximations" and this was a silent third; it n
 
 **Reproduce:** `bazel test //tests/unit:circuits_test` — and the two mutations that must fail it are
 dropping the bias, and using `b_K` where `b_Q` is meant.
+
+## M-26 · Max-activating neuron contexts, and what they do not establish
+
+`//tools:neuron_stats` over 128 windows × 32 tokens of the validation split, then
+`inspect --corpus`. For each of the model's **2,048 MLP neurons**, the corpus contexts that activated
+it most. Release build; the pass writes an 852 KB artifact and **0 neurons never activated**.
+
+The strongest, by peak activation:
+
+| neuron | peak | fires on |
+|---|---|---|
+| L3·264 | 14.21 | `" chirurgeonly."` · `"y you."` |
+| L3·260 | 13.57 | `"ll them both,\n"` · `" every cabin,\n"` |
+| L3·327 | 13.42 | `" with your str"` · `"DELLO:\nWhen h"` |
+| L3·291 | 13.29 | `" thou, if the "` · `"so is all the "` |
+
+`L3·260`'s two contexts both end in comma-newline, which reads as a line-ending feature. **That
+reading is not supported by this measurement**, and the panel says so rather than naming it. What a
+neuron fires on is a correlation; whether its activation *causes* anything downstream is a separate
+question that needs an intervention (M7-6). This repo has already retracted two claims made from
+exactly this kind of pattern-reading — M-19 and M-23 — and the second of those was retracted partly
+because an untrained model produced sets that looked equally nameable.
+
+### The identity check, exercised
+
+An artifact built from a **different** checkpoint is refused:
+
+```
+inspect: --corpus 'other.art' rejected: shape mismatch
+  It must be a NeuronTopK artifact built from THIS checkpoint.
+```
+
+This matters because such an artifact renders perfectly otherwise — valid neuron indices, real text,
+every panel filled. It simply describes another model. The e2e builds a second checkpoint and asserts
+the refusal, and asserts that a *matching* artifact still loads, since "refuses everything" would
+otherwise pass. Two mutations fail it: accepting a mismatch, and emitting neurons unranked.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:neuron_stats //tools:inspect
+B=bazel-out/k8-opt/bin/tools
+$B/neuron_stats --checkpoint $PWD/data/shakespeare.ckpt --data $PWD/data/shakespeare.val.bin \
+  --out /tmp/neurons.art --windows 128 --seq 32
+$B/inspect --checkpoint $PWD/data/shakespeare.ckpt --vocab $PWD/data/shakespeare.vocab \
+  --prompt "ROMEO:
+What is" --corpus /tmp/neurons.art --out /tmp/n.json
+```
