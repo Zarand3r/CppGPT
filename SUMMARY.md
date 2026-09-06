@@ -106,8 +106,8 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ⬜ | B5 attribution patching + error study · B6 tuned lens · B8 transcoders | |
 
 **M7 — representation and concept interpretability, started.** M7-1 (SVD of the head circuits) is
-done: the writes side of a direction carries real category structure against an untrained control,
-the reads side does not (M-23). Next → artifact channel → max-activating examples → linear probes → causal
+done, and its headline claim retracted after adversarial review — the category structure belongs to
+the embedding geometry, not the head (M-23). Next → artifact channel → max-activating examples → linear probes → causal
 validation → SAEs only if the rest falls short. `IMPLEMENTATION_PLAN.md` holds the steps and gates.
 The framing matters as much as the order: this model may have no concepts to find, and recording that
 is the deliverable.

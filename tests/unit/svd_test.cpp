@@ -246,6 +246,50 @@ int main() {
         CHECK(above > 0);  // else the bound is satisfied by an all-zero spectrum
     }
 
+    // ---- ORIENTATION: which singular axis is the source side ----
+    //
+    // Adversarial review found the viewer's "reads" and "writes" columns
+    // swapped, which inverted the published example in M-23. Nothing in the test
+    // suite could catch it, because both sides are valid orthonormal bases and
+    // reconstruction holds either way.
+    //
+    // The invariant that settles it: ov_circuit COLUMN-centres its table, so
+    // every column sums to zero over sources. A[:,j] summing to zero forces each
+    // LEFT singular vector to be zero-sum, and leaves the right ones unconstrained.
+    // So u's columns index the source axis -- what the head reads -- and vt's
+    // rows index the target axis. This is a property of the data, not of the
+    // implementation, so it cannot be satisfied by relabelling.
+    {
+        Config cfg{};
+        cfg.max_seq_len = 8;
+        cfg.vocab_size = 11;
+        cfg.n_layer = 2;
+        cfg.n_head = 2;
+        cfg.n_embd = 16;
+        const int V = cfg.vocab_size;
+        GPT2 m(cfg, 1, 5);
+        Generator g4(909ULL);
+        m.init_weights(g4);
+
+        std::vector<float> u(circuit_floats(cfg)), s(static_cast<std::size_t>(V)),
+            vt(circuit_floats(cfg));
+        svd_circuit(m, 0, 0, CircuitKind::Ov, u.data(), s.data(), vt.data());
+
+        double worst_left = 0.0, best_right = 0.0;
+        for (int k = 0; k < V; ++k) {
+            if (s[static_cast<std::size_t>(k)] < 1e-4f) continue;  // null space is arbitrary
+            double su_ = 0.0, sv_ = 0.0;
+            for (int i = 0; i < V; ++i) {
+                su_ += static_cast<double>(u[static_cast<std::size_t>(i) * V + k]);
+                sv_ += static_cast<double>(vt[static_cast<std::size_t>(k) * V + i]);
+            }
+            worst_left = std::fmax(worst_left, std::fabs(su_));
+            best_right = std::fmax(best_right, std::fabs(sv_));
+        }
+        CHECK(worst_left < 1e-4);   // left vectors are zero-sum: the source axis
+        CHECK(best_right > 1e-3);   // right ones are not, or the check is vacuous
+    }
+
     // ---- range checks ----
     {
         Config cfg{};

@@ -749,122 +749,76 @@ bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare
 What is" --out /tmp/circ.json
 ```
 
-## M-23 · Singular directions of a head, against an untrained control
+## M-23 · Singular directions of a head — a retracted claim, and what survives
 
 `//tools:inspect` (M7-1). The OV table says what attending to each *single* character does; its
-singular directions say what the head does in general — each is a weighted mix of characters read, a
-mix written, and a strength. Weights only: no corpus, no training, no prompt.
+singular directions say what the head does in general — a weighted mix of characters read, a mix
+written, a strength. Weights only: no corpus, no training, no prompt.
 
-### The control is the finding
+> **This section originally reported that a head's directions carry real category structure. That
+> claim was wrong in three separate ways and is retracted.** An adversarial review found all three;
+> each was reproduced before being accepted. The corrected result is below, and it is negative.
 
-Eyeballing the trained model is persuasive and unreliable. `L0H1`'s leading direction reads `b t n`
-and writes `. : ,` — consonants to punctuation, a story that writes itself. So the same panel was run
-on an **untrained model of identical shape** (1 training step), and it produces sets that look just as
-nameable: `a w ␣ v → e a h ␣`.
+### What was wrong
 
-Grouping by eye does not distinguish a trained head from noise. What does:
+**1. The two columns were swapped.** For `A[i][j] = Σ u[i][k]·s[k]·vt[k][j]`, and an OV table whose
+row is the attended-to character and whose column is the promoted one, `u`'s columns live in *source*
+space (what the head **reads**) and `vt`'s rows in *target* space (what it **writes**). The panel had
+them the other way. The worked example — *"reads `b t n`, writes `. : ,`"* — was backwards: the
+direction **reads punctuation and writes consonants**, which is also the reading that makes sense,
+since a consonant is what follows a full stop.
 
-| | trained | untrained | chance |
-|---|---|---|---|
-| **writes** — category purity of a direction's top-4 | **0.684** | 0.543 | 0.431 |
-| **reads** — same | 0.617 | 0.551 | 0.431 |
+Now pinned by a test that cannot be satisfied by relabelling: column-centring zeroes each column over
+sources, which forces every *left* singular vector to be zero-sum and leaves the right ones
+unconstrained. That is a property of the data.
 
-Purity is the fraction of a direction's top-4 characters sharing one category (vowel / lowercase /
-uppercase / space / punctuation); chance is the same statistic over uniform draws from this
-vocabulary.
+**2. The chance baseline was computed with a different statistic than the columns beside it.** The
+sampling code drew *two independent samples* — taking the category counts of one and the category set
+of the other. Exact enumeration over all C(65,4) = 677,040 combinations gives **0.530**, not the
+0.431 published. The untrained control at 0.543 is therefore *at chance*, which is a better
+validation of the control than the wrong number allowed anyone to see.
 
-**The writes side carries real structure** — well clear of both the control and chance. **The reads
-side barely beats its control** (0.617 against 0.551), so a story about what a direction *responds
-to* is not supported by this evidence. The panel says so rather than showing both columns as equals.
+**3. The control did not isolate the head.** It randomised the head *and* the embeddings. But
+`OV = ln1(wte)·W_OV·wteᵀ`, and the outer factors are **shared by all sixteen heads**. So the
+comparison conflated "this head learned structure" with "the tied embedding learned structure".
 
-### Magnitude separates them completely
+### The corrected result
 
-| | leading singular value |
-|---|---|
-| trained | up to **296.5** |
-| untrained | **0.1** |
+| | reads | writes |
+|---|---|---|
+| trained | 0.6836 | 0.6172 |
+| untrained model (head **and** embeddings random) | 0.5430 | 0.5508 |
+| **trained embeddings, random head** | **0.6540** | **0.6325** |
+| chance (exact) | 0.5300 | 0.5300 |
 
-A factor of ~3,000. Training grows these circuits enormously — but concentration barely moves
-(leading ÷ sum of top-4: 0.362 trained, 0.296 untrained), so the head's action does not collapse into
-one direction. It stays spread across many.
+The third row is the control that was missing, over 12 random heads on the real embeddings. It
+reproduces almost the whole effect. Of the 0.141 gap between trained and the original control,
+**0.111 appears with no learned head at all.**
 
-### Cost, corrected
+The head-attributable residual is **0.030** on the read side — `p = 0.083`, not significant — and on
+the write side the trained model scores **below** its own null (0.617 against 0.633).
 
-A first timing put the circuits panel at ~96 ms, and that number was taken **before the SVD landed**.
-Measured properly, best-of-3 consecutive runs on the toy checkpoint:
+**So there is no statistically supported head-attributable category structure in these directions.**
+What structure exists belongs to the trained vocabulary geometry, which every OV table inherits for
+free. The viewer says this rather than naming character groups.
 
-| | wall |
-|---|---|
-| `--ablate 0 --circuits 0` | 143 ms |
-| + the 24-forward ablation sweep | 589 ms |
-| + circuits and SVD | **1,274 ms** |
+### What still stands
 
-So the weight-space panel costs **685 ms**, more than half the request, and the Jacobi decomposition
-is nearly all of it — 16 heads × a 65×65 decomposition. It is also **prompt-independent**, so every
-millisecond of it is recomputed for an answer that cannot change. That is what justifies M7-2, which
-this measurement was nearly used to argue *against* on the strength of the wrong first number.
+Magnitude separates trained from untrained completely: the leading singular value reaches **296.5**
+trained against **0.1** untrained, a factor of ~3,000. Training grows these circuits enormously.
+Concentration barely moves (leading ÷ sum of top-4: 0.362 against 0.296), so the head's action stays
+spread across directions rather than collapsing into one.
 
-### After caching (M7-2)
-
-The panel is prompt-independent, so `tools/serve_viewer.py` computes it once at startup and splices
-it into every response. The server already serves one checkpoint for its lifetime and validates it at
-startup, so there is no invalidation logic to get wrong — a different checkpoint is a different
-process.
-
-| per request | wall |
-|---|---|
-| computing the panel every time | 1,238 ms |
-| cached, spliced | **538 ms** |
-
-**2.3× faster**, and the remaining 538 ms is the 24-forward ablation sweep plus model load, which is
-where any further work should go.
-
-The soundness of this rests on a property, not a hope: `circuits_test` proves the panel is a function
-of the weights alone, and `e2e_pipeline_test` proves the consequence the server depends on — a
-response assembled from a cached panel plus a `--circuits 0` run equals one that computed everything.
-Verified by mutation: making `ov_circuit` read a single activation makes that gate fail.
-
-### A defect the tests missed, found by adversarial review
-
-`svd_square` **aborted the process** on exactly-rank-deficient input from n=6 upward — an 8×8 matrix
-of ones, whose answer it computes correctly at n=5. Two independent causes, both confirmed by
-reproduction:
-
-- The convergence guard was purely **per-pair relative**: `|apq| <= tol*sqrt(app*aqq)` compares a
-  pair against itself, so the threshold shrank in lockstep with the column it judged. A column of
-  pure rounding residue never converged — each rotation halved it and halved the threshold. On the
-  8×8 all-ones case the loop reached a bit-exact fixed point and spun to the sweep cap, which is an
-  `ASSERT`, which is a `SIGABRT`.
-- `tau*tau` overflows to `+inf` above 1.34e154, giving an **identity rotation** that still counted as
-  progress — so no sweep cap could ever terminate it.
-
-**The unit test contained the failing case and did not catch it.** Its rank-1 block was pinned to
-`n = 5`, below the threshold. Changing that single constant to 8 turns the test into a crash. A
-degenerate-input test that runs at one small size is not a degenerate-input test; it is now run at
-n = 5, 6, 8, 16, 32 and 65.
-
-Fixed with an absolute convergence floor tied to the largest column norm, plus an overflow-safe
-rotation. **The published numbers above are unaffected** — verified bit-identical, worst singular
-value change 0.00e+00 across all 64 directions — because real OV/QK tables are rank-deficient by
-*rounding*, not exactly, and float noise gives their null-space columns a floor that never triggered
-the livelock. The defect was in the public API, not in what this measurement used it for.
-
-### Why this measurement exists
-
-`IMPLEMENTATION_PLAN.md` P6 requires negative and partial results to be recorded with the same detail
-as positive ones. This is that: one column of the panel is trustworthy, one is not, and both numbers
-are here so a reader does not have to take the distinction on faith.
+And the original methodological point survives intact, having now caught its own author: eyeballing
+does not distinguish a trained head from noise. The untrained model produces character sets that look
+just as nameable. The difference is that the statistic which was supposed to settle it was itself
+wrong three ways, and only a control that isolated the head resolved the question.
 
 **Reproduce**
 ```sh
-# trained
 bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
   --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
 What is" --out /tmp/svd.json
-# untrained control
-bazel run --config=release //tools:train -- --data $PWD/data/shakespeare.train.bin \
-  --layers 4 --heads 4 --embd 128 --ctx 64 --batch 4 --steps 1 --ckpt /tmp/untrained.ckpt
-bazel run --config=release //tools:inspect -- --checkpoint /tmp/untrained.ckpt \
-  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
-What is" --out /tmp/svd_rand.json
+# the corrected statistics, including the trained-embeddings/random-head null:
+.venv/bin/python3 scripts/svd_purity.py data/shakespeare.ckpt data/shakespeare.vocab /tmp/untrained.ckpt
 ```

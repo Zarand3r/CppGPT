@@ -914,13 +914,23 @@ int main(int argc, char** argv) {
 
                     js += "{\"s\": ";
                     append_float(js, ss[static_cast<std::size_t>(d)]);
-                    const auto side = [&](const char* name, bool writes) {
+                    // WHICH SIDE IS WHICH. A[i][j] = sum_k u[i][k] s[k] vt[k][j],
+                    // and ov_circuit builds row i = the attended-to (SOURCE)
+                    // character, column j = the promoted (TARGET) one. So u's
+                    // columns live in source space -- what the head READS -- and
+                    // vt's rows live in target space -- what it WRITES.
+                    //
+                    // These were swapped in the first version, which inverted the
+                    // published example (M-23). The invariant that settles it is
+                    // pinned by a test: column-centring zeroes each column over
+                    // sources, so u's columns are zero-sum and vt's rows are not.
+                    const auto side = [&](const char* name, bool source) {
                         std::partial_sort(idx.begin(), idx.begin() + std::min(4, V), idx.end(),
                                           [&](int a, int b) {
-                                              const float fa = writes
+                                              const float fa = source
                                                   ? flip * su[static_cast<std::size_t>(a) * V + d]
                                                   : flip * svt[static_cast<std::size_t>(d) * V + a];
-                                              const float fb = writes
+                                              const float fb = source
                                                   ? flip * su[static_cast<std::size_t>(b) * V + d]
                                                   : flip * svt[static_cast<std::size_t>(d) * V + b];
                                               return fa > fb;
@@ -935,14 +945,14 @@ int main(int argc, char** argv) {
                             js += "{\"t\": \"";
                             json_escape(js, tok.decode(std::span<const int>(one, 1)));
                             js += "\", \"w\": ";
-                            append_float(js, flip * (writes ? su[static_cast<std::size_t>(k) * V + d]
-                                                           : svt[static_cast<std::size_t>(d) * V + k]));
+                            append_float(js, flip * (source ? su[static_cast<std::size_t>(k) * V + d]
+                                                            : svt[static_cast<std::size_t>(d) * V + k]));
                             js += "}";
                         }
                         js += "]";
                     };
-                    side("reads", false);
-                    side("writes", true);
+                    side("reads", true);    // u -> source space
+                    side("writes", false);  // vt -> target space
                     js += "}";
                 }
                 js += "]}";
