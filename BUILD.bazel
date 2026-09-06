@@ -29,16 +29,16 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 # See docs/DECISIONS.md D10.
 cc_library(
     name = "cppgpt_model",
-    srcs = glob(["src/**/*.cpp"], exclude = ["src/interpret.cpp"]),
-    hdrs = glob(["include/cppgpt/**/*.hpp"], exclude = ["include/cppgpt/interpret.hpp"]),
+    srcs = glob(["src/*.cpp"]),
+    hdrs = glob(["include/cppgpt/*.hpp"]),
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "cppgpt_interp",
-    srcs = ["src/interpret.cpp"],
-    hdrs = ["include/cppgpt/interpret.hpp"],
+    srcs = glob(["src/interp/*.cpp"]),
+    hdrs = glob(["include/cppgpt/interp/*.hpp"]),
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
     deps = [":cppgpt_model"],

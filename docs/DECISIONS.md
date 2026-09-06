@@ -450,8 +450,8 @@ For safetensors — flat by design, because it exists to be read without a frame
 
 ## D10 — Two layers, model and interpretability, enforced by the build
 
-**Decision.** `//:cppgpt` splits into `//:cppgpt_model` (train, inference, load) and
-`//:cppgpt_interp` (logit lens, direct logit attribution, KL, ablation, donor capture, and the
+**Decision (amended 2026-09-06).** `//:cppgpt` splits into `//:cppgpt_model` (train, inference,
+load) and `//:cppgpt_interp` (logit lens, direct logit attribution, KL, ablation, donor capture, and the
 helpers for indexing the activation arena). The umbrella `//:cppgpt` keeps every existing consumer
 working. The interpretability layer reads the model; the model reaching the other way is now a
 compile error rather than a review comment.
@@ -492,11 +492,22 @@ naming problem: `patch.hpp` includes only `core.hpp` and `model_config.hpp` and 
 So the exception is stated rather than defined away, and kept as small as it can be: an enum, a POD,
 and three functions whose entire body is `memcpy` and asserts.
 
-### Cost
+### Amendment: the first version was enforced against a filename
 
-The globs became exclusion lists, so a new `src/*.cpp` joins the model layer by default rather than
-by decision — switch to explicit source lists if the file count grows. Two targets also mean a
-consumer can depend on the wrong one, which is why the umbrella exists.
+The original split used `glob(exclude = ["src/interpret.cpp"])`. An audit showed what that actually
+bought: dropping a **new** interpretability file into `src/` put it in the model layer silently.
+Verified — `bazel query deps(//:cppgpt_model)` listed it. The boundary was enforced against one
+filename, not against the concept, and the "cost" note below predicted exactly this without treating
+it as a defect.
+
+Fixed by moving the layer into its own directory: `src/interp/` and `include/cppgpt/interp/`, with
+**directory-scoped globs and no exclusions**. A file's target is now decided by where it lives.
+Verified in three directions: a new interpretability file in `src/` fails to compile (it cannot see
+the header), the same file in `src/interp/` builds, and `model.cpp` including the header is still a
+hard error.
+
+The remaining cost is that two targets mean a consumer can depend on the wrong one, which is why the
+umbrella `//:cppgpt` exists.
 
 ### What this does NOT claim
 

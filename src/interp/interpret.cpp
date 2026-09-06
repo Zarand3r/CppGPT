@@ -1,4 +1,4 @@
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -514,8 +514,17 @@ void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept {
 
     // Work on a copy: the input is const and callers rely on that (the circuit
     // tables are recomputed rarely and read often).
+    //
+    // A non-finite entry is refused rather than propagated. Audit finding: one
+    // +Inf made this return NORMALLY with NaN in u and a non-finite singular
+    // value -- output indistinguishable from a result. A decomposition of a
+    // matrix containing infinity is not defined, so this is an invalid input,
+    // and invalid input fails fast here as it does everywhere else in the repo.
     std::vector<double> w(nz * nz);
-    for (std::size_t i = 0; i < nz * nz; ++i) w[i] = static_cast<double>(a[i]);
+    for (std::size_t i = 0; i < nz * nz; ++i) {
+        ASSERT_MSG(std::isfinite(a[i]), "svd_square: input is not finite");
+        w[i] = static_cast<double>(a[i]);
+    }
 
     // V accumulates the rotations; it starts as the identity, which is also the
     // right answer for the zero matrix -- so a degenerate input still yields a
@@ -529,7 +538,11 @@ void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept {
     // The cap is an assert rather than a silent return: not converging means the
     // output is not a decomposition, and returning it quietly would put a
     // meaningless basis on the screen labelled as a direction.
-    constexpr int kMaxSweeps = 60;
+    // Classical Jacobi converges in ~10 sweeps for well-scaled input; the cap is
+    // a runaway backstop, not a tuning knob, so it is set well clear of any
+    // legitimate case rather than snugly above the observed one. An audit noted
+    // 60 was tight enough to be reachable by ordinary matrices.
+    constexpr int kMaxSweeps = 200;
     constexpr double kTol = 1e-14;
 
     // The scale every convergence test is measured against.
@@ -646,23 +659,35 @@ void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept {
         if (sig[k] > 0.0) {
             for (std::size_t i = 0; i < nz; ++i) col[i] = w[i * nz + k] / sig[k];
         } else {
+            // Pick the basis vector with the LARGEST residual after projecting
+            // out what is already placed, not the first one over a threshold.
+            // Accepting a small residual and normalising it multiplies the
+            // round-off in that column by 1/residual, which is how a fallback
+            // meant to keep the basis well-formed ends up degrading it.
+            std::vector<double> best(nz, 0.0);
+            double best_norm = -1.0;
             for (std::size_t cand = 0; cand < nz; ++cand) {
                 for (std::size_t i = 0; i < nz; ++i) col[i] = (i == cand) ? 1.0 : 0.0;
-                for (std::size_t prev = 0; prev < out; ++prev) {
-                    double dot = 0.0;
-                    for (std::size_t i = 0; i < nz; ++i)
-                        dot += col[i] * static_cast<double>(u[i * nz + prev]);
-                    for (std::size_t i = 0; i < nz; ++i)
-                        col[i] -= dot * static_cast<double>(u[i * nz + prev]);
-                }
+                // Twice, for stability: one pass leaves components of the earlier
+                // vectors behind when they are nearly parallel to the candidate.
+                for (int pass = 0; pass < 2; ++pass)
+                    for (std::size_t prev = 0; prev < out; ++prev) {
+                        double dot = 0.0;
+                        for (std::size_t i = 0; i < nz; ++i)
+                            dot += col[i] * static_cast<double>(u[i * nz + prev]);
+                        for (std::size_t i = 0; i < nz; ++i)
+                            col[i] -= dot * static_cast<double>(u[i * nz + prev]);
+                    }
                 double norm = 0.0;
                 for (std::size_t i = 0; i < nz; ++i) norm += col[i] * col[i];
-                if (norm > 1e-6) {
-                    norm = std::sqrt(norm);
-                    for (std::size_t i = 0; i < nz; ++i) col[i] /= norm;
-                    break;
+                if (norm > best_norm) {
+                    best_norm = norm;
+                    best = col;
                 }
             }
+            ASSERT_MSG(best_norm > 1e-12, "svd_square: no independent direction left for the basis");
+            const double bn = std::sqrt(best_norm);
+            for (std::size_t i = 0; i < nz; ++i) col[i] = best[i] / bn;
         }
         for (std::size_t i = 0; i < nz; ++i) u[i * nz + out] = static_cast<float>(col[i]);
     }

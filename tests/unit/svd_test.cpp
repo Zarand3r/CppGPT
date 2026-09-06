@@ -18,9 +18,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
 #include "tests/check.hpp"
@@ -288,6 +289,27 @@ int main() {
         }
         CHECK(worst_left < 1e-4);   // left vectors are zero-sum: the source axis
         CHECK(best_right > 1e-3);   // right ones are not, or the check is vacuous
+    }
+
+    // ---- NON-FINITE INPUT is refused, not silently propagated ----
+    //
+    // Audit finding: a single +Inf entry made svd_square return NORMALLY with
+    // NaN in u and a non-finite singular value -- garbage indistinguishable from
+    // a result. The repo's rule is that invalid input fails fast and says why,
+    // and a decomposition of a matrix containing infinity is not defined.
+    {
+        const int n = 6;
+        std::vector<float> a(static_cast<std::size_t>(n) * n, 1.0f);
+        std::vector<float> u(a.size()), s(static_cast<std::size_t>(n)), vt(a.size());
+        a[3] = std::numeric_limits<float>::infinity();
+        CHECK_DIES_WITH(svd_square(a.data(), n, u.data(), s.data(), vt.data()), "not finite");
+        a[3] = std::numeric_limits<float>::quiet_NaN();
+        CHECK_DIES_WITH(svd_square(a.data(), n, u.data(), s.data(), vt.data()), "not finite");
+        // Control: the same matrix without the bad entry must still work, or the
+        // death checks above prove only that something in this block aborts.
+        a[3] = 1.0f;
+        svd_square(a.data(), n, u.data(), s.data(), vt.data());
+        CHECK(std::fabs(static_cast<double>(s[0]) - n) < 1e-3);
     }
 
     // ---- range checks ----

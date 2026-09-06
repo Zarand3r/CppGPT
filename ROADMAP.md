@@ -203,7 +203,7 @@ Method choices are grounded in the literature (§ References at the end of this 
 repo can do something the field normally cannot, that is called out — it is the reason to build it
 here rather than read a paper about it.
 
-**Execution detail for the first three items** — the `forward_with_patch` seam, A1 and A2 — is
+**Execution detail for the first three items** — the patch seam, A1 and A2 — is
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): properties P1–P7, six steps with binary
 acceptance gates, and five design tensions (§D) that need your call before Step 2 lands. This page
 still owns the checkboxes.

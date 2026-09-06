@@ -27,7 +27,7 @@
 #include <cstdio>
 #include <vector>
 
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/ops.hpp"
 #include "cppgpt/random.hpp"

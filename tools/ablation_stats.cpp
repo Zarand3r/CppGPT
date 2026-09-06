@@ -28,7 +28,7 @@
 
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
 #include "tools/cli.hpp"
