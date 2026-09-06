@@ -276,6 +276,66 @@ int main() {
         CHECK(asym);  // W_Q and W_K differ, so QK[d][s] != QK[s][d]
     }
 
+    // ---- the QK table includes the qkv BIASES ----
+    //
+    // Audit finding. attention_forward scores with (W_Q x + b_Q)·(W_K x + b_K);
+    // qk_circuit computed only the weight terms. The dropped cross term
+    // b_Q·(W_K x_s) VARIES WITH THE SOURCE, so it changes the within-row ranking
+    // — exactly what the panel claims to answer. On the trained checkpoint it
+    // moved the most-preferred source on 35% of rows, and 96.9% for L0H0.
+    //
+    // It was invisible to every other test here because they all use
+    // init_weights, which zeroes every bias. A circuit test that only ever sees
+    // a freshly initialised model cannot see a bias bug at all, so this one
+    // sets them.
+    {
+        Config cq = make_config();
+        GPT2 qm(cq, B, T);
+        Generator gq(555ULL);
+        qm.init_weights(gq);
+        const int Vq = cq.vocab_size, Cq = cq.n_embd;
+        const auto hsq = static_cast<std::size_t>(Cq / cq.n_head);
+
+        // Non-zero, non-uniform biases: a constant would be absorbed by any
+        // per-row offset and would not distinguish the two formulas.
+        for (std::size_t i = 0; i < static_cast<std::size_t>(3 * Cq); ++i)
+            qm.params().qkvb[i] = static_cast<float>(0.05 * static_cast<double>(i % 7) - 0.15);
+
+        std::vector<float> qk(circuit_floats(cq));
+        qk_circuit(qm, 0, 0, qk.data());
+
+        // Reference through the library's own ops: layernorm then matmul gives
+        // the qkv vector WITH the bias, exactly as the forward pass builds it.
+        std::vector<float> ref_q(static_cast<std::size_t>(Vq) * hsq),
+            ref_k(static_cast<std::size_t>(Vq) * hsq);
+        std::vector<float> xrow(static_cast<std::size_t>(Cq)), mn(1), rs(1),
+            qkv(static_cast<std::size_t>(3 * Cq));
+        for (int tk = 0; tk < Vq; ++tk) {
+            layernorm_forward(xrow.data(), mn.data(), rs.data(),
+                              qm.params().wte + static_cast<std::size_t>(tk) * Cq,
+                              qm.params().ln1w, qm.params().ln1b, 1, 1, Cq);
+            matmul_forward(qkv.data(), xrow.data(), qm.params().qkvw, qm.params().qkvb, 1, 1, Cq,
+                           3 * Cq);
+            for (std::size_t i = 0; i < hsq; ++i) {
+                ref_q[static_cast<std::size_t>(tk) * hsq + i] = qkv[i];
+                ref_k[static_cast<std::size_t>(tk) * hsq + i] = qkv[static_cast<std::size_t>(Cq) + i];
+            }
+        }
+        const float scale = 1.0f / std::sqrt(static_cast<float>(hsq));
+        double worst = 0.0;
+        for (int d = 0; d < Vq; ++d)
+            for (int s = 0; s < Vq; ++s) {
+                double acc = 0.0;
+                for (std::size_t i = 0; i < hsq; ++i)
+                    acc += static_cast<double>(ref_q[static_cast<std::size_t>(d) * hsq + i]) *
+                           static_cast<double>(ref_k[static_cast<std::size_t>(s) * hsq + i]);
+                acc *= static_cast<double>(scale);
+                worst = std::fmax(worst, std::fabs(acc - static_cast<double>(
+                                      qk[static_cast<std::size_t>(d) * Vq + s])));
+            }
+        CHECK(worst < 1e-3);
+    }
+
     // ---- range checks fail fast and name the invariant ----
     {
         CHECK_DIES_WITH(ov_circuit(m, cfg.n_layer, 0, ov.data()), "layer out of range");

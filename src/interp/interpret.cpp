@@ -465,6 +465,18 @@ void qk_circuit(const GPT2& model, int layer, int head, float* out) noexcept {
     const auto hs = Cz / static_cast<std::size_t>(NH);
     const float* wq = qkv_head(model, layer, head, 0);
     const float* wk = qkv_head(model, layer, head, 1);
+    // The BIASES matter here. attention_forward scores with
+    // (W_Q x + b_Q) . (W_K x + b_K), and the cross term b_Q . (W_K x_s) varies
+    // with the SOURCE, so dropping it changes the within-row ranking -- which is
+    // the only thing this table is read for. On the trained checkpoint it moved
+    // the most-preferred source on 35% of rows, and on 96.9% for L0H0.
+    //
+    // ov_circuit needs no equivalent: b_V and b_O contribute a per-TARGET
+    // constant, which its column-centring removes exactly.
+    const ParamTensors& pp = model.params();
+    const auto bofs = static_cast<std::size_t>(layer) * 3 * Cz + static_cast<std::size_t>(head) * hs;
+    const float* bq = pp.qkvb + bofs;
+    const float* bk = pp.qkvb + bofs + Cz;
     const float scale = 1.0f / std::sqrt(static_cast<float>(hs));
 
     // Project every token once into q- and k-space, then take all V^2 dot
@@ -479,8 +491,10 @@ void qk_circuit(const GPT2& model, int layer, int head, float* out) noexcept {
                 sq += static_cast<double>(x[j]) * static_cast<double>(wq[i * Cz + j]);
                 sk += static_cast<double>(x[j]) * static_cast<double>(wk[i * Cz + j]);
             }
-            q[static_cast<std::size_t>(tk) * hs + i] = static_cast<float>(sq);
-            k[static_cast<std::size_t>(tk) * hs + i] = static_cast<float>(sk);
+            q[static_cast<std::size_t>(tk) * hs + i] =
+                static_cast<float>(sq + static_cast<double>(bq[i]));
+            k[static_cast<std::size_t>(tk) * hs + i] =
+                static_cast<float>(sk + static_cast<double>(bk[i]));
         }
     }
     for (int d = 0; d < V; ++d)

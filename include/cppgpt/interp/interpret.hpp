@@ -188,8 +188,9 @@ void capture_site(const GPT2& model, PatchSite site, int layer, int head, float*
 // this is worth building here.
 //
 // WHAT IS EXACT AND WHAT IS NOT. Both tables apply the layer's ln1 to each token
-// embedding, so the "read" half is exact. Two approximations remain, and they
-// are why the panel says "direct path":
+// embedding AND the qkv biases, so QK reproduces attention_forward's score
+// exactly for a token-embedding input. Two approximations remain, and they are
+// why the panel says "direct path":
 //
 //   * The residual stream at layer l is a token embedding only at layer 0, and
 //     only ignoring the position embedding. Deeper layers read everything

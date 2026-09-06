@@ -885,3 +885,37 @@ for f in "--ablate 0 --circuits 0" "--circuits 0" "" "--coax 1"; do
 What is" $f --out /tmp/t.json
 done
 ```
+
+## M-25 · The QK table was missing the attention biases
+
+`qk_circuit` computed `(W_Q·x)·(W_K·x)` while `attention_forward` scores with
+`(W_Q·x + b_Q)·(W_K·x + b_K)`. The dropped cross term `b_Q·(W_K·x_s)` **varies with the source**, so
+it changes the within-row ranking — which is the only thing the panel is read for.
+
+Measured on the trained checkpoint, fraction of rows whose most-preferred source changes when the
+bias is included:
+
+| | rows changed |
+|---|---|
+| L0H0 | **96.9%** |
+| mean over all 16 heads | **35.0%** |
+
+`max|qkvb| = 0.954`, and all 1,536 entries are non-zero.
+
+### Why no test caught it
+
+Every test in `circuits_test` built its model with `init_weights`, **which zeroes every bias**. A
+circuit test that only ever sees a freshly initialised model cannot see a bias bug at all. The new
+test sets non-uniform biases and compares against a reference built from the library's own
+`layernorm_forward` + `matmul_forward` — the same path the forward pass uses, which includes the bias
+by construction.
+
+`ov_circuit` needs no equivalent fix and this was checked rather than assumed: `b_V` and `b_O`
+contribute a per-*target* constant, which its column-centring removes exactly — perturbing the V-block
+bias changes its output by 0.000e+00.
+
+The header had enumerated "two approximations" and this was a silent third; it now says QK reproduces
+`attention_forward`'s score exactly for a token-embedding input.
+
+**Reproduce:** `bazel test //tests/unit:circuits_test` — and the two mutations that must fail it are
+dropping the bias, and using `b_K` where `b_Q` is meant.
