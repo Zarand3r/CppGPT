@@ -46,18 +46,18 @@ Almost everything here is **fit offline, apply real-time**. That is the shape to
 | Causal validation (Step 6) | — | 1 forward per intervention |
 | Attention SAEs (Step 7) | training loop, hours | one matmul |
 
-**Measured:** the circuits panel costs **~96 ms** on top of a 358 ms `inspect` run (16 heads × 2
-circuits at V=65), and its output is **byte-identical across different prompts** — verified. So it is
-being recomputed on every request for an answer that cannot change. Step 2 fixes that; after it, all
-weight-space panels are free at request time.
+**Measured (M-23).** The weight-space panel costs **685 ms** of a 1,274 ms request — the Jacobi
+decomposition is nearly all of it — and its output is **byte-identical across different prompts**,
+verified. A first timing said 96 ms and was taken before the SVD landed; that wrong number was nearly
+used to argue Step 2 was not worth doing. Step 2 caches it: **1,238 ms → 538 ms**, 2.3×.
 
 ---
 
 ## The steps at a glance
 
-- [ ] **Step 1** — SVD of the OV/QK circuits. Directions, weights-only, no corpus. Gates P1, P2.
-- [ ] **Step 2** — Cache weight-space panels per checkpoint. Makes Steps 1 and A5 free per request.
-- [ ] **Step 3** — The corpus-artifact channel (D11). Unblocks everything below.
+- [x] **Step 1** — SVD of the OV/QK circuits. Done (M-23). Gates P1, P2 green; six mutations verified.
+- [x] **Step 2** — Cache the weight-space panel at server startup. Done: 1,238 ms → 538 ms.
+- [ ] **Step 3** — The corpus-artifact channel. **Decided (D11)**, not built. Ship with Step 4.
 - [ ] **Step 4** — Max-activating examples over `fch_gelu` — the first artifact consumer. Gates P3.
 - [ ] **Step 5** — Linear probes for candidate directions. Gates P4.
 - [ ] **Step 6** — Causal validation: a direction is a hypothesis until steering confirms it. Gates P5.
