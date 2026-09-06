@@ -505,3 +505,58 @@ interpretability layer from *writing* to the model: `save_and_ablate` still muta
 the non-const `params()` overload, documented at the accessor. That write access should leave the
 shipping path once ablation becomes a donor patch, surviving only in `interpret_test` as the
 independent implementation that keeps P2 non-circular (`IMPLEMENTATION_PLAN.md`).
+
+---
+
+## D11 — Corpus artifacts are binary with a checkpoint-style header, not JSON
+
+**Decision.** An offline pass writes a **binary** artifact — magic, version, the producing
+checkpoint's checksum, then the payload — using the same discipline as `checkpoint.hpp`. `inspect`
+reads it, validates it against the live model, and merges it into the dump. The viewer still opens
+exactly one JSON file.
+
+This is `ROADMAP.md`'s long-open "corpus-artifact channel", which blocks M7-4, M7-5, B2 and B4.
+
+### Why binary and not JSON
+
+JSON is the obvious first answer and it is the wrong one here.
+
+**There is no JSON parser in this repo, and writing one is real complexity.** `tools/convert_hf.cpp`
+parses a *flat* safetensors header in ~150 lines and can do so only because that header is one level
+deep with known keys. A corpus artifact carrying per-neuron context lists is not flat. A general
+parser is a few hundred lines of new attack surface, in a codebase whose defining property is having
+no dependencies *and* no unnecessary code.
+
+**The checkpoint format already solves this exact problem.** Versioned header, magic, payload
+checksum, atomic tmp+rename+fsync write, `Result<T, ErrorCode>` on load, refusal without touching
+live state. All of it is written, tested, and understood here. A second format reusing that pattern
+costs almost nothing; a second format in a different serialisation costs a parser.
+
+**Nothing wants to read it by hand.** The artifact is machine-produced and machine-consumed. The
+human-readable output is the dump `inspect` already emits, and that stays JSON.
+
+### The identity check
+
+The artifact records the producing checkpoint's `header().checksum` — a value that already exists,
+already covers header *and* payload, and is already computed on every save. `inspect` compares it
+against the live model and refuses a mismatch with `ErrorCode::ShapeMismatch`-style loudness.
+
+This matters more than it sounds. An artifact of max-activating examples from a *different* training
+run is not obviously wrong when rendered: the neurons have the right indices, the contexts are real
+text, and every panel populates. It would simply be describing another model. Silent staleness is the
+failure mode this channel exists to prevent, and `IMPLEMENTATION_PLAN.md` P3 is the gate.
+
+### Why `inspect` merges rather than the viewer fetching
+
+The viewer must open from `file://` with no external requests (M5-S3, unchanged). A second fetch
+would mean a second file for the user to drop, and a partially-populated page when they forget. One
+dump in, one page out.
+
+The cost is that `inspect` gains an optional input. That is a flag and a validated read, against a
+second loading path in the viewer plus a UI for the failure case.
+
+### What this does not decide
+
+The artifact *payload* layout is per-producer and belongs to whichever step introduces it — M7-4's
+max-activating examples first. This decision fixes the envelope and the identity check, not the
+contents.

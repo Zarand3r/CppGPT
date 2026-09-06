@@ -188,8 +188,14 @@ property is real.
 **Why now:** it blocks Steps 4–7 and B2/B3/B4 in `ROADMAP.md`. It has been flagged as needing a
 `docs/DECISIONS.md` entry since before M6-A1 landed, and four items are now waiting on it.
 
-**The decision to record (D11):** extend the dump schema with an optional `corpus` section that
-`inspect` merges in, or give the viewer a second fetch. Write the entry before the code.
+**Decided — `docs/DECISIONS.md` D11.** A **binary** envelope with a checkpoint-style header
+(magic, version, producing checkpoint's checksum, payload), merged by `inspect` so the viewer still
+opens one file. Not JSON: there is no JSON parser in this repo, `convert_hf` only manages a flat
+header, and a general parser is hundreds of lines of new surface for a machine-to-machine format
+nobody reads by hand. The checkpoint format already solves this and is tested.
+
+**Ship this step together with Step 4** so the channel has a real consumer. A loader with no producer
+is a speculative abstraction, which this repo's doctrine forbids.
 
 ### Tests first
 - [ ] **P3** — an artifact whose checkpoint checksum does not match the live model is refused with a

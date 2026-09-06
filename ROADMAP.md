@@ -473,7 +473,10 @@ Three facts frame it, and none are pessimism for its own sake:
 - [x] **M7-2 · Cache weight-space panels per checkpoint.** Done 2026-09-06 (M-23). The panel is
       prompt-independent, so `serve_viewer` computes it once at startup: **1,238 ms → 538 ms** per
       request, 2.3×. No invalidation logic — the server serves one checkpoint for its lifetime.
-- [ ] **M7-3 · The corpus-artifact channel (D11).** Blocks everything below, and B2/B3/B4.
+- [ ] **M7-3 · The corpus-artifact channel.** **Decision made — D11**: binary envelope with a
+      checkpoint-style header and checksum identity, merged by `inspect` so the viewer still opens one
+      file. Implementation open; ship it with M7-4 so the channel has a real consumer rather than
+      being built speculatively.
 - [ ] **M7-4 · Max-activating examples** — the first artifact consumer (was B3).
 - [ ] **M7-5 · Linear probes** for candidate directions, on properties this model could plausibly
       encode: capitalisation, line structure, punctuation, speaker labels.
