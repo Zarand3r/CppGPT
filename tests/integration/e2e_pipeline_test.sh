@@ -204,6 +204,31 @@ assert L == [lab_of(r) for r in d["ablation"]], \
 PYEOF
 [ $? -eq 0 ] || fail "coax emission contract failed"
 
+# ---------- the weight-space panel is prompt-independent ----------
+# tools/serve_viewer.py computes this panel ONCE at startup and splices it into
+# every response, which is sound only because it cannot depend on the prompt.
+# That premise is checked directly in circuits_test; this checks the CONSEQUENCE
+# the server relies on -- a response assembled from a cached panel plus a
+# --circuits 0 run must equal one that computed everything.
+#
+# Verified by mutation: making ov_circuit read a single activation makes this
+# fail, which is exactly the bug that would otherwise serve stale numbers.
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --out "$WORK/warm.json" --top-k 4 > /dev/null 2>&1
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "be alpha" --out "$WORK/full.json" --top-k 4 > /dev/null 2>&1
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "be alpha" --out "$WORK/fast.json" --top-k 4 --circuits 0 > /dev/null 2>&1
+python3 - "$WORK/warm.json" "$WORK/full.json" "$WORK/fast.json" <<'PYEOF'
+import json, sys
+warm, full, fast = (json.load(open(p)) for p in sys.argv[1:4])
+assert "circuits" not in fast, "--circuits 0 still emitted the panel"
+assert warm["circuits"], "empty panel would make this check vacuous"
+fast["circuits"] = warm["circuits"]        # what serve_viewer actually returns
+assert full == fast, "a cached panel does not reproduce the computed response"
+PYEOF
+[ $? -eq 0 ] || fail "weight-space panel is not prompt-independent"
+
 # The dump's contract, checked rather than assumed: valid JSON, attention that is
 # a causal distribution, and a last-layer lens that agrees with the model's own
 # output. That last one is the non-circular check — at the final layer the lens IS

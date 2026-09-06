@@ -44,6 +44,18 @@ ARGS: argparse.Namespace
 VOCAB: set[str] = set()
 RUN_LOCK = threading.Semaphore(2)   # bound concurrent model runs on a shared box
 
+# The weight-space panel (head circuits and their singular directions) depends
+# only on the checkpoint, never on the prompt -- proven bit-for-bit by
+# tests/unit/circuits_test.cpp's purity check and by comparing two dumps from
+# different prompts. It also costs 685 ms of a 1,274 ms request (M-23), which is
+# more than half the latency spent recomputing an answer that cannot change.
+#
+# So it is computed once, at startup, and spliced into every response. This
+# server already serves exactly one checkpoint for its lifetime and validates it
+# at startup, so there is no invalidation to get wrong: a different checkpoint is
+# a different process.
+CIRCUITS: dict | None = None
+
 
 def run_inspect(prompt: str) -> tuple[int, dict | str]:
     """Run one forward pass. Returns (http_status, json_or_error_message)."""
@@ -71,6 +83,9 @@ def run_inspect(prompt: str) -> tuple[int, dict | str]:
                 "--vocab", str(ARGS.vocab), "--prompt", prompt,
                 "--out", str(out), "--top-k", str(TOP_K),
             ]
+            # Skip the weight-space work per request; it is spliced back below.
+            if CIRCUITS is not None:
+                cmd += ["--circuits", "0"]
             # Forwarded so a live prompt carries the same provenance as the seed
             # dump; without it the panel would appear only before the first run.
             if ARGS.run_url:
@@ -83,7 +98,10 @@ def run_inspect(prompt: str) -> tuple[int, dict | str]:
                 # inspect's own stderr is the useful part; it names its own errors.
                 msg = p.stderr.decode("utf-8", "replace").strip() or "inspect failed"
                 return 500, msg.splitlines()[0][:400]
-            return 200, json.loads(out.read_text())
+            dump = json.loads(out.read_text())
+            if CIRCUITS is not None:
+                dump["circuits"] = CIRCUITS
+            return 200, dump
     finally:
         RUN_LOCK.release()
 
@@ -186,6 +204,21 @@ def main() -> int:
         pass  # keep the conservative default; the tool re-checks anyway
     print(f"serving {ARGS.site} on 127.0.0.1:{ARGS.port} "
           f"({len(VOCAB)} vocab chars, inspect={shutil.which(str(ARGS.inspect)) or ARGS.inspect})")
+
+    # One warm-up run WITH the weight-space panel, to fill CIRCUITS. Any prompt
+    # gives the same answer; the model's own first vocabulary character is used
+    # so this needs no assumption about the corpus.
+    global CIRCUITS
+    warm = run_inspect(next(iter(sorted(VOCAB))))
+    if warm[0] == 200 and isinstance(warm[1], dict) and "circuits" in warm[1]:
+        CIRCUITS = warm[1]["circuits"]
+        print(f"  weight-space panel cached for this checkpoint "
+              f"({len(CIRCUITS)} heads); per-request cost removed")
+    else:
+        # Not fatal: without the cache every request recomputes it, which is
+        # slower but correct. Silence here would look like the panel is missing.
+        print("  WARNING: could not cache the weight-space panel; "
+              "every request will recompute it")
     ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler).serve_forever()
     return 0
 

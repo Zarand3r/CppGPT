@@ -788,6 +788,42 @@ A factor of ~3,000. Training grows these circuits enormously — but concentrati
 (leading ÷ sum of top-4: 0.362 trained, 0.296 untrained), so the head's action does not collapse into
 one direction. It stays spread across many.
 
+### Cost, corrected
+
+A first timing put the circuits panel at ~96 ms, and that number was taken **before the SVD landed**.
+Measured properly, best-of-3 consecutive runs on the toy checkpoint:
+
+| | wall |
+|---|---|
+| `--ablate 0 --circuits 0` | 143 ms |
+| + the 24-forward ablation sweep | 589 ms |
+| + circuits and SVD | **1,274 ms** |
+
+So the weight-space panel costs **685 ms**, more than half the request, and the Jacobi decomposition
+is nearly all of it — 16 heads × a 65×65 decomposition. It is also **prompt-independent**, so every
+millisecond of it is recomputed for an answer that cannot change. That is what justifies M7-2, which
+this measurement was nearly used to argue *against* on the strength of the wrong first number.
+
+### After caching (M7-2)
+
+The panel is prompt-independent, so `tools/serve_viewer.py` computes it once at startup and splices
+it into every response. The server already serves one checkpoint for its lifetime and validates it at
+startup, so there is no invalidation logic to get wrong — a different checkpoint is a different
+process.
+
+| per request | wall |
+|---|---|
+| computing the panel every time | 1,238 ms |
+| cached, spliced | **538 ms** |
+
+**2.3× faster**, and the remaining 538 ms is the 24-forward ablation sweep plus model load, which is
+where any further work should go.
+
+The soundness of this rests on a property, not a hope: `circuits_test` proves the panel is a function
+of the weights alone, and `e2e_pipeline_test` proves the consequence the server depends on — a
+response assembled from a cached panel plus a `--circuits 0` run equals one that computed everything.
+Verified by mutation: making `ov_circuit` read a single activation makes that gate fail.
+
 ### Why this measurement exists
 
 `IMPLEMENTATION_PLAN.md` P6 requires negative and partial results to be recorded with the same detail

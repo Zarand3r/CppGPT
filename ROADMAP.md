@@ -464,13 +464,15 @@ Three facts frame it, and none are pessimism for its own sake:
   linear probes match or beat SAE probes, and on OthelloGPT — a small model with known ground truth,
   the closest analogue to this repo — SAEs recovered 9 of 180 features.
 
-- [x] **M7-1 · SVD of the OV/QK circuits.** Done 2026-09-06 (M-23). Weights-only, ~88 ms. The
+- [x] **M7-1 · SVD of the OV/QK circuits.** Done 2026-09-06 (M-23). Weights-only, but **685 ms** —
+      the Jacobi SVD dominates a request, which is what makes M7-2 worth doing. The
       **writes** side of a direction groups by character category at 0.684 against an untrained
       control's 0.543 and 0.431 chance — real structure. The **reads** side barely beats its control
       (0.617 vs 0.551) and the panel says not to tell a story about it. Leading singular value grows
       ~3,000× with training.
-- [ ] **M7-2 · Cache weight-space panels per checkpoint.** Measured: the circuits section is
-      byte-identical across prompts and costs ~96 ms every request.
+- [x] **M7-2 · Cache weight-space panels per checkpoint.** Done 2026-09-06 (M-23). The panel is
+      prompt-independent, so `serve_viewer` computes it once at startup: **1,238 ms → 538 ms** per
+      request, 2.3×. No invalidation logic — the server serves one checkpoint for its lifetime.
 - [ ] **M7-3 · The corpus-artifact channel (D11).** Blocks everything below, and B2/B3/B4.
 - [ ] **M7-4 · Max-activating examples** — the first artifact consumer (was B3).
 - [ ] **M7-5 · Linear probes** for candidate directions, on properties this model could plausibly
