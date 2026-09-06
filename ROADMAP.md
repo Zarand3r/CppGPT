@@ -448,6 +448,37 @@ Features and circuits — [Transcoders find interpretable LLM feature circuits](
 
 ---
 
+## M7 — Representation and concept interpretability
+
+M6 answers *which* component matters and *when*. M7 is the attempt at *what it represents*.
+Execution detail, properties and per-step gates: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+
+Three facts frame it, and none are pessimism for its own sake:
+
+- **This model may have no concepts to find.** Character-level, 4 layers, `n_embd` 128. A5 already
+  found no copying heads and therefore no induction heads (M-22). "Nothing nameable here" is a
+  legitimate outcome and the honest deliverable.
+- **A head does not have *a* concept.** Attention superposition puts several in one head, so the
+  answerable question is which *directions* it reads and writes.
+- **Probes before SAEs.** DeepMind deprioritised SAE research on negative downstream results, tuned
+  linear probes match or beat SAE probes, and on OthelloGPT — a small model with known ground truth,
+  the closest analogue to this repo — SAEs recovered 9 of 180 features.
+
+- [ ] **M7-1 · SVD of the OV/QK circuits.** Directions, weights-only, no corpus, no training. The one
+      step that can start immediately.
+- [ ] **M7-2 · Cache weight-space panels per checkpoint.** Measured: the circuits section is
+      byte-identical across prompts and costs ~96 ms every request.
+- [ ] **M7-3 · The corpus-artifact channel (D11).** Blocks everything below, and B2/B3/B4.
+- [ ] **M7-4 · Max-activating examples** — the first artifact consumer (was B3).
+- [ ] **M7-5 · Linear probes** for candidate directions, on properties this model could plausibly
+      encode: capitalisation, line structure, punctuation, speaker labels.
+- [ ] **M7-6 · Causal validation.** A direction is a hypothesis until steering confirms it, against a
+      random-direction control. This is what makes M7-5 a result rather than a correlation.
+- [ ] **M7-7 · Attention SAEs — conditionally.** Only if 4–6 leave a specific named thing
+      unexplained, and only after writing down what it is.
+
+---
+
 ## Deferred from the 3-axis review (2026-08-13)
 
 - [x] **`ldd` allow-list.** All SEVEN binaries link only `libc`/`libm`. To be accurate: `libresolv`

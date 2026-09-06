@@ -105,6 +105,12 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ⬜ | B2 corpus attention stats · B3 max-activating examples · B4 induction probe | needs the artifact channel |
 | ⬜ | B5 attribution patching + error study · B6 tuned lens · B8 transcoders | |
 
+**M7 — representation and concept interpretability, planned not started.** SVD of the head circuits
+(weights-only, can start now) → artifact channel → max-activating examples → linear probes → causal
+validation → SAEs only if the rest falls short. `IMPLEMENTATION_PLAN.md` holds the steps and gates.
+The framing matters as much as the order: this model may have no concepts to find, and recording that
+is the deliverable.
+
 **Blocking several offline items:** there is no channel for a corpus artifact to reach the viewer —
 no schema, no loader, no place on disk. Needs a `DECISIONS.md` entry before B2/B3.
 
