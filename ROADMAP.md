@@ -505,12 +505,14 @@ Three facts frame it, and none are pessimism for its own sake:
       `--top-k < 1` (it silently produced empty predictions).
 - [ ] **`Device`: 17 signatures, 17 tautological asserts, zero callers.** `ops.hpp` additionally
       claims each op "dispatches on it"; there is no dispatch. Pure deletion, ~40 lines.
-- [ ] **Dead code**: `DCHECK`/`UNREACHABLE`/`MUST`/`TRY_OR_CONTINUE` (0 uses, and the last is the sole
-      consumer of `detail::warn`), 4 unreachable `ErrorCode` values, `Storage::reset()` (documented as
-      the per-step mechanism, never called), the 249-line logging subsystem serving 2 call sites.
-- [ ] **`verify.hpp` is test-only code shipped as public library API**, and it sizes six allocations
-      directly from unvalidated file-header ints — an L3 violation inside the fixture loader the
-      constitution's parity promise depends on. Move to `tests/` and bound the sizes.
+- [x] **Dead code — pruned 2026-09-06.** `DCHECK`/`UNREACHABLE`/`MUST`/`TRY_OR_CONTINUE` and
+      `detail::warn` deleted (each had zero uses; the last macro was `warn`'s only consumer). Still
+      open: 4 unreachable `ErrorCode` values, `Storage::reset()`, and the logging subsystem (175
+      lines, one real consumer in `src/model.cpp`).
+- [x] **`verify.hpp` moved to `tests/` 2026-09-06** — it had zero library or tool callers. It still
+      sizes six allocations from unvalidated file-header ints; that is now inside a test target
+      reading a committed fixture rather than in the public library surface, which is the part that
+      mattered. Bounding the sizes remains open.
 - [ ] **~92 lines of tool duplication**; the atomic-write copy has already diverged (only one of the
       two writers checked `close()` — now fixed, but the duplication remains).
 - [ ] **e2e hermeticity**: the `sh_test` shells out to 8 undeclared host binaries (`python3`, GNU

@@ -41,6 +41,7 @@ cc_test(
     srcs = ["parity_test.cpp"],
     data = ["//tests/fixtures:gpt2_parity.bin"],
     deps = [
+        "//tests:verify",
         "//:cppgpt",
         "//tests:check",
     ],

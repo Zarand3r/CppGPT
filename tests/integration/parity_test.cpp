@@ -12,7 +12,7 @@
 
 #include "cppgpt/model.hpp"
 #include "cppgpt/optimizer.hpp"
-#include "cppgpt/verify.hpp"
+#include "tests/verify.hpp"
 #include "tests/check.hpp"
 
 using namespace cppgpt;

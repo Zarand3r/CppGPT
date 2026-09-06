@@ -1,8 +1,8 @@
 // cppgpt core: explicit, non-throwing failure handling.
 //
 // Two orthogonal axes:
-//   * Invariant violation (a programmer bug) -> ASSERT / DCHECK / MUST /
-//     UNREACHABLE -> fail fast (abort). Always on (except DCHECK, debug-only).
+//   * Invariant violation (a programmer bug) -> ASSERT / ASSERT_MSG -> fail fast
+//     (abort). Always on, including --config=release.
 //   * Expected failure where the reason matters -> Result<T> = std::expected<T,
 //     ErrorCode>, propagated with TRY / ASSIGN_OR_RETURN / RETURN_IF_ERROR.
 //     For simple yes/no, prefer a [[nodiscard]] bool.
@@ -84,13 +84,6 @@ namespace detail {
     std::abort();
 }
 
-inline void warn(const char* what, ErrorCode code,
-                 std::source_location loc = std::source_location::current()) noexcept {
-    std::fprintf(stderr, "cppgpt WARN: %s: %s\n  at %s:%u\n", what, describe(code), loc.file_name(),
-                 static_cast<unsigned>(loc.line()));
-    std::fflush(stderr);
-}
-
 }  // namespace detail
 }  // namespace cppgpt
 
@@ -114,16 +107,6 @@ inline void warn(const char* what, ErrorCode code,
         if (!(cond)) [[unlikely]]                                      \
             ::cppgpt::detail::fail((msg), #cond);                      \
     } while (0)
-
-// Debug-only (compiled out when NDEBUG is defined, i.e. --config=release).
-// For hot per-element checks; op-ENTRY shape checks should use ASSERT.
-#ifdef NDEBUG
-#  define DCHECK(cond) ((void)0)
-#else
-#  define DCHECK(cond) ASSERT(cond)
-#endif
-
-#define UNREACHABLE() ::cppgpt::detail::fail("unreachable", "")
 
 // Deliberately discard a [[nodiscard]] result (rare; documents intent).
 #define IGNORE(expr) (static_cast<void>(expr))
@@ -166,22 +149,3 @@ inline void warn(const char* what, ErrorCode code,
         CPPGPT_UNIQ(_r) ? ::std::move(*CPPGPT_UNIQ(_r)) : (fallback);  \
     })
 
-// Unwrap, or abort. The non-throwing analogue of "throw_if_not_ok".
-#define MUST(expr)                                                     \
-    __extension__({                                                    \
-        auto&& CPPGPT_UNIQ(_r) = (expr);                               \
-        if (!CPPGPT_UNIQ(_r)) [[unlikely]]                             \
-            ::cppgpt::detail::fail("MUST failed",                      \
-                                   ::cppgpt::describe(CPPGPT_UNIQ(_r).error())); \
-        ::std::move(*CPPGPT_UNIQ(_r));                                 \
-    })
-
-// Loop body: bind `decl` to the value, or log and `continue` to the next
-// iteration. Observable (logs the reason) — never a silent skip.
-#define TRY_OR_CONTINUE(decl, expr)                                    \
-    auto&& CPPGPT_UNIQ(_r) = (expr);                                   \
-    if (!CPPGPT_UNIQ(_r)) {                                            \
-        ::cppgpt::detail::warn("skipping (TRY_OR_CONTINUE)", CPPGPT_UNIQ(_r).error()); \
-        continue;                                                      \
-    }                                                                  \
-    decl = ::std::move(*CPPGPT_UNIQ(_r))

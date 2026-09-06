@@ -15,6 +15,7 @@ cc_test(
     size = "small",
     srcs = ["core_test.cpp"],
     deps = [
+        "//tests:verify",
         "//:cppgpt",
         "//tests:check",
     ],
