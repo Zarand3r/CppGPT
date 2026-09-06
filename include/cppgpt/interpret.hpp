@@ -212,6 +212,43 @@ void capture_site(const GPT2& model, PatchSite site, int layer, int head, float*
 void ov_circuit(const GPT2& model, int layer, int head, float* out) noexcept;
 void qk_circuit(const GPT2& model, int layer, int head, float* out) noexcept;
 
+// Which circuit table to decompose.
+enum class CircuitKind { Ov, Qk };
+
+// ---------------------------------------------------------------------------
+// Singular decomposition of a circuit table (M7-1)
+// ---------------------------------------------------------------------------
+//
+// The OV table says what attending to each single character does. Its SINGULAR
+// DIRECTIONS say what the head does in general: each one is a weighted mix of
+// input characters, a weighted mix of output characters, and a strength. That is
+// the closest thing to "a direction" obtainable from weights alone -- no corpus,
+// no training, no prompt (Beyond Components, arXiv 2511.20273).
+//
+// `a` is [n, n] row-major and is NOT modified. On return, for i, j < n:
+//
+//     a[i][j] == sum_k u[i][k] * s[k] * vt[k][j]
+//
+// so left singular vectors are COLUMNS of `u`, right singular vectors are ROWS
+// of `vt`, and `s` is non-increasing and non-negative. All three buffers are
+// caller-owned: `u` and `vt` need n*n floats, `s` needs n.
+//
+// One-sided Jacobi: orthogonalise column pairs by plane rotations until none
+// need rotating. Chosen over the textbook Golub-Kahan bidiagonalisation because
+// it is about forty lines, has no pathological cases at this size, and is
+// accurate for small singular values -- which matter here, since a rank-deficient
+// circuit is the normal case rather than the exception.
+void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept;
+
+// Build a head's circuit table and decompose it in one call. `u`, `vt` need
+// circuit_floats(cfg) floats; `s` needs vocab_size.
+//
+// The OV circuit factors through a head of width hs, so at most hs singular
+// values are nonzero however large the vocabulary is. A decomposition showing
+// more is decomposing something else.
+void svd_circuit(const GPT2& model, int layer, int head, CircuitKind kind, float* u, float* s,
+                 float* vt) noexcept;
+
 // Fraction of source tokens whose own logit is the largest entry in their OV
 // row -- "attending to t promotes t above everything else".
 //

@@ -754,6 +754,13 @@ function drawCircuits() {
            `<td style="text-align:right">${(c.copying * 100).toFixed(0)}%</td>` +
            `<td>${top ? `promotes ${JSON.stringify(top.t)} (${top.v.toFixed(2)})` : ''}</td></tr>`;
   }).join('');
+  const dirRows = D.circuits.flatMap(c => (c.svd || []).slice(0, 2).map((d, i) =>
+    `<tr><td>L${c.layer}H${c.head}${i ? '\u00b7' + i : ''}</td>` +
+    `<td style="text-align:right">${d.s.toFixed(1)}</td>` +
+    `<td>${d.reads.slice(0, 4).map(x => JSON.stringify(x.t)).join(' ')}</td>` +
+    `<td>${d.writes.slice(0, 4).map(x => JSON.stringify(x.t)).join(' ')}</td></tr>`))
+    .join('');
+
   box.innerHTML = '<h2>head circuits</h2>' +
     '<p class="kv">Read from the weights, not from this prompt \u2014 identical for every input. ' +
     '<em>self%</em> is how often attending to a character promotes that same character above all ' +
@@ -763,7 +770,18 @@ function drawCircuits() {
     'character model, not a missing panel. Magnitudes are relative (no final layernorm) and ' +
     'columns are centred, so what is comparable is the ranking within a row.</p>' +
     '<table class="tbl"><tr><th>head</th><th>self%</th><th>strongest write</th></tr>' +
-    rows + '</table>';
+    rows + '</table>' +
+    '<h3>singular directions</h3>' +
+    '<p class="kv">Each direction is a mix of characters the head reads and a mix it writes, with a ' +
+    'strength. Read the <em>writes</em> column: measured against an untrained model of the same ' +
+    'shape, its characters group by category (letter / punctuation / case) at 0.68 against the ' +
+    'control\u2019s 0.54 and 0.43 by chance \u2014 real structure. The <em>reads</em> column barely ' +
+    'beats its control (0.62 vs 0.55), so do not tell a story about it. ' +
+    '<strong>Naming these groups by eye is unreliable:</strong> the untrained model produces sets ' +
+    'that look just as nameable (M-23). Signs are arbitrary in an SVD and are oriented here so the ' +
+    'largest write is positive.</p>' +
+    '<table class="tbl"><tr><th>direction</th><th>strength</th><th>reads</th><th>writes</th></tr>' +
+    dirRows + '</table>';
 }
 
 function drawKL() {

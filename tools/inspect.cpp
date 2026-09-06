@@ -842,6 +842,8 @@ int main(int argc, char** argv) {
     if (circuit_top > 0) {
         const int n_top = std::min(circuit_top, V);
         std::vector<float> tbl(circuit_floats(cfg));
+        std::vector<float> su(circuit_floats(cfg)), svt(circuit_floats(cfg));
+        std::vector<float> ss(static_cast<std::size_t>(V));
         std::vector<int> idx(static_cast<std::size_t>(V));
 
         const auto emit_rows = [&](const char* name) {
@@ -885,7 +887,65 @@ int main(int argc, char** argv) {
                 qk_circuit(model, l, h, tbl.data());
                 js += ", ";
                 emit_rows("qk");
-                js += "}";
+
+                // Singular directions of the OV table. Each is a weighted mix of
+                // input characters, a weighted mix of output characters, and a
+                // strength -- "this head reads THESE and writes THOSE", which the
+                // per-character rows above cannot say.
+                //
+                // Signs are arbitrary in an SVD (u and v may both be negated), so
+                // the direction is oriented to make its largest write positive.
+                // Without that the same direction renders differently run to run
+                // for no reason a reader could interpret.
+                svd_circuit(model, l, h, CircuitKind::Ov, su.data(), ss.data(), svt.data());
+                js += ", \"svd\": [";
+                const int n_dir = std::min(4, V);
+                for (int d = 0; d < n_dir; ++d) {
+                    if (d) js += ", ";
+                    for (int i = 0; i < V; ++i) idx[static_cast<std::size_t>(i)] = i;
+                    // Orientation: the output side's largest-magnitude entry sets
+                    // the sign for both sides together.
+                    int big = 0;
+                    for (int i = 1; i < V; ++i)
+                        if (std::fabs(su[static_cast<std::size_t>(i) * V + d]) >
+                            std::fabs(su[static_cast<std::size_t>(big) * V + d]))
+                            big = i;
+                    const float flip = su[static_cast<std::size_t>(big) * V + d] < 0.0f ? -1.0f : 1.0f;
+
+                    js += "{\"s\": ";
+                    append_float(js, ss[static_cast<std::size_t>(d)]);
+                    const auto side = [&](const char* name, bool writes) {
+                        std::partial_sort(idx.begin(), idx.begin() + std::min(4, V), idx.end(),
+                                          [&](int a, int b) {
+                                              const float fa = writes
+                                                  ? flip * su[static_cast<std::size_t>(a) * V + d]
+                                                  : flip * svt[static_cast<std::size_t>(d) * V + a];
+                                              const float fb = writes
+                                                  ? flip * su[static_cast<std::size_t>(b) * V + d]
+                                                  : flip * svt[static_cast<std::size_t>(d) * V + b];
+                                              return fa > fb;
+                                          });
+                        js += ", \"";
+                        js += name;
+                        js += "\": [";
+                        for (int i = 0; i < std::min(4, V); ++i) {
+                            if (i) js += ", ";
+                            const int k = idx[static_cast<std::size_t>(i)];
+                            const int one[1] = {k};
+                            js += "{\"t\": \"";
+                            json_escape(js, tok.decode(std::span<const int>(one, 1)));
+                            js += "\", \"w\": ";
+                            append_float(js, flip * (writes ? su[static_cast<std::size_t>(k) * V + d]
+                                                           : svt[static_cast<std::size_t>(d) * V + k]));
+                            js += "}";
+                        }
+                        js += "]";
+                    };
+                    side("reads", false);
+                    side("writes", true);
+                    js += "}";
+                }
+                js += "]}";
             }
         js += "]";
     }

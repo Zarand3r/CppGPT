@@ -507,4 +507,126 @@ float copying_score(const float* ov, int V) noexcept {
     return static_cast<float>(hits) / static_cast<float>(V);
 }
 
+void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept {
+    ASSERT(a != nullptr && u != nullptr && s != nullptr && vt != nullptr);
+    ASSERT_MSG(n > 0, "svd_square: n must be positive");
+    const auto nz = static_cast<std::size_t>(n);
+
+    // Work on a copy: the input is const and callers rely on that (the circuit
+    // tables are recomputed rarely and read often).
+    std::vector<double> w(nz * nz);
+    for (std::size_t i = 0; i < nz * nz; ++i) w[i] = static_cast<double>(a[i]);
+
+    // V accumulates the rotations; it starts as the identity, which is also the
+    // right answer for the zero matrix -- so a degenerate input still yields a
+    // valid orthonormal basis rather than uninitialised memory.
+    std::vector<double> v(nz * nz, 0.0);
+    for (std::size_t i = 0; i < nz; ++i) v[i * nz + i] = 1.0;
+
+    // One-sided Jacobi. Sweep over column pairs, rotating each to make them
+    // orthogonal. Converged when no pair in a whole sweep needed a rotation.
+    //
+    // The cap is an assert rather than a silent return: not converging means the
+    // output is not a decomposition, and returning it quietly would put a
+    // meaningless basis on the screen labelled as a direction.
+    constexpr int kMaxSweeps = 60;
+    constexpr double kTol = 1e-14;
+    int sweep = 0;
+    for (; sweep < kMaxSweeps; ++sweep) {
+        bool rotated = false;
+        for (std::size_t p = 0; p + 1 < nz; ++p)
+            for (std::size_t q = p + 1; q < nz; ++q) {
+                double app = 0.0, aqq = 0.0, apq = 0.0;
+                for (std::size_t i = 0; i < nz; ++i) {
+                    const double xp = w[i * nz + p], xq = w[i * nz + q];
+                    app += xp * xp;
+                    aqq += xq * xq;
+                    apq += xp * xq;
+                }
+                // Already orthogonal (or both columns vanish): nothing to do.
+                if (std::fabs(apq) <= kTol * std::sqrt(app * aqq) || apq == 0.0) continue;
+
+                // The rotation that zeroes apq. Written via tau/t rather than
+                // atan2 for the usual numerical reason: it stays accurate when
+                // the two column norms are nearly equal.
+                const double tau = (aqq - app) / (2.0 * apq);
+                const double tt = (tau >= 0.0 ? 1.0 : -1.0) /
+                                  (std::fabs(tau) + std::sqrt(1.0 + tau * tau));
+                const double c = 1.0 / std::sqrt(1.0 + tt * tt);
+                const double sn = c * tt;
+
+                for (std::size_t i = 0; i < nz; ++i) {
+                    const double xp = w[i * nz + p], xq = w[i * nz + q];
+                    w[i * nz + p] = c * xp - sn * xq;
+                    w[i * nz + q] = sn * xp + c * xq;
+                    const double vp = v[i * nz + p], vq = v[i * nz + q];
+                    v[i * nz + p] = c * vp - sn * vq;
+                    v[i * nz + q] = sn * vp + c * vq;
+                }
+                rotated = true;
+            }
+        if (!rotated) break;
+    }
+    ASSERT_MSG(sweep < kMaxSweeps, "svd_square: Jacobi did not converge");
+
+    // Column norms of the rotated matrix are the singular values; normalising
+    // those columns gives U. A zero column means a zero singular value, and its
+    // U column is filled from the identity so the basis stays well-formed.
+    std::vector<std::size_t> order(nz);
+    std::vector<double> sig(nz);
+    for (std::size_t k = 0; k < nz; ++k) {
+        double norm = 0.0;
+        for (std::size_t i = 0; i < nz; ++i) norm += w[i * nz + k] * w[i * nz + k];
+        sig[k] = std::sqrt(norm);
+        order[k] = k;
+    }
+    std::sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
+        return sig[x] > sig[y];
+    });
+
+    // A zero-singular-value direction still needs *some* orthonormal vector.
+    // Gram-Schmidt against what is already placed is the cheap way to get one,
+    // and at these sizes the cost is irrelevant.
+    for (std::size_t out = 0; out < nz; ++out) {
+        const std::size_t k = order[out];
+        s[out] = static_cast<float>(sig[k]);
+        for (std::size_t j = 0; j < nz; ++j) vt[out * nz + j] = static_cast<float>(v[j * nz + k]);
+
+        std::vector<double> col(nz);
+        if (sig[k] > 0.0) {
+            for (std::size_t i = 0; i < nz; ++i) col[i] = w[i * nz + k] / sig[k];
+        } else {
+            for (std::size_t cand = 0; cand < nz; ++cand) {
+                for (std::size_t i = 0; i < nz; ++i) col[i] = (i == cand) ? 1.0 : 0.0;
+                for (std::size_t prev = 0; prev < out; ++prev) {
+                    double dot = 0.0;
+                    for (std::size_t i = 0; i < nz; ++i)
+                        dot += col[i] * static_cast<double>(u[i * nz + prev]);
+                    for (std::size_t i = 0; i < nz; ++i)
+                        col[i] -= dot * static_cast<double>(u[i * nz + prev]);
+                }
+                double norm = 0.0;
+                for (std::size_t i = 0; i < nz; ++i) norm += col[i] * col[i];
+                if (norm > 1e-6) {
+                    norm = std::sqrt(norm);
+                    for (std::size_t i = 0; i < nz; ++i) col[i] /= norm;
+                    break;
+                }
+            }
+        }
+        for (std::size_t i = 0; i < nz; ++i) u[i * nz + out] = static_cast<float>(col[i]);
+    }
+}
+
+void svd_circuit(const GPT2& model, int layer, int head, CircuitKind kind, float* u, float* s,
+                 float* vt) noexcept {
+    const Config& cfg = model.config();
+    std::vector<float> tbl(circuit_floats(cfg));
+    if (kind == CircuitKind::Ov)
+        ov_circuit(model, layer, head, tbl.data());
+    else
+        qk_circuit(model, layer, head, tbl.data());
+    svd_square(tbl.data(), cfg.vocab_size, u, s, vt);
+}
+
 }  // namespace cppgpt

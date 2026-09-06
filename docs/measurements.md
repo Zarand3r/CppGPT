@@ -748,3 +748,62 @@ bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare
   --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
 What is" --out /tmp/circ.json
 ```
+
+## M-23 · Singular directions of a head, against an untrained control
+
+`//tools:inspect` (M7-1). The OV table says what attending to each *single* character does; its
+singular directions say what the head does in general — each is a weighted mix of characters read, a
+mix written, and a strength. Weights only: no corpus, no training, no prompt.
+
+### The control is the finding
+
+Eyeballing the trained model is persuasive and unreliable. `L0H1`'s leading direction reads `b t n`
+and writes `. : ,` — consonants to punctuation, a story that writes itself. So the same panel was run
+on an **untrained model of identical shape** (1 training step), and it produces sets that look just as
+nameable: `a w ␣ v → e a h ␣`.
+
+Grouping by eye does not distinguish a trained head from noise. What does:
+
+| | trained | untrained | chance |
+|---|---|---|---|
+| **writes** — category purity of a direction's top-4 | **0.684** | 0.543 | 0.431 |
+| **reads** — same | 0.617 | 0.551 | 0.431 |
+
+Purity is the fraction of a direction's top-4 characters sharing one category (vowel / lowercase /
+uppercase / space / punctuation); chance is the same statistic over uniform draws from this
+vocabulary.
+
+**The writes side carries real structure** — well clear of both the control and chance. **The reads
+side barely beats its control** (0.617 against 0.551), so a story about what a direction *responds
+to* is not supported by this evidence. The panel says so rather than showing both columns as equals.
+
+### Magnitude separates them completely
+
+| | leading singular value |
+|---|---|
+| trained | up to **296.5** |
+| untrained | **0.1** |
+
+A factor of ~3,000. Training grows these circuits enormously — but concentration barely moves
+(leading ÷ sum of top-4: 0.362 trained, 0.296 untrained), so the head's action does not collapse into
+one direction. It stays spread across many.
+
+### Why this measurement exists
+
+`IMPLEMENTATION_PLAN.md` P6 requires negative and partial results to be recorded with the same detail
+as positive ones. This is that: one column of the panel is trustworthy, one is not, and both numbers
+are here so a reader does not have to take the distinction on faith.
+
+**Reproduce**
+```sh
+# trained
+bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --out /tmp/svd.json
+# untrained control
+bazel run --config=release //tools:train -- --data $PWD/data/shakespeare.train.bin \
+  --layers 4 --heads 4 --embd 128 --ctx 64 --batch 4 --steps 1 --ckpt /tmp/untrained.ckpt
+bazel run --config=release //tools:inspect -- --checkpoint /tmp/untrained.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --out /tmp/svd_rand.json
+```
