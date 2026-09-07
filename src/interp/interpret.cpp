@@ -718,4 +718,94 @@ void svd_circuit(const GPT2& model, int layer, int head, CircuitKind kind, float
     svd_square(tbl.data(), cfg.vocab_size, u, s, vt);
 }
 
+namespace {
+
+// Accuracy of w.x + b on rows [lo, hi), against `labels`.
+double probe_accuracy(const float* x, const std::uint8_t* labels, int lo, int hi, int dim,
+                      const std::vector<double>& w, double b) noexcept {
+    int right = 0;
+    for (int i = lo; i < hi; ++i) {
+        double z = b;
+        for (int d = 0; d < dim; ++d)
+            z += w[static_cast<std::size_t>(d)] *
+                 static_cast<double>(x[static_cast<std::size_t>(i) * dim + d]);
+        right += ((z > 0.0) == (labels[static_cast<std::size_t>(i)] != 0)) ? 1 : 0;
+    }
+    return static_cast<double>(right) / static_cast<double>(hi - lo);
+}
+
+// Logistic regression by gradient descent on rows [0, n_train).
+void probe_fit_weights(const float* x, const std::uint8_t* labels, int n_train, int dim,
+                       std::vector<double>& w, double& b) noexcept {
+    std::fill(w.begin(), w.end(), 0.0);
+    b = 0.0;
+    constexpr int kEpochs = 200;
+    constexpr double kLr = 0.5;
+    std::vector<double> gw(static_cast<std::size_t>(dim));
+    for (int e = 0; e < kEpochs; ++e) {
+        std::fill(gw.begin(), gw.end(), 0.0);
+        double gb = 0.0;
+        for (int i = 0; i < n_train; ++i) {
+            double z = b;
+            for (int d = 0; d < dim; ++d)
+                z += w[static_cast<std::size_t>(d)] *
+                     static_cast<double>(x[static_cast<std::size_t>(i) * dim + d]);
+            const double p = 1.0 / (1.0 + std::exp(-z));
+            const double e_ = p - (labels[static_cast<std::size_t>(i)] != 0 ? 1.0 : 0.0);
+            for (int d = 0; d < dim; ++d)
+                gw[static_cast<std::size_t>(d)] +=
+                    e_ * static_cast<double>(x[static_cast<std::size_t>(i) * dim + d]);
+            gb += e_;
+        }
+        const double s = kLr / static_cast<double>(n_train);
+        for (int d = 0; d < dim; ++d) w[static_cast<std::size_t>(d)] -= s * gw[static_cast<std::size_t>(d)];
+        b -= s * gb;
+    }
+}
+
+}  // namespace
+
+ProbeResult fit_probe(const float* x, const std::uint8_t* y, int n, int dim, int n_train,
+                      float* out_direction, Generator& gen) noexcept {
+    ASSERT(x != nullptr && y != nullptr && out_direction != nullptr);
+    ASSERT_MSG(n > 1 && dim > 0, "fit_probe: needs at least two rows and one dimension");
+    // Both halves must be non-empty. A probe scored on its training rows is the
+    // standard way these numbers become meaningless, so it aborts rather than
+    // reporting one.
+    ASSERT_MSG(n_train > 0, "fit_probe: no training rows");
+    ASSERT_MSG(n_train < n, "fit_probe: no held-out rows");
+
+    std::vector<double> w(static_cast<std::size_t>(dim));
+    double b = 0.0;
+    probe_fit_weights(x, y, n_train, dim, w, b);
+    for (int d = 0; d < dim; ++d)
+        out_direction[static_cast<std::size_t>(d)] = static_cast<float>(w[static_cast<std::size_t>(d)]);
+
+    ProbeResult r{};
+    r.accuracy = static_cast<float>(probe_accuracy(x, y, n_train, n, dim, w, b));
+
+    // Base rate on the held-out split: the accuracy of always guessing the
+    // majority class. A property that is 95% one class yields a 95% probe that
+    // learned the prior, so this is reported beside the accuracy, not derived
+    // from it by a reader.
+    int ones = 0;
+    for (int i = n_train; i < n; ++i) ones += (y[static_cast<std::size_t>(i)] != 0) ? 1 : 0;
+    const int held = n - n_train;
+    r.base_rate = static_cast<float>(std::max(ones, held - ones)) / static_cast<float>(held);
+
+    // The control: refit on permuted labels. This must land at the base rate.
+    // If it does not, the split is leaking -- which for character data is the
+    // default outcome, since adjacent positions are not independent.
+    std::vector<std::uint8_t> shuffled(y, y + static_cast<std::size_t>(n));
+    for (std::size_t i = shuffled.size(); i > 1; --i) {
+        const auto j = static_cast<std::size_t>(gen.uniform_int(0, static_cast<std::int64_t>(i - 1)));
+        std::swap(shuffled[i - 1], shuffled[j]);
+    }
+    std::vector<double> w2(static_cast<std::size_t>(dim));
+    double b2 = 0.0;
+    probe_fit_weights(x, shuffled.data(), n_train, dim, w2, b2);
+    r.shuffled = static_cast<float>(probe_accuracy(x, shuffled.data(), n_train, n, dim, w2, b2));
+    return r;
+}
+
 }  // namespace cppgpt

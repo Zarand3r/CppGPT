@@ -129,6 +129,14 @@ cc_test(
 # interpretability layer produces. Synthetic model, so it is hermetic -- data/ is
 # gitignored and a test needing that checkpoint could not be green on a clean
 # checkout (engineering-lessons L11).
+# M7-5: linear probes. The shuffled-label control is the load-bearing check.
+cc_test(
+    name = "probe_test",
+    size = "small",
+    srcs = ["probe_test.cpp"],
+    deps = ["//:cppgpt", "//tests:check"],
+)
+
 # M7-3: the corpus-artifact envelope. Every check names the corruption it
 # injects; a single "rejects bad input" test would pass for a loader that
 # rejects everything.

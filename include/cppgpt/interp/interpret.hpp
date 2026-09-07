@@ -271,6 +271,39 @@ void svd_circuit(const GPT2& model, int layer, int head, CircuitKind kind, float
 [[nodiscard]] float copying_score(const float* ov, int V) noexcept;
 
 // ---------------------------------------------------------------------------
+// Linear probes over the residual stream (M7-5)
+// ---------------------------------------------------------------------------
+//
+// Fit a direction that predicts a labelled property from the residual stream.
+// This is the cheap way to ask "is X encoded here", and the field now reports
+// tuned linear probes matching or beating SAE probes -- which is why this comes
+// first and SAEs are conditional (IMPLEMENTATION_PLAN §D).
+//
+// A PROBE ON ITS OWN PROVES NOTHING. It shows a property is linearly decodable,
+// not that the model uses that direction. Two things guard against reading more
+// into it than it says, and both are returned rather than left to the caller:
+//
+//   `base_rate`      the majority-class accuracy. A property that is 90% one
+//                    class gives a 90%-accurate probe that has learned nothing.
+//   `shuffled`       accuracy after the labels are permuted. This must land at
+//                    the base rate. If it does not, the split is leaking --
+//                    which for character data is the default outcome, because
+//                    adjacent positions are not independent samples.
+//
+// The split is by POSITION, not by random row: the caller supplies rows already
+// in corpus order and `n_train` of the leading ones are used for fitting.
+struct ProbeResult {
+    float accuracy;   // held-out
+    float shuffled;   // held-out, labels permuted -- the control
+    float base_rate;  // majority class on the held-out split
+};
+
+// `x` is [n, dim] row-major, `y` is [n] of 0/1, both caller-owned and in corpus
+// order. `out_direction` receives [dim]. Read-only with respect to the model.
+[[nodiscard]] ProbeResult fit_probe(const float* x, const std::uint8_t* y, int n, int dim,
+                                    int n_train, float* out_direction, Generator& gen) noexcept;
+
+// ---------------------------------------------------------------------------
 // The component enumeration
 // ---------------------------------------------------------------------------
 //
