@@ -34,4 +34,22 @@ namespace cppgpt::toolio {
     return t;
 }
 
+// A whole file as bytes.
+//   IoError — cannot open or read
+//
+// ROADMAP logs four private copies of this across tools/. This is the shared
+// one; the copies are migrated as each tool is next touched rather than in one
+// sweep, so a behaviour change lands with a reviewer who is already reading that
+// file.
+[[nodiscard]] inline Result<std::string> read_file(const char* path) noexcept {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return err(ErrorCode::IoError);
+    const std::streamoff bytes = f.tellg();
+    if (bytes < 0) return err(ErrorCode::IoError);
+    std::string s(static_cast<std::size_t>(bytes), '\0');
+    f.seekg(0, std::ios::beg);
+    if (bytes > 0 && !f.read(s.data(), bytes)) return err(ErrorCode::IoError);
+    return s;
+}
+
 }  // namespace cppgpt::toolio

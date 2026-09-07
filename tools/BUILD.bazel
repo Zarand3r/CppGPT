@@ -122,3 +122,14 @@ cc_binary(
         "//:cppgpt",
     ],
 )
+
+# M7-5/M7-6: linear probes and their causal validation.
+cc_binary(
+    name = "probe",
+    srcs = ["probe.cpp"],
+    deps = [
+        ":cli",
+        ":io",
+        "//:cppgpt",
+    ],
+)

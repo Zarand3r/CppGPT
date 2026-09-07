@@ -304,6 +304,52 @@ struct ProbeResult {
                                     int n_train, float* out_direction, Generator& gen) noexcept;
 
 // ---------------------------------------------------------------------------
+// Causal validation of a direction (M7-6)
+// ---------------------------------------------------------------------------
+//
+// A probe direction is a HYPOTHESIS. It shows a property is linearly decodable
+// from the residual stream, which is a fact about the representation, not about
+// what the model does with it. Naming a direction from decodability alone is the
+// central failure of this field, and this repo has retracted two claims made
+// that way (M-19, M-23).
+//
+// The test: add the direction to the residual stream and see whether the output
+// moves. Then do the same with a RANDOM direction of the same magnitude. If the
+// two move the output equally, the probe found a direction the model does not
+// use, however well it decodes.
+//
+// The random control is the whole measurement. Without it, "steering along d
+// changed the output" is unfalsifiable -- adding any large enough vector to the
+// residual stream changes the output.
+//
+// Steering is additive, done by capturing the layer's MLP write, adding the
+// scaled direction, and patching the sum back. It needs no new patch site.
+//
+// `direction` is [n_embd] and is normalised internally, so `scale` is in units
+// of residual-stream norm and comparable across directions. A zero-norm
+// direction aborts: there is nothing to steer along.
+// ONE random direction is a sample of size one, not a control. The first
+// version of this returned a single `kl_random`, and comparing 0.0029 against
+// 0.0014 looked like a result when it was a coin flip -- across 20 (layer,
+// property) pairs the direction beat its single control 13 times, which is
+// indistinguishable from chance at that sample size.
+//
+// So the null is a DISTRIBUTION. `beats_random` is the fraction of random draws
+// the direction exceeds: 0.5 means the direction is unremarkable, and only a
+// value near 1 supports "the model reads this direction".
+struct SteerResult {
+    float kl_direction;   // KL(clean || steered along `direction`)
+    float kl_random_mean; // mean over the random draws, same norm
+    float kl_random_sd;
+    float beats_random;   // fraction of draws with kl_direction > kl_random
+};
+
+// `n_random` draws form the null; 20 is enough to separate 0.5 from 0.95.
+[[nodiscard]] SteerResult steer_effect(GPT2& model, const int* tokens, int layer, int pos,
+                                       const float* direction, float scale, int n_random,
+                                       Generator& gen) noexcept;
+
+// ---------------------------------------------------------------------------
 // The component enumeration
 // ---------------------------------------------------------------------------
 //

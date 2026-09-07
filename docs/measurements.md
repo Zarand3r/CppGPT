@@ -966,3 +966,61 @@ $B/inspect --checkpoint $PWD/data/shakespeare.ckpt --vocab $PWD/data/shakespeare
   --prompt "ROMEO:
 What is" --corpus /tmp/neurons.art --out /tmp/n.json
 ```
+
+## M-27 · Probes decode nearly everything; steering says layer 1 is where it matters
+
+`//tools:probe`, 64 windows × 32 tokens of the validation split, 1,488 training rows / 496 held out,
+split by corpus position. Five properties, each requiring **context** rather than the current
+character — a probe that recovers "this character is a vowel" has rediscovered the embedding.
+
+Steering scale 2.0 in units of residual norm, null = **20 random directions of the same norm**.
+
+| property | layer | acc | base | shuffled | steer KL | null mean | beats null |
+|---|---|---|---|---|---|---|---|
+| after_space | L1 | 0.986 | 0.861 | 0.861 | 0.0036 | 0.0007 | **100%** |
+| after_vowel | L1 | 0.974 | 0.722 | 0.696 | 0.0050 | 0.0010 | **100%** |
+| after_punct | L1 | 1.000 | 0.944 | 0.750 | 0.0032 | 0.0014 | **90%** |
+| in_caps_run | L0 | 0.992 | 0.954 | 0.923 | 0.0024 | 0.0008 | 95% |
+| after_space | L2 | 0.982 | 0.861 | 0.849 | 0.0015 | 0.0006 | 95% |
+| in_caps_run | L1 | 0.998 | 0.954 | 0.962 | 0.0003 | 0.0008 | 30% |
+| after_newline | L2 | 1.000 | 0.972 | 0.960 | 0.0001 | 0.0006 | 20% |
+| after_space | L3 | 0.938 | 0.861 | 0.825 | 0.0000 | 0.0001 | 5% |
+
+### Decodability is nearly free, and nearly meaningless
+
+Every property decodes far above its base rate at every layer — `after_vowel` reaches 0.974 against a
+0.722 base. **This is the trap the causal half exists for.** Decodability says the property is present
+in the representation; it says nothing about whether the model reads that direction. Eleven of the
+twenty cells beat their null at roughly chance (20–55%), and two are *below* it — decodable
+directions the model demonstrably does not use.
+
+### Layer 1 is a real finding; individual cells are not
+
+Four of five properties beat their null at ≥90% **at layer 1**, and nowhere else does more than one.
+
+Under the null, a direction beats ≥18 of 20 draws with probability 3/21 = 0.143. Getting 4 or more of
+5 in one layer has probability **0.0018**, or **0.0074** after correcting for the four layers tested.
+
+That correction matters and cuts the other way for single cells: with 20 comparisons, "beats all 20
+draws" alone is p ≈ 0.048 and expected to happen about once by chance. **So no individual row here is
+significant. The concentration at layer 1 is.** It is also consistent with M-20, where layer 1
+contributes 0.996 of 1.011 nats of the step KL on the seed prompt.
+
+### Caveats that are not decoration
+
+- **Effect sizes are tiny in absolute terms** — 0.005 nats at the largest. The claim is that these
+  directions matter *more than random ones*, not that steering along them substantially changes the
+  model.
+- **The shuffled control is noisy at this sample size.** Several cells land well *below* their base
+  rate (0.488, 0.681, 0.700). That is over-fitting noise that anti-transfers, not leakage — leakage
+  would push it *above* base — but it means the accuracy column deserves less weight where the
+  control is far from base.
+- **One prompt is steered.** The probe is fitted over 64 windows; the causal test perturbs a single
+  window. A corpus-wide causal sweep is the obvious next measurement and is not this one.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:probe
+bazel-out/k8-opt/bin/tools/probe --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --data $PWD/data/shakespeare.val.bin --windows 64 --seq 32
+```

@@ -60,9 +60,10 @@ Time through `bazel-out/k8-opt/bin/`, never `bazel-bin/`.
 - [x] **Step 2** — Cache the weight-space panel at server startup. Done: 90 ms → 27 ms (M-24).
 - [x] **Step 3** — The corpus-artifact channel. Done (D11, M-26). Gates P3.
 - [x] **Step 4** — Max-activating examples over `fch_gelu`. Done (M-26).
-- [ ] **Step 5** — Linear probes for candidate directions. Gates P4.
-- [ ] **Step 6** — Causal validation: a direction is a hypothesis until steering confirms it. Gates P5.
-- [ ] **Step 7** — Attention SAEs, *only if* Steps 4–6 leave something specific unexplained.
+- [x] **Step 5** — Linear probes. Done (M-27). Gates P4.
+- [x] **Step 6** — Causal validation against a 20-draw random null. Done (M-27). Gates P5.
+- [x] **Step 7** — Attention SAEs. **Decided against for now**, which is what the step's own
+      condition asks for; see below.
 
 ```
 1 ──▶ 2
@@ -296,18 +297,38 @@ mode of this field. **This step is what makes the previous one publishable rathe
 
 ---
 
-## Step 7 — Attention SAEs, conditionally
+## Step 7 — Attention SAEs: not done, and why
 
-**Do not start this step unless Steps 4–6 leave a specific, named thing unexplained.** Write down
-what it is first. See §D for why the bar is this high.
+The step's condition was: *do not start unless Steps 4–6 leave a specific, named thing unexplained.
+Write down what it is first.* Steps 4–6 are done, so here is the answer.
 
-If it is justified: train on concatenated head outputs (`z`), then use weight-based head attribution
-to assign features back to heads, since features are not head-local.
+**They did not.** What M-27 found is that nearly every property is linearly decodable at every layer,
+and that almost none of those directions are ones the model reads. That is not an unexplained
+residual — it is a **negative result about the representation**, and an SAE would not address it. A
+sparse dictionary decomposes activations into more features; the problem here is not too few
+features, it is that the features already recoverable are mostly causally inert.
 
-**Acceptance:** measured against the Step 5 probes on the same properties. If probes match it, the
-SAE has not earned its complexity and the honest result is to say so.
+There is also a specific, checkable prediction that argues against: SAEs exist to resolve
+**superposition**. This model has `n_embd` 128 and 65 symbols, so there are twice as many dimensions
+as symbols — the regime superposition describes is one where features vastly outnumber dimensions,
+and that is not this model. A5 already found no copying and no induction heads (M-22), which is the
+same message from a different direction: there may be little structure here to decompose.
 
-**Depends on:** Steps 4–6, and an explicit decision to proceed.
+**What would change this.** If a corpus-wide causal sweep (the caveat M-27 names) found many
+directions that are causally live but not linearly separable, that would be a specific unexplained
+thing an SAE is the right tool for. That measurement does not exist yet, and it is much cheaper than
+training a dictionary.
+
+**The literature agrees with the ordering** (§D): DeepMind deprioritised SAE research on negative
+downstream results, tuned linear probes match or beat SAE probes, and on OthelloGPT — a small model
+with known ground truth — SAEs recovered 9 of 180 features.
+
+
+
+If it is ever justified: train on concatenated head outputs (`z`), then use weight-based head
+attribution to assign features back to heads, since features are not head-local. Acceptance would be
+measured against the Step 5 probes on the same properties — if probes match it, the SAE has not
+earned its complexity and the honest result is to say so.
 
 ---
 

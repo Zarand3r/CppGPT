@@ -484,12 +484,18 @@ Three facts frame it, and none are pessimism for its own sake:
 - [x] **M7-4 · Max-activating examples.** Done 2026-09-06 (M-26). 2,048 neurons over 128 windows,
       852 KB artifact, 0 dead neurons. The panel reports what a neuron *fires on* and says plainly
       that this is a correlation — the causal half is M7-6.
-- [ ] **M7-5 · Linear probes** for candidate directions, on properties this model could plausibly
-      encode: capitalisation, line structure, punctuation, speaker labels.
-- [ ] **M7-6 · Causal validation.** A direction is a hypothesis until steering confirms it, against a
-      random-direction control. This is what makes M7-5 a result rather than a correlation.
-- [ ] **M7-7 · Attention SAEs — conditionally.** Only if 4–6 leave a specific named thing
-      unexplained, and only after writing down what it is.
+- [x] **M7-5 · Linear probes.** Done 2026-09-06 (M-27). Every property decodes far above base at
+      every layer — which is why the causal half exists.
+- [x] **M7-6 · Causal validation.** Done 2026-09-06 (M-27). Null is 20 random directions at matched
+      norm. Most decodable directions sit at chance; **layer 1 is the exception** — 4 of 5 properties
+      beat their null at ≥90%, p = 0.0074 after correcting for four layers. No individual cell is
+      significant at 20 comparisons; the concentration is.
+- [x] **M7-7 · Attention SAEs — decided against.** The step's condition was met by not being met:
+      4–6 left no specific unexplained thing. M-27's result is that most decodable directions are
+      causally inert, which an SAE does not address — it decomposes activations into more features,
+      and the problem is not too few. Superposition also does not describe a model with 128
+      dimensions and 65 symbols. Revisit if a corpus-wide causal sweep finds directions that are
+      causally live but not linearly separable.
 
 ---
 

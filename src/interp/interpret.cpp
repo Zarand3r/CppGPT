@@ -808,4 +808,80 @@ ProbeResult fit_probe(const float* x, const std::uint8_t* y, int n, int dim, int
     return r;
 }
 
+SteerResult steer_effect(GPT2& model, const int* tokens, int layer, int pos,
+                         const float* direction, float scale, int n_random,
+                         Generator& gen) noexcept {
+    const Config& cfg = model.config();
+    const int V = cfg.vocab_size, C = cfg.n_embd;
+    ASSERT_MSG(layer >= 0 && layer < cfg.n_layer, "steer_effect: layer out of range");
+    ASSERT_MSG(pos >= 0 && pos < model.seq_len(), "steer_effect: pos out of range");
+    ASSERT(tokens != nullptr && direction != nullptr);
+    ASSERT_MSG(n_random > 0, "steer_effect: the null needs at least one draw");
+
+    const auto Cz = static_cast<std::size_t>(C);
+    double norm = 0.0;
+    for (std::size_t i = 0; i < Cz; ++i)
+        norm += static_cast<double>(direction[i]) * static_cast<double>(direction[i]);
+    // Normalising is what makes `scale` mean the same thing for every direction;
+    // a zero-norm one has no direction to steer along and is a caller error.
+    ASSERT_MSG(norm > 0.0, "steer_effect: zero-norm direction");
+    norm = std::sqrt(norm);
+
+    const auto off = static_cast<std::size_t>(pos) * static_cast<std::size_t>(V);
+    const std::size_t n = patch_floats(cfg, PatchSite::MlpOut, model.batch(), model.seq_len());
+    std::vector<float> base(n), buf(n);
+    std::vector<float> p_clean(static_cast<std::size_t>(V)), p_out(static_cast<std::size_t>(V));
+
+    model.forward(tokens, nullptr);
+    softmax_into(p_clean.data(), model.acts().logits + off, V);
+    // Capture BEFORE any patched forward overwrites the arena.
+    capture_site(model, PatchSite::MlpOut, layer, -1, base.data());
+
+    // Steering is additive: the layer's MLP write plus the scaled direction,
+    // applied at every position. Patching replaces, so the sum is formed here.
+    const auto run = [&](const float* unit) {
+        for (std::size_t i = 0; i < n; ++i)
+            buf[i] = base[i] + scale * unit[i % Cz];
+        const Patch p{PatchSite::MlpOut, layer, -1, buf.data()};
+        model.forward(tokens, nullptr, -1, &p, 1);
+        softmax_into(p_out.data(), model.acts().logits + off, V);
+        return static_cast<float>(kl_divergence(p_clean.data(), p_out.data(), V));
+    };
+
+    std::vector<float> unit(Cz);
+    for (std::size_t i = 0; i < Cz; ++i)
+        unit[i] = static_cast<float>(static_cast<double>(direction[i]) / norm);
+
+    SteerResult r{};
+    r.kl_direction = run(unit.data());
+
+    // The null: many random directions of the SAME norm. If the probe direction
+    // does not stand out against them, it is decodable but not one the model
+    // reads -- which is the common case and the thing this measurement exists to
+    // detect.
+    std::vector<float> rnd(Cz);
+    double sum = 0.0, sumsq = 0.0;
+    int beat = 0;
+    for (int k = 0; k < n_random; ++k) {
+        double rn = 0.0;
+        for (std::size_t i = 0; i < Cz; ++i) {
+            rnd[i] = static_cast<float>(gen.normal());
+            rn += static_cast<double>(rnd[i]) * static_cast<double>(rnd[i]);
+        }
+        rn = std::sqrt(std::max(rn, 1e-30));
+        for (std::size_t i = 0; i < Cz; ++i)
+            rnd[i] = static_cast<float>(static_cast<double>(rnd[i]) / rn);
+        const double k_r = run(rnd.data());
+        sum += k_r;
+        sumsq += k_r * k_r;
+        beat += (static_cast<double>(r.kl_direction) > k_r) ? 1 : 0;
+    }
+    const double nd = static_cast<double>(n_random);
+    const double mean = sum / nd;
+    r.kl_random_mean = static_cast<float>(mean);
+    r.kl_random_sd = static_cast<float>(std::sqrt(std::max(sumsq / nd - mean * mean, 0.0)));
+    r.beats_random = static_cast<float>(beat) / static_cast<float>(n_random);
+    return r;
+}
+
 }  // namespace cppgpt
