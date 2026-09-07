@@ -21,6 +21,9 @@ GENERATE="$TEST_SRCDIR/_main/tools/generate"
 INSPECT="$TEST_SRCDIR/_main/tools/inspect"
 EVAL="$TEST_SRCDIR/_main/tools/eval"
 ABLSTATS="$TEST_SRCDIR/_main/tools/ablation_stats"
+NEURONS="$TEST_SRCDIR/_main/tools/neuron_stats"
+PROBE="$TEST_SRCDIR/_main/tools/probe"
+INDUCTION="$TEST_SRCDIR/_main/tools/induction"
 WORK="$TEST_TMPDIR/work"
 mkdir -p "$WORK"
 
@@ -203,6 +206,137 @@ assert L == [lab_of(r) for r in d["ablation"]], \
     f"coax labels disagree with the ablation order:\n  {L}\n  {[lab_of(r) for r in d['ablation']]}"
 PYEOF
 [ $? -eq 0 ] || fail "coax emission contract failed"
+
+# ---------- the weight-space panel is prompt-independent ----------
+# tools/serve_viewer.py computes this panel ONCE at startup and splices it into
+# every response, which is sound only because it cannot depend on the prompt.
+# That premise is checked directly in circuits_test; this checks the CONSEQUENCE
+# the server relies on -- a response assembled from a cached panel plus a
+# --circuits 0 run must equal one that computed everything.
+#
+# Verified by mutation: making ov_circuit read a single activation makes this
+# fail, which is exactly the bug that would otherwise serve stale numbers.
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --out "$WORK/warm.json" --top-k 4 > /dev/null 2>&1
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "be alpha" --out "$WORK/full.json" --top-k 4 > /dev/null 2>&1
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "be alpha" --out "$WORK/fast.json" --top-k 4 --circuits 0 > /dev/null 2>&1
+python3 - "$WORK/warm.json" "$WORK/full.json" "$WORK/fast.json" <<'PYEOF'
+import json, sys
+warm, full, fast = (json.load(open(p)) for p in sys.argv[1:4])
+assert "circuits" not in fast, "--circuits 0 still emitted the panel"
+assert warm["circuits"], "empty panel would make this check vacuous"
+fast["circuits"] = warm["circuits"]        # what serve_viewer actually returns
+assert full == fast, "a cached panel does not reproduce the computed response"
+PYEOF
+[ $? -eq 0 ] || fail "weight-space panel is not prompt-independent"
+
+# ---------- the corpus-artifact channel (M7-3/M7-4, plan property P3) ----------
+# An artifact from a DIFFERENT checkpoint renders perfectly: valid neuron
+# indices, real text, every panel filled. It simply describes another model.
+# That is the failure this format exists to catch, so the check is that it is
+# REFUSED -- and that a matching one still loads, or "refuses everything" would
+# pass too.
+"$NEURONS" --checkpoint "$WORK/base.ckpt" --data "$WORK/base.val.bin" \
+           --out "$WORK/n.art" --windows 8 --seq 8 --top-k 2 --ctx 6 \
+           > "$WORK/n.log" 2>&1 || fail "neuron_stats failed: $(tail -2 "$WORK/n.log")"
+
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+           --prompt "alpha be" --corpus "$WORK/n.art" --out "$WORK/withcorpus.json" \
+           > /dev/null 2>&1 || fail "inspect rejected a MATCHING corpus artifact"
+
+# A second checkpoint, trained differently, gives a different identity.
+"$TRAIN" --data "$WORK/base.train.bin" --layers 2 --heads 2 --embd 64 --ctx 16 \
+         --batch 4 --steps 2 --ckpt "$WORK/other.ckpt" > /dev/null 2>&1 \
+  || fail "could not build a second checkpoint"
+"$NEURONS" --checkpoint "$WORK/other.ckpt" --data "$WORK/base.val.bin" \
+           --out "$WORK/other.art" --windows 8 --seq 8 --top-k 2 --ctx 6 \
+           > /dev/null 2>&1 || fail "neuron_stats failed on the second checkpoint"
+
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" \
+              --prompt "alpha be" --corpus "$WORK/other.art" --out "$WORK/bad.json" \
+              > "$WORK/corpusbad.log" 2>&1; then
+  fail "inspect ACCEPTED an artifact built from a different checkpoint"
+fi
+grep -q "built from THIS checkpoint" "$WORK/corpusbad.log" \
+  || fail "the corpus refusal did not say why: $(tail -2 "$WORK/corpusbad.log")"
+
+python3 - "$WORK/withcorpus.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+n = d["neurons"]
+# Derived from the dump's own config, not hardcoded: a test that pins the
+# model shape breaks when the fixture changes and proves nothing when it does not.
+cfg = d["config"]
+want = cfg["n_layer"] * 4 * cfg["n_embd"]
+assert n["count"] == want, f"expected L*4C = {want} neurons, got {n['count']}"
+assert n["shown"], "no neurons emitted"
+for e in n["shown"]:
+    assert 0 <= e["layer"] < 2, e
+    assert e["top"], "a neuron with no entries"
+    # Ranked descending, or "top-activating" means nothing.
+    acts = [x["act"] for x in e["top"]]
+    assert acts == sorted(acts, reverse=True), acts
+# The listing is ranked by peak activation across neurons, too.
+peaks = [e["top"][0]["act"] for e in n["shown"]]
+assert peaks == sorted(peaks, reverse=True), peaks
+PYEOF
+[ $? -eq 0 ] || fail "corpus artifact contract failed"
+
+# ---------- every artifact kind travels through the ONE --corpus flag ----------
+# probe and induction used to print to stdout only, so nothing they found could
+# reach a panel. They now emit artifacts with the same envelope and identity
+# check as neuron_stats, and inspect dispatches on the kind each file declares.
+"$PROBE" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --data "$WORK/base.val.bin" \
+         --windows 4 --seq 8 --scale 10 --out "$WORK/p.art" > /dev/null 2>&1 \
+  || fail "probe --out failed"
+"$INDUCTION" --checkpoint "$WORK/base.ckpt" --half 4 --trials 3 --out "$WORK/i.art" \
+  > /dev/null 2>&1 || fail "induction --out failed"
+
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --prompt "alpha be" \
+           --corpus "$WORK/n.art,$WORK/p.art,$WORK/i.art" --out "$WORK/all.json" \
+           > /dev/null 2>&1 || fail "inspect rejected a valid multi-artifact --corpus"
+
+python3 - "$WORK/all.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for k in ("neurons", "probes", "induction"):
+    assert k in d, f"one flag did not carry {k}"
+# Decodability and its causal test must travel together: a probe row without its
+# control is the claim this repo has twice retracted.
+for r in d["probes"]["rows"]:
+    for f in ("acc", "base", "shuffled", "steer", "null_mean", "beats"):
+        assert f in r, f"probe row missing {f}"
+    assert 0.0 <= r["beats"] <= 1.0, r
+# The induction control rides along for the same reason.
+assert d["induction"]["uniform"] > 0
+for hh in d["induction"]["heads"]:
+    assert "control" in hh and "repeated" in hh, hh
+PYEOF
+[ $? -eq 0 ] || fail "multi-artifact dump contract failed"
+
+# An artifact of a KNOWN kind but the WRONG checkpoint is still refused.
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --prompt "alpha be" \
+              --corpus "$WORK/p.art,$WORK/other.art" --out "$WORK/x.json" > "$WORK/mx.log" 2>&1; then
+  fail "a mismatched artifact passed when mixed with a valid one"
+fi
+
+# An artifact declaring a kind this build does not know is REFUSED, not skipped.
+# Skipping would render a page missing a panel with nothing to say why, which is
+# the silent-degradation failure this repo forbids. The kind is read from the
+# header before the checksum, so patching that field exercises exactly this path.
+python3 - "$WORK/p.art" "$WORK/unknown.art" <<'PYEOF'
+import struct, sys
+raw = bytearray(open(sys.argv[1], "rb").read())
+struct.pack_into("<I", raw, 8, 99)          # ArtifactHeader.kind
+open(sys.argv[2], "wb").write(bytes(raw))
+PYEOF
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --prompt "alpha be" \
+              --corpus "$WORK/unknown.art" --out "$WORK/y.json" > "$WORK/uk.log" 2>&1; then
+  fail "inspect accepted an artifact of an unknown kind"
+fi
+grep -q "does not know" "$WORK/uk.log" || fail "unknown-kind refusal did not say why"
 
 # The dump's contract, checked rather than assumed: valid JSON, attention that is
 # a causal distribution, and a last-layer lens that agrees with the model's own

@@ -14,7 +14,7 @@
 // wired wrong — a mis-strided residual, the wrong layernorm weights, or a
 // transposed unembedding all fail it. Asserting only "the lens produces a valid
 // distribution" would pass for all three.
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 
 #include <algorithm>
 #include <cmath>

@@ -10,6 +10,14 @@
 
 namespace cppgpt {
 
+// Canonical GPT-2 LayerNorm epsilon. Protocol-fixed, not a tunable: it is part
+// of what makes this GPT-2 rather than a model shaped like it.
+//
+// Public because interpret.cpp's weight-space circuits apply the same layernorm
+// to token embeddings, and a second copy of a numeric constant is how two files
+// come to disagree about what the model is.
+inline constexpr float kLayerNormEps = 1e-5f;
+
 // out[B,T,OC] = inp[B,T,C] @ weight[OC,C]ᵀ + bias[OC].
 // `bias` may be null (no bias added). Overwrites `out`. Pointers must not alias.
 void matmul_forward(float* out, const float* inp, const float* weight, const float* bias,

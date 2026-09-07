@@ -13,3 +13,14 @@ cc_library(
     hdrs = ["numeric.hpp"],
     visibility = ["//visibility:public"],
 )
+
+# Fixture loader for the PyTorch parity gate. TEST-ONLY: it was in
+# include/cppgpt/ and shipped as public library API with zero library or tool
+# callers, which ROADMAP.md had flagged. It also sizes allocations from an
+# unvalidated file header, which is acceptable for a committed test fixture and
+# was not acceptable in the library surface.
+cc_library(
+    name = "verify",
+    hdrs = ["verify.hpp"],
+    visibility = ["//tests:__subpackages__"],
+)

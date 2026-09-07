@@ -15,6 +15,7 @@ cc_test(
     size = "small",
     srcs = ["core_test.cpp"],
     deps = [
+        "//tests:verify",
         "//:cppgpt",
         "//tests:check",
     ],
@@ -128,6 +129,64 @@ cc_test(
 # interpretability layer produces. Synthetic model, so it is hermetic -- data/ is
 # gitignored and a test needing that checkpoint could not be green on a clean
 # checkout (engineering-lessons L11).
+# B4: the induction score, an independent check on M-22's negative result.
+cc_test(
+    name = "induction_test",
+    size = "small",
+    srcs = ["induction_test.cpp"],
+    deps = ["//:cppgpt", "//tests:check"],
+)
+
+# M7-6: causal validation. The random-direction control is the measurement.
+cc_test(
+    name = "steer_test",
+    size = "small",
+    srcs = ["steer_test.cpp"],
+    deps = ["//:cppgpt", "//tests:check"],
+)
+
+# M7-5: linear probes. The shuffled-label control is the load-bearing check.
+cc_test(
+    name = "probe_test",
+    size = "small",
+    srcs = ["probe_test.cpp"],
+    deps = ["//:cppgpt", "//tests:check"],
+)
+
+# M7-3: the corpus-artifact envelope. Every check names the corruption it
+# injects; a single "rejects bad input" test would pass for a loader that
+# rejects everything.
+cc_test(
+    name = "artifact_test",
+    size = "small",
+    srcs = ["artifact_test.cpp"],
+    deps = ["//:cppgpt", "//tests:check"],
+)
+
+# M7-1: SVD of the head circuits. Reconstruction plus a known-spectrum case --
+# neither is sufficient alone.
+cc_test(
+    name = "svd_test",
+    size = "small",
+    srcs = ["svd_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
+# M6-A5: weight-space head circuits. Purity, constructed cases with known
+# answers, and agreement with a real forward where attention is one-hot.
+cc_test(
+    name = "circuits_test",
+    size = "small",
+    srcs = ["circuits_test.cpp"],
+    deps = [
+        "//:cppgpt",
+        "//tests:check",
+    ],
+)
+
 # Step 3 of IMPLEMENTATION_PLAN.md: property P5 and the component enumeration.
 cc_test(
     name = "coax_test",

@@ -114,6 +114,16 @@ void softmax_into(float* out, const float* logits, int V) noexcept;
 // KL(p || q) in nats. q is clamped away from zero: after a softmax no entry is
 // truly zero, but a denormal would produce inf and silently poison a whole
 // series of comparisons.
+//
+// PRECONDITION: both p and q are normalised distributions. The result is
+// non-negative only under that condition -- against an unnormalised q it can and
+// does go negative (checked: p={.5,.5}, q={.9,.9} gives -0.588). Every caller
+// here passes softmax_into output, which is normalised by construction, so this
+// is a documented domain rather than a check: verifying it would cost a pass
+// over V on every component of every sweep to restate what softmax guarantees.
+//
+// Terms with p below 1e-12 are skipped. They contribute at most ~1e-12*log(1e18)
+// each, and skipping them is what keeps a denormal from dominating the sum.
 [[nodiscard]] double kl_divergence(const float* p, const float* q, int V) noexcept;
 
 // ---------------------------------------------------------------------------
@@ -165,6 +175,205 @@ void restore_ablation(GPT2& model, Ablation kind, int layer, int head, const flo
 //
 // `head` is ignored unless site == PatchSite::HeadOut.
 void capture_site(const GPT2& model, PatchSite site, int layer, int head, float* out) noexcept;
+
+// ---------------------------------------------------------------------------
+// Weight-space head circuits (QK and OV)
+// ---------------------------------------------------------------------------
+//
+// Every other function in this file describes what a component did on ONE
+// prompt. These two describe the head itself: they read only weights, so the
+// same checkpoint always gives the same answer and no forward pass is involved.
+// That is the difference between "this head attended here, once" and "this head
+// is the kind of thing that does X".
+//
+// A head reads through its QK circuit and writes through its OV circuit
+// (Elhage et al., A Mathematical Framework for Transformer Circuits, 2021).
+// Composed end to end over the vocabulary both are [V, V] tables:
+//
+//   OV[t][k]  attending to token t adds this much to the logit of token k
+//   QK[t][s]  at destination token t, this is the attention score for source s
+//
+// At GPT-2's V = 50257 these are 2.5e9 entries and nobody renders them. At this
+// model's V = 65 they are 65x65 and fit on a screen, which is the whole reason
+// this is worth building here.
+//
+// WHAT IS EXACT AND WHAT IS NOT. Both tables apply the layer's ln1 to each token
+// embedding AND the qkv biases, so QK reproduces attention_forward's score
+// exactly for a token-embedding input. Two approximations remain, and they are
+// why the panel says "direct path":
+//
+//   * The residual stream at layer l is a token embedding only at layer 0, and
+//     only ignoring the position embedding. Deeper layers read everything
+//     written before them, so the table describes one TERM of what the head
+//     does, not the whole of it.
+//   * OV omits the final layernorm, whose scale is input-dependent. Magnitudes
+//     are therefore relative; the ranking within a row is not affected.
+//
+// OV is COLUMN-CENTRED: each target token's mean over all sources is removed.
+// Without it the table shows the unembedding, not the head -- rare characters
+// have large embedding norms and win a dot product against almost any direction,
+// and on the Shakespeare checkpoint two of them took the top slot in over half
+// the rows (M-22). A constant per-target offset is shared by every source, so it
+// cannot carry information about what this head does with a particular source.
+//
+// `out` is caller-owned, [V*V] floats, row-major with the SOURCE token as the
+// row. Read-only with respect to the model; nothing here allocates.
+[[nodiscard]] std::size_t circuit_floats(const Config& cfg) noexcept;
+
+void ov_circuit(const GPT2& model, int layer, int head, float* out) noexcept;
+void qk_circuit(const GPT2& model, int layer, int head, float* out) noexcept;
+
+// Which circuit table to decompose.
+enum class CircuitKind { Ov, Qk };
+
+// ---------------------------------------------------------------------------
+// Singular decomposition of a circuit table (M7-1)
+// ---------------------------------------------------------------------------
+//
+// The OV table says what attending to each single character does. Its SINGULAR
+// DIRECTIONS say what the head does in general: each one is a weighted mix of
+// input characters, a weighted mix of output characters, and a strength. That is
+// the closest thing to "a direction" obtainable from weights alone -- no corpus,
+// no training, no prompt (Beyond Components, arXiv 2511.20273).
+//
+// `a` is [n, n] row-major and is NOT modified. On return, for i, j < n:
+//
+//     a[i][j] == sum_k u[i][k] * s[k] * vt[k][j]
+//
+// so left singular vectors are COLUMNS of `u`, right singular vectors are ROWS
+// of `vt`, and `s` is non-increasing and non-negative. All three buffers are
+// caller-owned: `u` and `vt` need n*n floats, `s` needs n.
+//
+// One-sided Jacobi: orthogonalise column pairs by plane rotations until none
+// need rotating. Chosen over the textbook Golub-Kahan bidiagonalisation because
+// it is about forty lines, has no pathological cases at this size, and is
+// accurate for small singular values -- which matter here, since a rank-deficient
+// circuit is the normal case rather than the exception.
+void svd_square(const float* a, int n, float* u, float* s, float* vt) noexcept;
+
+// Build a head's circuit table and decompose it in one call. `u`, `vt` need
+// circuit_floats(cfg) floats; `s` needs vocab_size.
+//
+// The OV circuit factors through a head of width hs, so at most hs singular
+// values are nonzero however large the vocabulary is. A decomposition showing
+// more is decomposing something else.
+void svd_circuit(const GPT2& model, int layer, int head, CircuitKind kind, float* u, float* s,
+                 float* vt) noexcept;
+
+// Fraction of source tokens whose own logit is the largest entry in their OV
+// row -- "attending to t promotes t above everything else".
+//
+// This is NOT Elhage's eigenvalue-based copying score. That one summarises the
+// OV matrix by the fraction of its eigenvalues that are positive, which needs a
+// nonsymmetric eigensolver this repo does not have and could not test cheaply.
+// The diagonal-argmax fraction answers the same question directly, and is named
+// for what it measures rather than borrowing the more familiar term.
+[[nodiscard]] float copying_score(const float* ov, int V) noexcept;
+
+// ---------------------------------------------------------------------------
+// Linear probes over the residual stream (M7-5)
+// ---------------------------------------------------------------------------
+//
+// Fit a direction that predicts a labelled property from the residual stream.
+// This is the cheap way to ask "is X encoded here", and the field now reports
+// tuned linear probes matching or beating SAE probes -- which is why this comes
+// first and SAEs are conditional (IMPLEMENTATION_PLAN §D).
+//
+// A PROBE ON ITS OWN PROVES NOTHING. It shows a property is linearly decodable,
+// not that the model uses that direction. Two things guard against reading more
+// into it than it says, and both are returned rather than left to the caller:
+//
+//   `base_rate`      the majority-class accuracy. A property that is 90% one
+//                    class gives a 90%-accurate probe that has learned nothing.
+//   `shuffled`       accuracy after the labels are permuted. This must land at
+//                    the base rate. If it does not, the split is leaking --
+//                    which for character data is the default outcome, because
+//                    adjacent positions are not independent samples.
+//
+// The split is by POSITION, not by random row: the caller supplies rows already
+// in corpus order and `n_train` of the leading ones are used for fitting.
+struct ProbeResult {
+    float accuracy;   // held-out
+    float shuffled;   // held-out, labels permuted -- the control
+    float base_rate;  // majority class on the held-out split
+};
+
+// `x` is [n, dim] row-major, `y` is [n] of 0/1, both caller-owned and in corpus
+// order. `out_direction` receives [dim]. Read-only with respect to the model.
+[[nodiscard]] ProbeResult fit_probe(const float* x, const std::uint8_t* y, int n, int dim,
+                                    int n_train, float* out_direction, Generator& gen) noexcept;
+
+// ---------------------------------------------------------------------------
+// Causal validation of a direction (M7-6)
+// ---------------------------------------------------------------------------
+//
+// A probe direction is a HYPOTHESIS. It shows a property is linearly decodable
+// from the residual stream, which is a fact about the representation, not about
+// what the model does with it. Naming a direction from decodability alone is the
+// central failure of this field, and this repo has retracted two claims made
+// that way (M-19, M-23).
+//
+// The test: add the direction to the residual stream and see whether the output
+// moves. Then do the same with a RANDOM direction of the same magnitude. If the
+// two move the output equally, the probe found a direction the model does not
+// use, however well it decodes.
+//
+// The random control is the whole measurement. Without it, "steering along d
+// changed the output" is unfalsifiable -- adding any large enough vector to the
+// residual stream changes the output.
+//
+// Steering is additive, done by capturing the layer's MLP write, adding the
+// scaled direction, and patching the sum back. It needs no new patch site.
+//
+// `direction` is [n_embd] and is normalised internally, so `scale` is in units
+// of residual-stream norm and comparable across directions. A zero-norm
+// direction aborts: there is nothing to steer along.
+// ONE random direction is a sample of size one, not a control. The first
+// version of this returned a single `kl_random`, and comparing 0.0029 against
+// 0.0014 looked like a result when it was a coin flip -- across 20 (layer,
+// property) pairs the direction beat its single control 13 times, which is
+// indistinguishable from chance at that sample size.
+//
+// So the null is a DISTRIBUTION. `beats_random` is the fraction of random draws
+// the direction exceeds: 0.5 means the direction is unremarkable, and only a
+// value near 1 supports "the model reads this direction".
+struct SteerResult {
+    float kl_direction;   // KL(clean || steered along `direction`)
+    float kl_random_mean; // mean over the random draws, same norm
+    float kl_random_sd;
+    float beats_random;   // fraction of draws with kl_direction > kl_random
+};
+
+// `n_random` draws form the null; 20 is enough to separate 0.5 from 0.95.
+[[nodiscard]] SteerResult steer_effect(GPT2& model, const int* tokens, int layer, int pos,
+                                       const float* direction, float scale, int n_random,
+                                       Generator& gen) noexcept;
+
+// ---------------------------------------------------------------------------
+// Induction score (M7-B4)
+// ---------------------------------------------------------------------------
+//
+// The canonical operational test for an induction head (Olsson et al. 2022),
+// and deliberately INDEPENDENT of the OV/QK circuit work: it reads attention
+// from a real forward rather than composing weight matrices, so it can confirm
+// or overturn M-22's negative result without sharing any of its machinery.
+//
+// Feed a sequence that is a random block repeated twice: r[0..n-1] r[0..n-1].
+// At position n+i the model is seeing r[i] again, and the token that followed
+// it last time sits at position i+1. A head doing induction attends there.
+//
+//   score(head) = mean over i in [0, n-1) of att[n+i][i+1]
+//
+// The number only means something against its baseline. A head attending
+// UNIFORMLY over its causal prefix puts 1/(n+i+1) on that position, so
+// `out_uniform` receives what uniform attention would score on the same
+// sequence. A score at the baseline is no induction; the multiple over it is
+// the effect size.
+//
+// Call after `forward()` on such a sequence. `out_per_head` receives
+// [n_layer * n_head] layer-major; `out_uniform` is a single float. Read-only.
+void induction_scores(const GPT2& model, int half, float* out_per_head,
+                      float* out_uniform) noexcept;
 
 // ---------------------------------------------------------------------------
 // The component enumeration

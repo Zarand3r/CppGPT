@@ -229,6 +229,17 @@ than 634 s.
 
 ## M-11 · Model quality vs baselines
 
+> **Checkpoint identity.** This row measures `data/shakespeare-v1-1.82nats.ckpt` — the M-8 model.
+> `data/shakespeare.ckpt` has since been overwritten by Run B's best checkpoint (M-13), so the
+> reproduce command below now prints Run B's numbers and **the opposite headline**. Verified:
+> the two files differ, and the command run against `shakespeare.ckpt` today reports *"beats the best
+> n-gram by 8.9%"* where this row says *"loses by 7.9%"*.
+>
+> `docs/EXPERIMENTS.md` pre-registered this exact hazard in writing — that `shakespeare.ckpt` is what
+> the viewer serves and an overwrite would silently change published panels — and it happened anyway.
+> Every row below that says "toy checkpoint" means whichever file that path held when it was written;
+> M-16 onward are Run B.
+
 `//tools:eval`, `--config=release`, the M-8 toy checkpoint (L4 H4 C128 V65 ctx64) over the full
 TinyShakespeare validation split. Deterministic: sequential non-overlapping windows, 110,592 of
 111,539 tokens scored (947 dropped as a partial trailing batch, and reported rather than hidden).
@@ -698,4 +709,390 @@ for b in zero donor; do
     --checkpoint $PWD/data/shakespeare.ckpt --data $PWD/data/shakespeare.val.bin \
     --prompts 128 --seq 32 --baseline $b --top 24
 done
+```
+
+## M-22 · This model has no copying heads, and the raw OV table shows the unembedding
+
+`//tools:inspect --circuits`, toy checkpoint. The OV circuit composes
+`ln1 → W_V → W_O → W_U` over the vocabulary: *attending to character `t` promotes character `k` by
+this much*. It reads **only weights**, so it describes the head rather than a prompt.
+
+**Copying score — the fraction of characters whose own logit tops their row:**
+
+| head | score |
+|---|---|
+| L0H1 | **0.092** (6 of 65) |
+| L0H2, L0H3 | 0.031 |
+| the other thirteen | 0.000 |
+
+Chance is 1/65 = 0.015, so the best head is ~6× chance and still negligible. **There are no copying
+heads in this model**, and therefore no induction heads either — an induction head needs a copying OV
+circuit by definition (Olsson et al. 2022).
+
+> **Independently confirmed by M-28.** That inference ran through a copying statistic of this
+> repo's own construction, so it was reasonable to suspect the statistic. The canonical operational
+> test — attention on repeated random blocks, sharing no machinery with this one — agrees: no head
+> exceeds uniform, and every head scores the same on repeated and non-repeated sequences. That is a result about a 4-layer character model whose
+regularities are n-gram statistics, capitalisation and line structure, none of which require copying
+a token forward.
+
+### The correction that had to come first
+
+Before column-centring the table measured the unembedding, not the head. On L0H1 the character `&`
+was the top promotion in **21 of 65 rows** and `Q` in a further 16 — over half the table was two rare
+characters, which have large embedding norms and so win a dot product against almost any direction.
+
+Centring each column (removing, for every target, its mean over all sources) cut that to 18 of 65 and
+raised the copying score from 0.062 to 0.092.
+
+The justification is a priori rather than a fit to the outcome: a constant offset per target is shared
+by every source, so it cannot carry information about what one head does with one source. It was
+applied once, for that reason, and the residual concentration (`Q` 10, `&` 8, `E` 8) was left alone
+rather than tuned away.
+
+### What the table is not
+
+Exact for the read half — the layer's own `ln1` is applied to each embedding. Two approximations
+remain, both stated in the panel: the residual stream is a token embedding only at **layer 0** and
+only ignoring position, so for deeper layers this is one *term* of what the head does; and the final
+layernorm is omitted, its scale being input-dependent, so magnitudes are relative while rankings
+within a row are not.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --out /tmp/circ.json
+```
+
+## M-23 · Singular directions of a head — a retracted claim, and what survives
+
+`//tools:inspect` (M7-1). The OV table says what attending to each *single* character does; its
+singular directions say what the head does in general — a weighted mix of characters read, a mix
+written, a strength. Weights only: no corpus, no training, no prompt.
+
+> **This section originally reported that a head's directions carry real category structure. That
+> claim was wrong in three separate ways and is retracted.** An adversarial review found all three;
+> each was reproduced before being accepted. The corrected result is below, and it is negative.
+
+### What was wrong
+
+**1. The two columns were swapped.** For `A[i][j] = Σ u[i][k]·s[k]·vt[k][j]`, and an OV table whose
+row is the attended-to character and whose column is the promoted one, `u`'s columns live in *source*
+space (what the head **reads**) and `vt`'s rows in *target* space (what it **writes**). The panel had
+them the other way. The worked example — *"reads `b t n`, writes `. : ,`"* — was backwards: the
+direction **reads punctuation and writes consonants**, which is also the reading that makes sense,
+since a consonant is what follows a full stop.
+
+Now pinned by a test that cannot be satisfied by relabelling: column-centring zeroes each column over
+sources, which forces every *left* singular vector to be zero-sum and leaves the right ones
+unconstrained. That is a property of the data.
+
+**2. The chance baseline was computed with a different statistic than the columns beside it.** The
+sampling code drew *two independent samples* — taking the category counts of one and the category set
+of the other. Exact enumeration over all C(65,4) = 677,040 combinations gives **0.530**, not the
+0.431 published. The untrained control at 0.543 is therefore *at chance*, which is a better
+validation of the control than the wrong number allowed anyone to see.
+
+**3. The control did not isolate the head.** It randomised the head *and* the embeddings. But
+`OV = ln1(wte)·W_OV·wteᵀ`, and the outer factors are **shared by all sixteen heads**. So the
+comparison conflated "this head learned structure" with "the tied embedding learned structure".
+
+### The corrected result
+
+| | reads | writes |
+|---|---|---|
+| trained | 0.6836 | 0.6172 |
+| untrained model (head **and** embeddings random) | 0.5430 | 0.5508 |
+| **trained embeddings, random head** | **0.6540** | **0.6325** |
+| chance (exact) | 0.5300 | 0.5300 |
+
+The third row is the control that was missing, over 12 random heads on the real embeddings. It
+reproduces almost the whole effect. Of the 0.141 gap between trained and the original control,
+**0.111 appears with no learned head at all.**
+
+The head-attributable residual is **0.030** on the read side — `p = 0.083`, not significant — and on
+the write side the trained model scores **below** its own null (0.617 against 0.633).
+
+**So there is no statistically supported head-attributable category structure in these directions.**
+What structure exists belongs to the trained vocabulary geometry, which every OV table inherits for
+free. The viewer says this rather than naming character groups.
+
+### What still stands
+
+Magnitude separates trained from untrained completely: the leading singular value reaches **296.5**
+trained against **0.1** untrained, a factor of ~3,000. Training grows these circuits enormously.
+Concentration barely moves (leading ÷ sum of top-4: 0.362 against 0.296), so the head's action stays
+spread across directions rather than collapsing into one.
+
+And the original methodological point survives intact, having now caught its own author: eyeballing
+does not distinguish a trained head from noise. The untrained model produces character sets that look
+just as nameable. The difference is that the statistic which was supposed to settle it was itself
+wrong three ways, and only a control that isolated the head resolved the question.
+
+**Reproduce**
+```sh
+bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
+What is" --out /tmp/svd.json
+# the corrected statistics, including the trained-embeddings/random-head null:
+.venv/bin/python3 scripts/svd_purity.py data/shakespeare.ckpt data/shakespeare.vocab /tmp/untrained.ckpt
+```
+
+## M-24 · What `inspect` actually costs, and a measurement method that was wrong
+
+`//tools:inspect`, toy checkpoint, prompt `"ROMEO:\nWhat is"`, **release build**, best of 10.
+
+| | wall |
+|---|---|
+| `--ablate 0 --circuits 0` | 14 ms |
+| + the 24-forward ablation sweep | 27 ms |
+| + circuits and their SVD (default) | **90 ms** |
+| + `--coax 1` (600 forwards) | 396 ms |
+
+The weight-space panel costs **63 ms**; a full request is **90 ms**.
+
+### The method that was wrong
+
+Figures of 685 ms for the panel and 1,238 ms for a request were published in `ROADMAP.md`,
+`IMPLEMENTATION_PLAN.md` and `SUMMARY.md` — **15× too large**. Every one of them timed
+`bazel-bin/tools/inspect`, and **`bazel-bin/` is a symlink to whichever configuration built last**. A
+`bazel build //...` between the `--config=release` build and the measurement silently repointed it at
+the debug binary.
+
+Side by side at the same commit and prompt:
+
+| build | full request |
+|---|---|
+| `bazel-out/k8-fastbuild/` (debug) | 828 ms |
+| `bazel-out/k8-opt/` (release) | **94 ms** |
+
+**8.8×.** Debug is not a slower release build for timing purposes; it is a different measurement.
+
+Time through the explicit config path — `bazel-out/k8-opt/bin/tools/...` — or `bazel run
+--config=release`, never `bazel-bin/`. M-20's CoAx figures (30 ms / 327 ms) are sound because the
+symlink happened to point at release; the release numbers above (27 ms / 396 ms) confirm them.
+
+### What this changes
+
+M7-2's cache was argued for on 685 ms of a 1,238 ms request. The real saving is **63 ms of 90 ms** —
+still 3.3×, but on a request that was already interactive. It stays because it is fifteen lines
+gated by a mutation-tested invariant, not because latency demanded it, and the roadmap now says that
+instead of keeping the argument that motivated it.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:inspect
+B=bazel-out/k8-opt/bin/tools/inspect          # NOT bazel-bin/
+for f in "--ablate 0 --circuits 0" "--circuits 0" "" "--coax 1"; do
+  time $B --checkpoint $PWD/data/shakespeare.ckpt --vocab $PWD/data/shakespeare.vocab \
+    --prompt "ROMEO:
+What is" $f --out /tmp/t.json
+done
+```
+
+## M-25 · The QK table was missing the attention biases
+
+`qk_circuit` computed `(W_Q·x)·(W_K·x)` while `attention_forward` scores with
+`(W_Q·x + b_Q)·(W_K·x + b_K)`. The dropped cross term `b_Q·(W_K·x_s)` **varies with the source**, so
+it changes the within-row ranking — which is the only thing the panel is read for.
+
+Measured on the trained checkpoint, fraction of rows whose most-preferred source changes when the
+bias is included:
+
+| | rows changed |
+|---|---|
+| L0H0 | **96.9%** |
+| mean over all 16 heads | **35.0%** |
+
+`max|qkvb| = 0.954`, and all 1,536 entries are non-zero.
+
+### Why no test caught it
+
+Every test in `circuits_test` built its model with `init_weights`, **which zeroes every bias**. A
+circuit test that only ever sees a freshly initialised model cannot see a bias bug at all. The new
+test sets non-uniform biases and compares against a reference built from the library's own
+`layernorm_forward` + `matmul_forward` — the same path the forward pass uses, which includes the bias
+by construction.
+
+`ov_circuit` needs no equivalent fix and this was checked rather than assumed: `b_V` and `b_O`
+contribute a per-*target* constant, which its column-centring removes exactly — perturbing the V-block
+bias changes its output by 0.000e+00.
+
+The header had enumerated "two approximations" and this was a silent third; it now says QK reproduces
+`attention_forward`'s score exactly for a token-embedding input.
+
+**Reproduce:** `bazel test //tests/unit:circuits_test` — and the two mutations that must fail it are
+dropping the bias, and using `b_K` where `b_Q` is meant.
+
+## M-26 · Max-activating neuron contexts, and what they do not establish
+
+`//tools:neuron_stats` over 128 windows × 32 tokens of the validation split, then
+`inspect --corpus`. For each of the model's **2,048 MLP neurons**, the corpus contexts that activated
+it most. Release build; the pass writes an 852 KB artifact and **0 neurons never activated**.
+
+The strongest, by peak activation:
+
+| neuron | peak | fires on |
+|---|---|---|
+| L3·264 | 14.21 | `" chirurgeonly."` · `"y you."` |
+| L3·260 | 13.57 | `"ll them both,\n"` · `" every cabin,\n"` |
+| L3·327 | 13.42 | `" with your str"` · `"DELLO:\nWhen h"` |
+| L3·291 | 13.29 | `" thou, if the "` · `"so is all the "` |
+
+`L3·260`'s two contexts both end in comma-newline, which reads as a line-ending feature. **That
+reading is not supported by this measurement**, and the panel says so rather than naming it. What a
+neuron fires on is a correlation; whether its activation *causes* anything downstream is a separate
+question that needs an intervention (M7-6). This repo has already retracted two claims made from
+exactly this kind of pattern-reading — M-19 and M-23 — and the second of those was retracted partly
+because an untrained model produced sets that looked equally nameable.
+
+### The identity check, exercised
+
+An artifact built from a **different** checkpoint is refused:
+
+```
+inspect: --corpus 'other.art' rejected: shape mismatch
+  It must be a NeuronTopK artifact built from THIS checkpoint.
+```
+
+This matters because such an artifact renders perfectly otherwise — valid neuron indices, real text,
+every panel filled. It simply describes another model. The e2e builds a second checkpoint and asserts
+the refusal, and asserts that a *matching* artifact still loads, since "refuses everything" would
+otherwise pass. Two mutations fail it: accepting a mismatch, and emitting neurons unranked.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:neuron_stats //tools:inspect
+B=bazel-out/k8-opt/bin/tools
+$B/neuron_stats --checkpoint $PWD/data/shakespeare.ckpt --data $PWD/data/shakespeare.val.bin \
+  --out /tmp/neurons.art --windows 128 --seq 32
+$B/inspect --checkpoint $PWD/data/shakespeare.ckpt --vocab $PWD/data/shakespeare.vocab \
+  --prompt "ROMEO:
+What is" --corpus /tmp/neurons.art --out /tmp/n.json
+```
+
+## M-27 · Probes decode nearly everything; steering separates what the model reads
+
+`//tools:probe`, 64 windows × 32 tokens of the validation split, 1,488 training rows / 496 held out,
+split by corpus position. Five properties, each requiring **context** rather than the current
+character — a probe recovering "this character is a vowel" has rediscovered the embedding.
+
+Null = **20 random directions of the same norm**. Steering scale **30**, and that number is the
+correction below.
+
+### The first version measured in a dead zone
+
+This section originally used scale 2.0 and concluded that most decodable directions are causally
+inert, with layer 1 the exception. **That was an artifact of the scale.** The residual stream at this
+model's layers has norm **60–285**; adding a unit vector at scale 2 is a ~3% perturbation, and the
+resulting KLs were 0.0001–0.005 nats. Nothing was happening, and the direction-versus-null comparison
+was between two near-zero quantities.
+
+At scale 30 — a perturbation the model actually feels — the picture is different and much sharper.
+
+### The corrected result
+
+| property | L0 | L1 | L2 | L3 |
+|---|---|---|---|---|
+| **after_punct** | **100%** | **100%** | 90% | **100%** |
+| **in_caps_run** | **100%** | 90% | **100%** | 20% |
+| after_space | 75% | 90% | 95% | 10% |
+| after_newline | 75% | 30% | 35% | 65% |
+| after_vowel | 25% | 55% | 75% | 10% |
+
+(Fraction of the 20-draw null the direction beats.) The effect sizes behind the strong cells are not
+marginal: `after_punct` at L1 moves the output **3.28 nats against a null mean of 0.40** — 8×. At L0,
+`in_caps_run` is 2.82 against 0.39.
+
+**`after_punct` is causally live at every layer.** `in_caps_run` and `after_space` are live at some.
+`after_newline` and `after_vowel` decode at 0.97–0.99 accuracy and are **not** ones the model reads —
+which is the point of doing the causal half at all, and remains true after the correction.
+
+### What the scale-dependence itself says
+
+The ranking is not scale-free, and that is a limitation rather than a nuisance:
+
+| | scale 2 | scale 30 | scale 60 |
+|---|---|---|---|
+| after_punct L1 | 100% | 100% | 95% |
+| in_caps_run L1 | 20% | 90% | 100% |
+| after_vowel L1 | 95% | 55% | 40% |
+
+The top group (`after_punct`, `in_caps_run`) is stable across 30 and 60; the weak cells move around,
+which is what noise looks like. But a large enough perturbation takes the model off its own
+activation distribution — the same objection that made zero ablation the wrong baseline (§4a of
+`INTERPRETING.md`) — so a big KL at scale 60 is not automatically evidence the model *uses* a
+direction. There is a middle band where the comparison is informative, this reports scale 30, and a
+principled way to choose it does not exist here yet.
+
+### Caveats that are not decoration
+
+- **The shuffled control is noisy at this sample size.** Several cells land well *below* base
+  (0.488, 0.681, 0.700). That is over-fitting noise that anti-transfers, not leakage — leakage pushes
+  it *above* base — but the accuracy column deserves less weight where the control is far from base.
+- **One prompt is steered.** The probe is fitted over 64 windows; the causal test perturbs a single
+  window. A corpus-wide causal sweep is the obvious next measurement and is not this one.
+- **20 comparisons.** With `beats = 100%` at p ≈ 0.048 per cell, about one false positive is expected.
+  `after_punct` clearing 100% at three of four layers is not that; a lone 100% elsewhere might be.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:probe
+bazel-out/k8-opt/bin/tools/probe --checkpoint $PWD/data/shakespeare.ckpt \
+  --vocab $PWD/data/shakespeare.vocab --data $PWD/data/shakespeare.val.bin \
+  --windows 64 --seq 32 --scale 30
+# and the sweep that found the dead zone: --scale 2 / 30 / 60
+```
+
+## M-28 · The induction probe independently confirms M-22's negative
+
+`//tools:induction`, 64 trials, a random block of 16 repeated twice (T=32), vocabulary 65.
+
+The canonical operational test (Olsson et al. 2022): feed a repeated block and see whether any head
+attends from the second copy back to what *followed* the matching token in the first. This shares no
+machinery with M-22 — that composed weight matrices into an OV circuit and applied a copying
+statistic of this repo's own construction; this reads attention from a real forward.
+
+**Uniform-attention baseline on those positions: 0.0431.**
+
+| head | repeated | sd | control | × uniform |
+|---|---|---|---|---|
+| L0H1 | 0.0426 | 0.0008 | 0.0426 | **0.99** |
+| L1H1 | 0.0404 | 0.0175 | 0.0396 | 0.94 |
+| L3H1 | 0.0260 | 0.0198 | 0.0243 | 0.60 |
+| L3H2 | 0.0202 | 0.0140 | 0.0233 | 0.47 |
+| … | | | | |
+| L1H0 | 0.0028 | 0.0022 | 0.0024 | 0.07 |
+
+**No head exceeds uniform, and every head's repeated score equals its control.** L0H1 scores 0.0426
+on repeated blocks and 0.0426 on non-repeated ones; L1H1, 0.0404 against 0.0396. Repetition makes no
+difference to where any head attends.
+
+An induction head would show repeated ≫ control *and* repeated ≫ uniform. Neither holds anywhere.
+
+### Why this measurement was worth building
+
+M-22's copying score is **not** Elhage's eigenvalue statistic — that needs a nonsymmetric eigensolver
+this repo does not have — so "no copying heads, therefore no induction heads" rested on one
+home-grown number over composed weight matrices. It was reasonable to suspect the statistic rather
+than the model.
+
+It was not the statistic. Two methods sharing no code now agree, and the control makes the agreement
+readable: this is not "the score is small", it is "repetition changes nothing".
+
+### What it does and does not license
+
+It licenses: **this model has no induction heads.** For a 4-layer character-level model that is the
+expected outcome — induction is driven by repeated *sequences*, and at character level over
+Shakespeare that signal is far weaker than at token level.
+
+It does not license "the model learned nothing". It beats a well-smoothed 5-gram by 8.9% (M-13), and
+M-27 finds `after_punct` causally live at every layer. The absent thing is this specific circuit, not
+structure in general.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:induction
+bazel-out/k8-opt/bin/tools/induction --checkpoint $PWD/data/shakespeare.ckpt --half 16 --trials 64
 ```

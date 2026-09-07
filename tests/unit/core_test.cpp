@@ -2,7 +2,7 @@
 
 #include <type_traits>
 
-#include "cppgpt/verify.hpp"
+#include "tests/verify.hpp"
 #include <cmath>
 #include <limits>
 #include "tests/check.hpp"

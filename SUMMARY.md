@@ -48,12 +48,13 @@ lookalike.
 
 ### Library — two layers, enforced by the build (D10)
 
-- **`//:cppgpt_model`** — train, inference, load. `GPT2` owns parameter and activation arenas;
-  `ops.cpp` holds the kernels; `checkpoint` handles versioned, checksummed, atomic save/load.
-- **`//:cppgpt_interp`** — logit lens, direct logit attribution, KL, ablation, donor capture,
-  conditional co-ablation, and the arena-indexing helpers.
-- The model may not reach the interpretability layer. That is a **compile error**, not a review
-  comment — verified by a probe that used to build clean.
+- **`//:cppgpt_model`** — `src/*.cpp`, `include/cppgpt/*.hpp`. Train, inference, load.
+- **`//:cppgpt_interp`** — `src/interp/`, `include/cppgpt/interp/`. Lens, attribution, KL, ablation,
+  donor capture, co-ablation, QK/OV circuits and their SVD.
+- The model may not reach the interpretability layer, and this is enforced **by construction**:
+  directory-scoped globs with no exclusions, so a file's target is decided by where it lives. An
+  earlier version excluded one filename, and a new interpretability file in `src/` silently joined
+  the model layer. Verified three ways.
 - One stated exception: `patch.hpp` sits model-side because `forward` calls it. It is an enum, a POD,
   and three functions of `memcpy` and asserts.
 
@@ -99,14 +100,29 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ✅ | Donor (resample) ablation, baseline named in the UI | merged (#41) |
 | ✅ | Conditional co-ablation — explains M-17's 22.9× as self-repair | merged (#42) |
 | ✅ | Corpus study under both baselines; corrected M-19 | PR #43 open |
-| ⬜ | **A5 — QK/OV circuit panels.** Best value left: prompt-independent, zero forwards, and a 65×65 matrix that fits on screen only because this model is small | next |
-| ⬜ | **A7 — component card.** Consolidates numbers that today live in four outputs | next |
+| ✅ | **A5 — QK/OV circuit panels.** Found **no copying heads**, so no induction heads (M-22) | PR #44 |
+| ✅ | **M7-1 SVD of the circuits · M7-2 caching** (90→27 ms) · **D11** artifact format decided | PR #44 |
+| ⬜ | **A7 — component card.** Consolidates numbers that today live in seven panels | next |
 | ⬜ | A3 path patching · A4 causal-tracing grid · A6 neuron views · A8–A15 viewer work | |
-| ⬜ | B2 corpus attention stats · B3 max-activating examples · B4 induction probe | needs the artifact channel |
+| ✅ | **M7-3 artifact channel · M7-4 max-activating examples** — 2,048 neurons over a corpus (M-26) | PR #44 |
+| ✅ | **B4 induction probe** — no induction heads, confirmed independently of M-22 (M-28) | PR #44 |
+| ⬜ | B2 corpus attention stats | the channel now exists |
+| ✅ | **M7-5 probes · M7-6 causal validation** — `after_punct` is causally live at every layer; most decodable directions are not (M-27) | PR #44 |
+| ✅ | **M7-7 SAEs — decided against**, condition not met | |
 | ⬜ | B5 attribution patching + error study · B6 tuned lens · B8 transcoders | |
+
+**M7 — representation and concept interpretability, started.** M7-1 (SVD of the head circuits) is
+done, and its headline claim retracted after adversarial review — the category structure belongs to
+the embedding geometry, not the head (M-23). Next → artifact channel → max-activating examples → linear probes → causal
+validation → SAEs only if the rest falls short. `IMPLEMENTATION_PLAN.md` holds the steps and gates.
+The framing matters as much as the order: this model may have no concepts to find, and recording that
+is the deliverable.
 
 **Blocking several offline items:** there is no channel for a corpus artifact to reach the viewer —
 no schema, no loader, no place on disk. Needs a `DECISIONS.md` entry before B2/B3.
+
+**Known and open, from a six-lens audit:** M7 Steps 3–7 (artifact channel, max-activating examples,
+probes, causal validation, SAEs). Steps 3 and 4 ship together so the channel gets a real consumer.
 
 **Open, not interpretability:**
 

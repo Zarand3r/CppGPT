@@ -76,7 +76,7 @@
 #include <string>
 #include <vector>
 
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
 #include "tests/check.hpp"

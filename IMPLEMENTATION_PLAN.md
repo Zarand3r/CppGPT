@@ -1,395 +1,371 @@
-# Implementation plan — the intervention seam
+# Implementation plan — M7: representation and concept interpretability
 
-Scope: the `forward_with_patch` seam and the two measurements it unlocks — **M6-A1** (fix the
-ablation baseline) and **M6-A2** (conditional co-ablation). `ROADMAP.md` owns the milestone;
-this document owns execution. Everything else in M6 is out of scope (§C).
+Scope: everything needed to move from *"which component matters"* to *"what does it represent"*.
+`ROADMAP.md` owns the milestone and the checkboxes; this document owns execution.
 
-**Migrate, not rewrite.** The observation layer is aligned and already gated by non-circular tests.
-One capability is missing — intervening *during* a forward — and nothing has to be torn out to add it.
+The previous plan (the intervention seam, M6-A1/A2/B1) is complete — its five steps are recorded as
+`ROADMAP.md` checkboxes and M-18 through M-22.
 
 ---
 
-## Decisions made (was §D)
+## Read this first: the honest framing
 
-A literature check settled every open tension, and two of the answers deleted work rather than adding it.
+Three facts should shape every step, and a coding agent that forgets them will produce confident
+nonsense.
 
-**1 · Resample ablation and activation patching are the same mechanism.** The field's own naming makes
-this explicit: activation patching is *also called* interchange intervention, causal tracing, and
-**resample ablation** — replacing an activation with one cached from a different run. So M6-A1 and
-M6-A4 are not two features. One seam plus a choice of donor value gives both.
+**1. This model may have no concepts to find.** Character-level, 4 layers, `n_embd` 128. Its
+regularities are character n-gram statistics, capitalisation and line structure
+(`docs/INTERPRETING.md` §6). A5 already found **no copying heads and therefore no induction heads**
+(M-22). "This head represents nothing nameable" is a legitimate and likely outcome, and recording it
+is the deliverable — not a signal to keep adjusting until something appears.
 
-**2 · The baseline is a corrupted-prompt donor, not a synthetic value.** Heimersheim & Nanda
-recommend corrupted-prompt noising/denoising over zero- or mean-ablation: ablations push the model
-off-distribution, while a donor prompt isolates one feature and holds the rest of the machinery
-fixed. ACDC does the same and calls it an interchange intervention. **Decided:** the donor value is
-the default; zero and mean-over-donors remain available as comparisons, since showing that the mode
-changes the answer is the entire point of A1.
+**2. A head does not have *a* concept.** The literature finds attention superposition: several
+concepts share one head. "What does head 3 represent" is often malformed. Prefer "which directions
+does this head read and write, and what does each do".
 
-**3 · No activation pool, and no RNG.** The standard workflow is three forward passes — clean,
-donor, donor-patched — with the site cached from the donor run. That is a `[B,T,·]` scratch buffer,
-not a data structure. **Decided:** donors are named prompts the caller passes, or chosen by a fixed
-deterministic rule in the corpus sweep. Nothing is sampled, so determinism is structural rather than
-tested-for, and the whole `ActPool` / seeding / pool-provenance apparatus is deleted from this plan.
+**3. The field has partly moved away from SAEs.** DeepMind published negative downstream results and
+deprioritised the direction; tuned linear probes match or beat SAE probes; on OthelloGPT, where
+ground truth exists, SAEs recovered 9 of 180 known features. So **probes before SAEs**, and SAEs only
+if the cheaper methods leave something specific unexplained. See §D.
 
-**4 · The metric stays KL.** Logit difference is the recommended metric in the literature, but it
-needs a two-way contrast (Mary vs John) that a character-level model does not naturally have, and
-every published number in this repo is already in nats. ACDC's default is also KL. **Decided:** KL
-only. Logit difference is rejected, with reason, rather than deferred.
+---
 
-**5 · Noising, not denoising, and say so.** The two directions are asymmetric — denoising asks
-whether a component is *sufficient*, noising whether it is *necessary*. The existing sweep is
-noising. **Decided:** stay with noising, and state the asymmetry in `docs/INTERPRETING.md` rather
-than building both.
+## Real-time or offline — the rule, and where each step lands
 
-**6 · `save_and_ablate` stays.** It was going to be retired as duplication. It is the independent
-second implementation that makes P2 non-circular, it is already written and tested, and deleting it
-would remove a gate. **Decided:** keep, and stop calling it a tension.
+`ROADMAP.md`'s lane rule decides by **input**, not cost: needs only this prompt or the weights →
+interactive; needs a corpus or a training loop → offline artifact.
 
-**Still yours, not mine:** M6-B7 (auto-interp) needs an external LLM, and `docs/constitution.md` is
-human-frozen. Out of scope here; flagged in `ROADMAP.md` so it is not lost.
+Almost everything here is **fit offline, apply real-time**. That is the shape to build for.
 
-### The fact that shapes the design
+| | fit | apply |
+|---|---|---|
+| QK/OV circuits (A5, done) | — nothing to fit | real-time; and *prompt-independent* |
+| SVD of those circuits (Step 1) | — | real-time, prompt-independent |
+| Max-activating examples (Step 4) | one corpus pass | artifact lookup |
+| Linear probes (Step 5) | labelled corpus | one dot product |
+| Causal validation (Step 6) | — | 1 forward per intervention |
+| Attention SAEs (Step 7) | training loop, hours | one matmul |
 
-`save_and_ablate` zeroes **weights** (`attprojw`'s column block for a head), and `interpret_test`
-already proves that equals zeroing the head's channels of `atty`. The existing tested path and the
-new activation path therefore meet at exactly one point: zero. That makes **P2** a genuinely
-non-circular gate — two implementations sharing no code must agree bit-for-bit — and it is why the
-seam can be trusted before any new number is believed.
-
-### Already aligned, do not rebuild
-
-| | |
-|---|---|
-| `src/model.cpp:169–214` | the per-layer block is a **flat loop over arena slices**. Patch points are lines in a loop body, not a call graph. |
-| `layer_slice` / `head_slice` | the strides a patch site needs, already centralised (three past bugs) |
-| `tools/inspect.cpp:601–621` | the `sweep(kind, name, layer, head)` lambda — Steps 2 and 3 extend it |
-| `tools/ablation_stats.cpp:159–171` | the corpus loop; Step 4 parameterises it |
-| `include/cppgpt/interpret.hpp` | `kl_divergence`, `Ablation`, the doc conventions to match |
-| `tests/unit/interpret_test.cpp` | the house idiom: one load-bearing check per feature, chosen so it cannot pass for a broken implementation |
+**Measured (M-24).** The weight-space panel costs **63 ms** of a 90 ms request in a release build,
+and its output is **byte-identical across different prompts**, verified. Two earlier figures were
+wrong in opposite directions — 96 ms taken before the SVD existed, then 685 ms taken through
+`bazel-bin/`, which is a symlink to whichever config built last and was pointing at the debug binary.
+Time through `bazel-out/k8-opt/bin/`, never `bazel-bin/`.
 
 ---
 
 ## The steps at a glance
 
-- [ ] **Step 0** — Stamp a synthetic golden. A reference for every later step.
-- [ ] **Step 1** — The seam: `forward` takes an optional `Patch`. Gates P1–P4.
-- [ ] **Step 2** — A1 end-to-end: donor / mean / zero baselines, library → JSON → viewer.
-- [ ] **Step 3** — A2 end-to-end: exhaustive conditional co-ablation. Gates P5.
-- [ ] **Step 4** — B1: corpus study re-run; correct M-16 and M-17.
+- [x] **Step 1** — SVD of the OV/QK circuits. Done (M-23). Gates P1, P2 green; six mutations verified.
+- [x] **Step 2** — Cache the weight-space panel at server startup. Done: 90 ms → 27 ms (M-24).
+- [x] **Step 3** — The corpus-artifact channel. Done (D11, M-26). Gates P3.
+- [x] **Step 4** — Max-activating examples over `fch_gelu`. Done (M-26).
+- [x] **Step 5** — Linear probes. Done (M-27). Gates P4.
+- [x] **Step 6** — Causal validation against a 20-draw random null, at a steering scale that
+      actually perturbs the model. Done (M-27). Gates P5.
+- [x] **Step 7** — Attention SAEs. **Decided against for now**, which is what the step's own
+      condition asks for; see below.
 
 ```
-0 ──▶ 1 ──▶ 2 ──▶ 3 ──▶ 4
+1 ──▶ 2
+      3 ──▶ 4 ──▶ 5 ──▶ 6 ──▶ 7
 ```
 
-Strictly serial — each step consumes the previous step's measurement. That is a property of the work,
-not an oversight. There is no separate "add CI guards" step: each step's acceptance gates go into CI
-with the step, because a guard added later turns main red on merge.
+Steps 1–2 are independent of 3–7 and can land first. Step 3 blocks everything after it.
 
 ---
 
 ## Properties
 
-Five, each `==` rather than tolerance-based, each tied to one step.
+### P1 — Weight-space panels are prompt-independent
+**Invariant:** any panel derived from weights alone is byte-identical across prompts and across
+intervening forward passes.
+**Forbids:** a stray read of `acts()` turning a claim about the head into a claim about one input.
+**Proved by:** Step 1, extending `circuits_test`'s existing purity check to the SVD outputs.
 
-### P1 — Patch identity
-**Invariant:** patching any site with the value it already holds is bit-identical to not patching.
-**Forbids:** a wrong stride, a wrong offset, a partial block, a perturbed neighbouring channel.
-**Proved by:** Step 1 — `forward` with and without the patch, `==` over the whole logits buffer.
+### P2 — The decomposition reconstructs
+**Invariant:** `‖A − UΣVᵀ‖_max` is within tolerance, `U` and `V` are orthonormal, and singular values
+are non-increasing.
+**Forbids:** a plausible-looking basis that is not a decomposition of anything. This is the one gate
+that cannot be satisfied by a wrong implementation.
+**Proved by:** Step 1, on random matrices *and* on a constructed matrix with known singular values.
 
-### P2 — Zero-patch equals weight ablation
-**Invariant:** patching a head's `atty` channels with zeros is bit-identical to
-`save_and_ablate(Ablation::Head)` + `forward`.
-**Forbids:** two ablation truths in the repo with no way to tell which produced a published number.
-**Proved by:** Step 1. Non-circular — one path goes through `attprojw`, the other through `atty`.
-**Caveat found in review:** the two paths compute `atty·0` and `0·attprojw` respectively, which agree
-bit-for-bit **only while both operands are finite** (`inf·0` is NaN, `0·w` is 0). That is already a
-fail-fast condition, but if P2 ever fails mysteriously, check for a non-finite activation before
-suspecting the strides.
+### P3 — Artifacts are versioned and staleness is loud
+**Invariant:** an artifact records the checkpoint it was computed from; loading one that does not
+match the live model fails with a named error.
+**Forbids:** the failure mode this repo has hit repeatedly — a stale file rendering as current data.
+**Proved by:** Step 3, with a death/error test on a deliberately mismatched artifact.
 
-### P3 — The unpatched forward is untouched
-**Invariant:** `forward` with no patch is bit-identical to the pre-change build.
-**Forbids:** any change to the numerical path — training and the canonical-GPT-2 parity gate both run
-through this function.
-**Proved by:** Step 1, via the **existing** `//tests/integration:parity_test` plus Step 0's golden.
-No new test; the gate already exists and this is what it is for.
+### P4 — Probe accuracy is held-out
+**Invariant:** every reported probe number comes from data the probe was not fitted on.
+**Forbids:** the standard way probe results become meaningless.
+**Proved by:** Step 5 — a probe fitted on shuffled labels must score at chance. If it does not, the
+split is leaking.
 
-### P4 — The seam never mutates parameters
-**Invariant:** after any patched forward, the parameter arena is bit-identical to before it.
-**Forbids:** the `save_and_ablate` mutate-then-restore pattern leaking into the new path, where one
-missed restore silently corrupts every later measurement in a sweep.
-**Proved by:** Step 1 — checksum the parameter arena before and after.
+### P5 — A direction is a hypothesis until an intervention confirms it
+**Invariant:** no direction is presented as a feature in the viewer unless steering along it moves
+the output in the predicted direction, measured and recorded.
+**Forbids:** the central failure of this field — naming a direction from correlation alone.
+**Proved by:** Step 6; the panel shows the causal effect size beside the name, or shows no name.
 
-### P5 — CoAx reduces to marginal ablation at |S| = 0
-**Invariant:** the conditional score with an empty primary set equals the marginal sweep, bit-for-bit.
-**Forbids:** a conditional score silently measuring something else while looking plausible.
-**Proved by:** Step 3.
-
-> Determinism is **not** a property here. With donors named rather than sampled there is no RNG in
-> this code, so there is nothing to seed and nothing to test. That is the design doing the work
-> instead of a gate.
-
----
-
-## How to execute
-
-1. **Contract first.** Step 1 locks the patch-site vocabulary; nothing downstream starts until P1–P4 are green.
-2. **One measurement per step, end-to-end.** A step is done when the number reaches the viewer, not when the library function compiles.
-3. **Rewrite from scratch when easier, but verify before deleting.** The gate is the test, not the provenance.
-4. **A failing test is information.** Read the assertion before changing anything.
-5. **Deletions live in Acceptance, never in Implementation.**
-6. **Properties are merge gates.**
+### P6 — Negative results are recorded
+**Invariant:** "we looked and found nothing interpretable" appears in `docs/measurements.md` with the
+same detail as a positive result.
+**Forbids:** silent iteration until something looks interesting — which given §1 above is the most
+likely way this milestone goes wrong.
+**Proved by:** review, not code. Called out here because it is the rule most easily skipped.
 
 ---
 
-## Step 0 — Stamp a synthetic golden
+## Step 1 — SVD of the OV and QK circuits
 
-**Goal:** a committed record of today's behaviour, so every later step proves it changed only what it meant to.
+**Goal:** decompose each head's circuits into singular directions, the cheapest thing in this plan
+that is literally "directions".
 
-**Why now:** P3 compares against "the pre-change build" — that needs an artifact, and after Step 1
-lands it is too late to capture one.
+**Why now:** weights-only, no corpus, no training, no new infrastructure. It is the natural extension
+of A5 and the only step that can land immediately.
 
-**Constraint found in pre-flight:** `data/` is **gitignored**; `data/shakespeare.ckpt` is 9.7 MB and
-not committed. A golden built on it could not run on a clean checkout — exactly what
-`docs/engineering-lessons.md` **L11** forbids. So the golden is synthetic, and real-model numbers go
-where this repo already puts them: `docs/measurements.md`, with a reproduce command.
+**Why this method:** individual singular directions of a head's circuits have been found to encode
+distinct separable operations (*Beyond Components*, arXiv 2511.20273). Unlike an SAE it needs no
+training and has an unarguable correctness test.
 
 ### Tests first
-- [ ] `//tests/unit:inspect_golden_test` — builds a synthetic model in-process (the `interpret_test`
-      idiom: `n_layer=3, n_head=2, n_embd=16, vocab=11`, `Generator(31337)`), runs the same code path
-      `inspect` runs, canonicalises the JSON, compares to a committed golden.
-- [ ] The golden contains the full `L·(NH+2)` sweep, so a change in ablation semantics shows up as a
-      diff rather than a number nobody re-read.
+- [ ] **P2** — `A == U·diag(S)·Vᵀ` within tolerance on random matrices; `U`, `V` orthonormal to
+      tolerance; `S` non-increasing and non-negative.
+- [ ] A constructed matrix with **known** singular values (e.g. `diag(3,2,1)` under known rotations)
+      recovers them. Random matrices alone would pass for a routine that returns *some* valid
+      decomposition of the wrong thing.
+- [ ] **P1** — SVD outputs identical across intervening forwards.
+- [ ] Rank-deficient and square-zero inputs terminate and return zeros rather than looping.
 
 ### Implementation
-- [ ] `tests/fixtures/inspect_golden.json`, plus the generator script committed beside it.
-- [ ] The canonicaliser lives in one place (`tools/` already carries ~92 lines of duplication).
+- [ ] One-sided Jacobi SVD in `interpret.cpp` — ~100 lines, no dependencies, numerically sound for
+      matrices this size. Iterate until off-diagonal mass is below tolerance or an iteration cap is
+      hit; the cap must be an `ASSERT`, not a silent return.
+- [ ] `svd_circuit(model, layer, head, which, U, S, V)` where `which` selects OV or QK.
+- [ ] Emit the top-k singular directions per head, each with its singular value and the characters
+      most aligned with it in embedding space.
 
 ### Integration check
-- [ ] `bazel test //...` green, 32/32.
+- [ ] `//tools:check_viewer` renders the panel populated.
+- [ ] Cost measured and recorded; it must stay in the real-time lane.
 
 ### Acceptance
-- [ ] Passes with `data/` moved aside. **Verify by actually moving it**, not by reasoning about it.
-- [ ] Perturbing one weight makes it **fail**. A gate never seen to fail is not a gate — this repo has
-      shipped six checks that passed while measuring nothing.
+- [ ] P1, P2 green, all four mutation classes above verified to fail.
+- [ ] `docs/measurements.md` records what the top directions look like — **including if the answer is
+      that they are not interpretable** (P6).
 
 **Depends on:** nothing.
 
 ---
 
-## Step 1 — The seam
+## Step 2 — Cache weight-space panels per checkpoint
 
-**Goal:** run a forward with one named activation site replaced, without mutating parameters and
-without changing the unpatched path.
+**Goal:** compute prompt-independent panels once, not per request.
 
-**Why now:** every remaining item in this plan is an activation-level intervention, and none are
-expressible today. This is M6's only new API.
-
-**Note:** the site vocabulary is the contract — lock it before Step 2, because the JSON schema and
-the viewer both name these sites.
+**Why now:** measured — the circuits section is byte-identical across prompts and costs ~96 ms every
+time. Step 1 adds more of the same. This is the cheapest performance work in the plan and it is a
+correctness statement too: caching is only safe *because* P1 holds, so the cache is evidence the
+property is real.
 
 ### Tests first
-- [ ] **P1** — patch with the current value vs no patch, `==` over the logits buffer.
-- [ ] **P2** — zero-patch a head vs `save_and_ablate(Head)` + forward, `==`.
-- [ ] **P4** — parameter-arena checksum before `==` after.
-- [ ] A patch at layer `l` leaves activations at layers `< l` bit-identical. Catches a patch applied
-      at the wrong point in the block.
-- [ ] `CHECK_DIES_WITH` on an out-of-range layer, head, or position. *(9 `CHECK_DIES` for 96 `ASSERT`
-      sites is the current ratio; this is not the step to widen it.)*
+- [ ] A cached panel and a freshly computed one are byte-identical.
+- [ ] Changing the checkpoint invalidates the cache — a stale hit is the whole risk.
 
 ### Implementation
-- [ ] `enum class PatchSite { HeadOut, MlpOut, AttnBlockOut }` — exactly the three existing `Ablation`
-      kinds, one for one, so the two vocabularies cannot drift. This matches the field's own "site"
-      abstraction (a head, a block, a position).
-- [ ] `struct Patch { PatchSite site; int layer; int head; const float* replacement; }` — POD,
-      caller-owned buffer, no allocation.
-- [ ] `void GPT2::forward(const int* tokens, const int* targets, int logits_at, const Patch* patch)`
-      — one `if (patch && patch->layer == l)` per layer, applied straight after the op that writes the
-      site. **Not a callback:** a function pointer in this loop is indirection the doctrine forbids
-      and the profiler would notice.
-- [ ] `capture_site(const GPT2&, PatchSite, int layer, int head, float* out)` — the donor half. Reads
-      the site out of the arena after a forward. This is the whole of "caching the donor run".
-
-### Integration check
-- [ ] `//tests/integration:parity_test` green — the canonical-GPT-2 gate runs through this function.
-- [ ] Step 0's golden unchanged.
-- [ ] `//tools:profile` — unpatched forward within noise of M-9's 3.37 ms at B=1, T=64. If a null
-      check costs measurably more than nothing, the placement is wrong.
+- [ ] Key the cache on the checkpoint's existing payload checksum, which already exists in the header.
+- [ ] `serve_viewer.py` reuses it across requests.
 
 ### Acceptance
-- [ ] P1–P4 green.
-- [ ] `grep -n "float\* saved" src/interpret.cpp` shows the new path has **no** save buffer. If it has
-      one it is mutating parameters and P4 is a lie.
-- [ ] `docs/measurements.md` records patched-vs-unpatched forward cost.
+- [ ] Request latency with circuits enabled returns to the `--circuits 0` baseline after the first.
+- [ ] `docs/measurements.md` updated with before/after.
 
-**Depends on:** Step 0.
+**Depends on:** Step 1 (so both panels are cached by one mechanism).
 
 ---
 
-## Step 2 — A1: donor-based ablation, end-to-end
+## Step 3 — The corpus-artifact channel
 
-**Goal:** `inspect` reports every component's effect under a **donor** baseline as the default, with
-zero and mean-over-donors alongside, and the viewer shows all three and names which is shaded.
+**Goal:** a versioned file an offline pass writes and the viewer reads.
 
-**Why now:** this is a correction to published numbers, not a new feature. M-16 and M-17 currently
-measure a model driven off its own activation distribution.
+**Why now:** it blocks Steps 4–7 and B2/B3/B4 in `ROADMAP.md`. It has been flagged as needing a
+`docs/DECISIONS.md` entry since before M6-A1 landed, and four items are now waiting on it.
+
+**Decided — `docs/DECISIONS.md` D11.** A **binary** envelope with a checkpoint-style header
+(magic, version, producing checkpoint's checksum, payload), merged by `inspect` so the viewer still
+opens one file. Not JSON: there is no JSON parser in this repo, `convert_hf` only manages a flat
+header, and a general parser is hundreds of lines of new surface for a machine-to-machine format
+nobody reads by hand. The checkpoint format already solves this and is tested.
+
+**Ship this step together with Step 4** so the channel has a real consumer. A loader with no producer
+is a speculative abstraction, which this repo's doctrine forbids.
 
 ### Tests first
-- [ ] Patching a site from a donor whose value at that site equals the clean value reduces to P1 —
-      a third independent route to the same identity.
-- [ ] Mean over a single donor equals that donor. Catches an accumulator that never divides.
-- [ ] Schema: each ablation entry carries a `baseline` field, and an unknown value is **rejected
-      loudly** rather than defaulted.
+- [ ] **P3** — an artifact whose checkpoint checksum does not match the live model is refused with a
+      named error, and no panel renders stale numbers.
+- [ ] A missing artifact is a stated absence in the UI, never an empty chart.
+- [ ] Schema version bump; an old artifact fails loudly.
 
 ### Implementation
-- [ ] `--donor "<prompt>"` on `inspect`. Absent, the donor is a fixed deterministic transform of the
-      prompt, recorded in the dump — never an implicit or hidden choice.
-- [ ] Streaming mean over donors: one accumulator buffer, no pool.
-- [ ] Extend `inspect.cpp`'s `sweep` lambda over the three baselines.
-- [ ] JSON: `ablation[].effect` → `ablation[].effects{donor,mean,zero}`. **Bump the schema version** —
-      a viewer reading the old field must fail loudly, not render an empty bar.
-- [ ] `viewer.html`: three bars per component; the caveat text names the shaded baseline.
-
-### Integration check
-- [ ] Golden regenerated **once**, here, with the schema bump. This is the intended artifact change.
-- [ ] Viewer opens from `file://`, renders the new dump, no network.
+- [ ] `Result<void, ErrorCode>` on load, following `save_checkpoint`'s shape — the reason matters.
+- [ ] Artifact carries: schema version, checkpoint checksum, the corpus it was built from, and the
+      command that produced it.
 
 ### Acceptance
-- [ ] The dump records **at least one component whose rank changes between zero and donor baseline** —
-      or, if none does, that is recorded in `docs/measurements.md` as the finding. Both are results;
-      silence is not.
-- [ ] `docs/INTERPRETING.md` §4a updated from "tracked in M6-A1" to what was measured, and the
-      noising/denoising asymmetry stated (decision 5).
+- [ ] P3 green, verified by mutation.
+- [ ] `docs/DECISIONS.md` D11 written and merged in the same PR.
 
-**Depends on:** Step 1.
+**Depends on:** nothing, but do it before Step 4.
 
 ---
 
-## Step 3 — A2: exhaustive conditional co-ablation
+## Step 4 — Max-activating examples
 
-**Goal:** for every ordered pair of the 24 components, how much the second one's effect **grows**
-once the first is silenced — and the viewer names each component's backup partners.
+**Goal:** for each of the 2,048 MLP neurons, the corpus contexts that most activate it.
 
-**Why now:** the direct answer to "why does this head dominate the sweep and that one not at all",
-and the item where this repo does what the field approximates: 24 components → 576 ordered pairs →
-~2 s at T=64, exhaustive rather than sampled.
+**Why now:** highest insight-per-line on the offline side, needs no new model — `fch_gelu` is already
+in the arena — and it is the first real consumer of Step 3's channel.
 
 ### Tests first
-- [ ] **P5** — empty primary set reproduces the marginal sweep, `==`.
-- [ ] Both orders are computed; the test asserts one is not silently reused for the other.
-- [ ] A component co-ablated with itself is handled explicitly, not left as a meaningless diagonal.
+- [ ] Deterministic: same corpus and checkpoint, byte-identical artifact.
+- [ ] A neuron that never activates is reported as such, not omitted.
+- [ ] The recorded activation for a context, recomputed by a forward, matches.
 
 ### Implementation
-- [ ] `coax_sweep(model, baseline, out[24*24])` — two nested loops over the existing component
-      enumeration, reusing Step 2's baselines. The baseline is a parameter: CoAx under zero ablation
-      inherits zero ablation's off-distribution problem.
-- [ ] JSON: a `coax` matrix plus, per component, its top-k backup partners.
-- [ ] `viewer.html`: on the component card — "silencing this makes *these* grow."
-
-### Integration check
-- [ ] Golden regenerated with the `coax` section.
-- [ ] Runtime measured. If it exceeds the ~50-forward real-time budget at the served prompt length,
-      it moves to the offline lane and `ROADMAP.md` is corrected.
+- [ ] One corpus pass, streaming top-k per neuron; no full activation history in memory.
+- [ ] Viewer: click a neuron, see its contexts.
 
 ### Acceptance
-- [ ] P5 green.
-- [ ] **The L0 result is stated explicitly.** M-17 records the L0 block at 22.9× the sum of its heads.
-      CoAx either reproduces that as measured super-additivity or it does not, and the number goes in
-      `docs/measurements.md` either way. *This is the step's real gate — an unexplained 22.9× is what
-      motivated the method.*
-- [ ] `docs/INTERPRETING.md` §4b updated from prediction to result.
-
-**Depends on:** Step 2.
-
----
-
-## Step 4 — B1: the corpus study, re-run
-
-**Goal:** M-16's corpus statistics re-measured under the donor baseline.
-
-**Why now:** M-16's headline — the single-prompt view overstating one head by 8× its median — was
-measured under zero ablation, and it is cited in two documents.
-
-### Tests first
-- [ ] `--baseline` accepted and an unknown value rejected loudly.
-- [ ] Donor selection is a deterministic rule over the window index; two runs produce identical output
-      with no seed involved.
-
-### Implementation
-- [ ] Parameterise `ablation_stats.cpp`'s loop by baseline. Donor for window `i` is a fixed function
-      of `i` — no RNG, no pool.
-
-### Integration check
-- [ ] Full run at 128 windows × 32 tokens per baseline; ~3 s each per M-16.
-
-### Acceptance
-- [ ] `docs/measurements.md` M-16 carries every baseline, with the 8× claim confirmed or corrected.
-- [ ] If the ranking of "large *and* consistent" components changes, `docs/INTERPRETING.md` §4 is
-      rewritten — it currently names L0 MLP and L0 attn on zero-ablation evidence.
-- [ ] Run the `review-codify-loop` — required by `CLAUDE.md` at a milestone boundary, and overdue
-      from the 2026-08-18 audit.
+- [ ] The artifact loads, the panel renders, and **P6** — the write-up says plainly whether the top
+      contexts are interpretable or just frequent character patterns.
 
 **Depends on:** Step 3.
 
 ---
 
-## Definition of done
+## Step 5 — Linear probes for candidate directions
 
-- [ ] P1–P5 green in CI.
-- [ ] `inspect` reports donor, mean and zero baselines, plus the 576-pair CoAx matrix.
-- [ ] The viewer's component card answers, for a clicked head: how much it matters, under which
-      baseline, whether that survives across the corpus, and which components back it up.
-- [ ] M-16 and M-17 confirmed under the donor baseline, or corrected.
-- [ ] `ROADMAP.md` M6-A1, M6-A2, M6-B1 checked, with measured numbers.
+**Goal:** given a labelled property (is-uppercase, is-line-start, is-vowel, follows-speaker-label),
+find the direction in the residual stream that predicts it.
+
+**Why probes and not SAEs:** the evidence in §D. Probes are simpler, need less data, and the field
+now reports them matching or beating SAE probes.
+
+**Choose labels the model could plausibly encode.** Character-level and 4 layers: capitalisation,
+line structure, punctuation, speaker labels. Not sentiment, not semantics.
+
+### Tests first
+- [ ] **P4** — a probe fitted on **shuffled labels** scores at chance. If it does not, the split leaks.
+- [ ] Train/test split is by corpus position, not random rows — adjacent characters are not
+      independent samples.
+- [ ] A probe's reported accuracy is reproducible from the recorded seed.
+
+### Implementation
+- [ ] Logistic regression by gradient descent, in the training loop this repo already has.
+- [ ] Artifact per (layer, property): the direction, held-out accuracy, and the label definition.
+
+### Acceptance
+- [ ] Every reported number held-out; the shuffled-label control recorded next to each.
+- [ ] Properties that do **not** decode are listed with their accuracies (P6).
+
+**Depends on:** Step 3.
+
+---
+
+## Step 6 — Causal validation
+
+**Goal:** confirm a direction *causes* what it appears to encode, using the patch seam that already
+exists.
+
+**Why now:** without it Step 5 produces correlations with names attached, which is the central failure
+mode of this field. **This step is what makes the previous one publishable rather than suggestive.**
+
+### Tests first
+- [ ] **P5** — steering along a direction moves the output in the predicted direction, measured; a
+      random direction of the same norm does not. The random control is the gate.
+- [ ] Steering with zero magnitude is a no-op, bit-identical (this is P1 of the seam, reused).
+
+### Implementation
+- [ ] Add the direction to the residual at a chosen layer via a `Patch`, scaled.
+- [ ] Report effect size, and the off-target cost — the literature's named risks are ripple effects
+      and over-steering.
+
+### Acceptance
+- [ ] No direction is named in the viewer without a recorded causal effect beside it (P5).
+- [ ] Directions that fail the causal test are kept in the artifact, marked failed (P6).
+
+**Depends on:** Step 5.
+
+---
+
+## Step 7 — Attention SAEs: not done, and why
+
+The step's condition was: *do not start unless Steps 4–6 leave a specific, named thing unexplained.
+Write down what it is first.* Steps 4–6 are done, so here is the answer.
+
+**They did not.** What M-27 found is that nearly every property is linearly decodable at every layer,
+and that almost none of those directions are ones the model reads. That is not an unexplained
+residual — it is a **negative result about the representation**, and an SAE would not address it. A
+sparse dictionary decomposes activations into more features; the problem here is not too few
+features, it is that the features already recoverable are mostly causally inert.
+
+There is also a specific, checkable prediction that argues against: SAEs exist to resolve
+**superposition**. This model has `n_embd` 128 and 65 symbols, so there are twice as many dimensions
+as symbols — the regime superposition describes is one where features vastly outnumber dimensions,
+and that is not this model. A5 already found no copying and no induction heads (M-22), which is the
+same message from a different direction: there may be little structure here to decompose.
+
+**What would change this.** If a corpus-wide causal sweep (the caveat M-27 names) found many
+directions that are causally live but not linearly separable, that would be a specific unexplained
+thing an SAE is the right tool for. That measurement does not exist yet, and it is much cheaper than
+training a dictionary.
+
+**The literature agrees with the ordering** (§D): DeepMind deprioritised SAE research on negative
+downstream results, tuned linear probes match or beat SAE probes, and on OthelloGPT — a small model
+with known ground truth — SAEs recovered 9 of 180 features.
+
+
+
+If it is ever justified: train on concatenated head outputs (`z`), then use weight-based head
+attribution to assign features back to heads, since features are not head-local. Acceptance would be
+measured against the Step 5 probes on the same properties — if probes match it, the SAE has not
+earned its complexity and the honest result is to say so.
+
+---
 
 ## §A — Golden path
 
-```
-GIVEN  a seeded synthetic model (n_layer=3, n_head=2, n_embd=16, vocab=11,
-       Generator(31337)) and a fixed token sequence
-WHEN   the inspect code path runs at the current schema version
-THEN   the canonicalised JSON matches tests/fixtures/inspect_golden.json byte-for-byte
-```
-
-Runs after every step. Regenerated only in Steps 2 and 3, where the schema intentionally changes.
-Real-model numbers are not a test — they go in `docs/measurements.md` with a reproduce command,
-which is this repo's existing convention and needs no second target.
+The synthetic `//tests/unit:interpret_golden_test` continues to cover every library number. Each step
+extends it rather than adding a parallel golden. Real-model numbers go in `docs/measurements.md` with
+a reproduce command — the repo's existing convention, and the reason there is no second target.
 
 ## §B — Iteration loop
 
-```
-Read the failing assertion verbatim
-        │
-        ▼
-Is the test's invariant correct?
-   No ◀─┴─▶ Yes
-   │         │
-   ▼         ▼
- Fix test  Fix impl — minimum change OR rewrite the file
- + note      fresh against the test, whichever is faster
- in PR       │
-        ▼
-Re-run the failing test → run §A → green ⇒ done
-```
+Read the failing assertion. Decide whether the test's invariant or the implementation is wrong before
+changing either. Minimum change, or rewrite the file fresh against the test — whichever is faster.
+Stuck more than 30 minutes: write expected vs observed in the PR, print actual values, re-read the
+step's acceptance block, consider rewriting from scratch. Do not start the next step.
 
-**Stuck > 30 min on the same failure:** stop coding; write expected vs observed in the PR draft;
-print actual values; re-read the step's Acceptance; consider rewriting the file from scratch against
-the acceptance test. Still stuck — escalate in the PR. **Do not start the next step.**
+**Every new gate is mutation-tested before it is trusted.** This is not optional here: four gates in
+M6 passed against deliberately broken code before being fixed, and two of them were caught only
+because the mutation was run.
 
 ## §C — Out of scope
 
-A3 path patching, A5 QK/OV panels, A6–A15 viewer work, B2–B8. Also out of scope: threading, the KV
-cache, and anything at GPT-2 124M scale — at 4.34 s per forward the 576-pair sweep is 40 minutes,
-which is a different plan.
+Threading and the KV cache (`ROADMAP.md`); everything at GPT-2 124M scale, where one forward is
+4.34 s and these sweeps are hours; tuned lens (B6) and transcoders/attribution graphs (B8), which are
+tracked separately.
 
-**A4 is not out of scope so much as absorbed:** decision 1 makes activation patching the same
-mechanism as the donor baseline. What Step 2 does not build is the *UI* for choosing arbitrary patch
-sites interactively; the library supports it the moment Step 1 lands.
+## §D — Why probes before SAEs
 
-## §D — References for the decisions above
+Recorded so a coding agent does not reach for the more famous tool first:
 
-[How to use and interpret activation patching](https://www.lesswrong.com/posts/FhryNAFknqKAdDcYy/how-to-use-and-interpret-activation-patching) (Heimersheim & Nanda, 2024) — corrupted-prompt over ablation; noising vs denoising asymmetry; metric pathologies; backup heads ·
-[Towards Best Practices of Activation Patching](https://arxiv.org/abs/2309.16042) (Zhang & Nanda, ICLR 2024) — hyperparameter choices change the answer ·
-[ACDC](https://www.emergentmind.com/papers/2304.14997) (Conmy et al., 2023) — interchange interventions, KL as default metric ·
-[Causal scrubbing](https://www.alignmentforum.org/posts/JvZhhzycHu2Yd57RN/causal-scrubbing-a-method-for-rigorously-testing) (Redwood, 2022) — why zero and mean go off-distribution ·
-[Conditional Co-Ablation](https://arxiv.org/abs/2607.01940) (2026) — the Step 3 method ·
-[nnpatch](https://github.com/jkminder/nnpatch) — the "site" abstraction adopted in Step 1.
+- DeepMind published [negative results on SAEs for downstream tasks and deprioritised the direction](https://deepmindsafetyresearch.medium.com/negative-results-for-sparse-autoencoders-on-downstream-tasks-and-deprioritising-sae-research-6cadcfc125b9).
+- Tuned linear probes match or exceed SAE probes, including under label noise and covariate shift.
+- On OthelloGPT, where ground truth exists, [SAEs recovered 9 of 180 known board-state features](https://www.lesswrong.com/posts/BduCMgmjJnCtc7jKc/research-report-sparse-autoencoders-find-only-9-180-board) — the closest published analogue to this repo's situation, a small model with knowable structure.
+- Attention superposition means features are not head-local, so an SAE alone does not answer "what
+  does this head represent" without [weight-based head attribution](https://arxiv.org/pdf/2506.17052) on top.
+
+Supporting method references: [Interpreting Attention Layer Outputs with SAEs](https://arxiv.org/pdf/2406.17759) ·
+[Beyond Components: singular-vector interpretability](https://arxiv.org/pdf/2511.20273) ·
+[Analysing the safety pitfalls of steering vectors](https://arxiv.org/html/2603.24543).

@@ -30,13 +30,15 @@
 #include <fstream>
 #include <numeric>
 #include <sstream>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
 #include "cppgpt/dataloader.hpp"
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/artifact.hpp"
+#include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
 #include "cppgpt/tokenizer.hpp"
@@ -202,11 +204,96 @@ TopK top_k_of(const float* logits, int V, int k) {
     return false;
 }
 
+// Emit a ProbeDirections artifact. Decodability and its causal test travel
+// together; the panel cannot show one without the other.
+[[nodiscard]] bool emit_probes(std::string& js, const std::string& path, std::uint64_t ckpt) {
+    const auto blob = read_artifact(path.c_str(), ArtifactKind::ProbeDirections, ckpt);
+    if (!blob) {
+        std::fprintf(stderr, "inspect: --corpus '%s' rejected: %s\n", path.c_str(),
+                     describe(blob.error()));
+        return false;
+    }
+    ProbeHeader ph{};
+    if (blob->size() < sizeof(ph)) return false;
+    std::memcpy(&ph, blob->data(), sizeof(ph));
+    const auto n = static_cast<std::size_t>(ph.n_layer) * static_cast<std::size_t>(ph.n_props);
+    if (blob->size() != sizeof(ph) + n * sizeof(ProbeRecord)) {
+        std::fprintf(stderr, "inspect: --corpus '%s' probe payload size disagrees with its header\n",
+                     path.c_str());
+        return false;
+    }
+    js += ",\n  \"probes\": {\"scale\": ";
+    append_float(js, ph.scale);
+    js += ", \"n_null\": " + std::to_string(ph.n_null) + ", \"rows\": [";
+    for (std::size_t i = 0; i < n; ++i) {
+        ProbeRecord r{};
+        std::memcpy(&r, blob->data() + sizeof(ph) + i * sizeof(ProbeRecord), sizeof(r));
+        if (i) js += ", ";
+        char nm[17] = {0};
+        std::memcpy(nm, r.name, sizeof(r.name));
+        js += "{\"name\": \"";
+        json_escape(js, std::string(nm));
+        js += "\", \"layer\": " + std::to_string(r.layer) + ", \"acc\": ";
+        append_float(js, r.accuracy);
+        js += ", \"base\": ";
+        append_float(js, r.base_rate);
+        js += ", \"shuffled\": ";
+        append_float(js, r.shuffled);
+        js += ", \"steer\": ";
+        append_float(js, r.steer_kl);
+        js += ", \"null_mean\": ";
+        append_float(js, r.null_mean);
+        js += ", \"beats\": ";
+        append_float(js, r.beats_null);
+        js += "}";
+    }
+    js += "]}";
+    return true;
+}
+
+// Emit an InductionScores artifact. `control` rides along because the raw score
+// is unreadable without it.
+[[nodiscard]] bool emit_induction(std::string& js, const std::string& path, std::uint64_t ckpt) {
+    const auto blob = read_artifact(path.c_str(), ArtifactKind::InductionScores, ckpt);
+    if (!blob) {
+        std::fprintf(stderr, "inspect: --corpus '%s' rejected: %s\n", path.c_str(),
+                     describe(blob.error()));
+        return false;
+    }
+    InductionHeader ih{};
+    if (blob->size() < sizeof(ih)) return false;
+    std::memcpy(&ih, blob->data(), sizeof(ih));
+    const auto n = static_cast<std::size_t>(ih.n_layer) * static_cast<std::size_t>(ih.n_head);
+    if (blob->size() != sizeof(ih) + n * sizeof(InductionRecord)) {
+        std::fprintf(stderr, "inspect: --corpus '%s' induction payload size disagrees with header\n",
+                     path.c_str());
+        return false;
+    }
+    js += ",\n  \"induction\": {\"uniform\": ";
+    append_float(js, ih.uniform);
+    js += ", \"trials\": " + std::to_string(ih.trials);
+    js += ", \"half\": " + std::to_string(ih.half) + ", \"heads\": [";
+    for (std::size_t i = 0; i < n; ++i) {
+        InductionRecord r{};
+        std::memcpy(&r, blob->data() + sizeof(ih) + i * sizeof(InductionRecord), sizeof(r));
+        if (i) js += ", ";
+        js += "{\"layer\": " + std::to_string(i / ih.n_head);
+        js += ", \"head\": " + std::to_string(i % ih.n_head) + ", \"repeated\": ";
+        append_float(js, r.repeated);
+        js += ", \"control\": ";
+        append_float(js, r.control);
+        js += "}";
+    }
+    js += "]}";
+    return true;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
                          {"checkpoint", "vocab", "prompt", "out", "layers", "heads", "top-k",
-                          "max-mb", "ablate", "run-url", "donor", "coax"});
+                          "max-mb", "ablate", "run-url", "donor", "coax", "circuits", "corpus",
+                          "neurons"});
 
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab_path(args.str("vocab", ""));
@@ -214,6 +301,9 @@ int main(int argc, char** argv) {
     const std::string out_path(args.str("out", ""));
     const std::string donor_prompt(args.str("donor", ""));
     const bool do_coax = args.integer("coax", 0) != 0;  // matches --ablate's idiom
+    const int circuit_top = args.integer("circuits", 8);  // 0 disables
+    const std::string corpus_path(args.str("corpus", ""));
+    const int neuron_top = args.integer("neurons", 12);
     if (ckpt.empty() || vocab_path.empty() || prompt.empty() || out_path.empty()) {
         std::fprintf(stderr,
                      "usage: inspect --checkpoint <f.ckpt> --vocab <f.vocab> --prompt \"text\"\n"
@@ -827,6 +917,251 @@ int main(int argc, char** argv) {
                     append_float(js, static_cast<float>(v));
             }
             js += "]";
+        }
+        js += "]}";
+    }
+    // Weight-space head circuits: what each head reads for and writes, as a
+    // property of the WEIGHTS rather than of this prompt. Every other panel in
+    // this dump describes one forward pass; these describe the head.
+    //
+    // Only the strongest entries of each row are emitted. The full tables are
+    // V^2 per head per circuit -- 2.5e9 at GPT-2's vocabulary, and even here
+    // 16 heads x 2 circuits x 65^2 is 135k floats nobody reads exhaustively.
+    if (circuit_top > 0) {
+        const int n_top = std::min(circuit_top, V);
+        std::vector<float> tbl(circuit_floats(cfg));
+        std::vector<float> su(circuit_floats(cfg)), svt(circuit_floats(cfg));
+        std::vector<float> ss(static_cast<std::size_t>(V));
+        std::vector<int> idx(static_cast<std::size_t>(V));
+
+        const auto emit_rows = [&](const char* name) {
+            js += "\"";
+            js += name;
+            js += "\": [";
+            for (int t = 0; t < V; ++t) {
+                if (t) js += ", ";
+                const float* row = tbl.data() + static_cast<std::size_t>(t) * V;
+                for (int i = 0; i < V; ++i) idx[static_cast<std::size_t>(i)] = i;
+                std::partial_sort(idx.begin(), idx.begin() + n_top, idx.end(),
+                                  [&](int a, int b) { return row[a] > row[b]; });
+                js += "[";
+                for (int i = 0; i < n_top; ++i) {
+                    if (i) js += ", ";
+                    const int k = idx[static_cast<std::size_t>(i)];
+                    const int one[1] = {k};
+                    js += "{\"t\": \"";
+                    json_escape(js, tok.decode(std::span<const int>(one, 1)));
+                    js += "\", \"v\": ";
+                    append_float(js, row[k]);
+                    js += "}";
+                }
+                js += "]";
+            }
+            js += "]";
+        };
+
+        js += ",\n  \"circuits\": [";
+        bool first_c = true;
+        for (int l = 0; l < cfg.n_layer; ++l)
+            for (int h = 0; h < cfg.n_head; ++h) {
+                if (!first_c) js += ", ";
+                first_c = false;
+                js += "{\"layer\": " + std::to_string(l) + ", \"head\": " + std::to_string(h);
+                ov_circuit(model, l, h, tbl.data());
+                js += ", \"copying\": ";
+                append_float(js, copying_score(tbl.data(), V));
+                js += ", ";
+                emit_rows("ov");
+                qk_circuit(model, l, h, tbl.data());
+                js += ", ";
+                emit_rows("qk");
+
+                // Singular directions of the OV table. Each is a weighted mix of
+                // input characters, a weighted mix of output characters, and a
+                // strength -- "this head reads THESE and writes THOSE", which the
+                // per-character rows above cannot say.
+                //
+                // Signs are arbitrary in an SVD (u and v may both be negated), so
+                // the direction is oriented to make its largest write positive.
+                // Without that the same direction renders differently run to run
+                // for no reason a reader could interpret.
+                svd_circuit(model, l, h, CircuitKind::Ov, su.data(), ss.data(), svt.data());
+                js += ", \"svd\": [";
+                const int n_dir = std::min(4, V);
+                for (int d = 0; d < n_dir; ++d) {
+                    if (d) js += ", ";
+                    for (int i = 0; i < V; ++i) idx[static_cast<std::size_t>(i)] = i;
+                    // Orientation: the output side's largest-magnitude entry sets
+                    // the sign for both sides together.
+                    int big = 0;
+                    for (int i = 1; i < V; ++i)
+                        if (std::fabs(su[static_cast<std::size_t>(i) * V + d]) >
+                            std::fabs(su[static_cast<std::size_t>(big) * V + d]))
+                            big = i;
+                    const float flip = su[static_cast<std::size_t>(big) * V + d] < 0.0f ? -1.0f : 1.0f;
+
+                    js += "{\"s\": ";
+                    append_float(js, ss[static_cast<std::size_t>(d)]);
+                    // WHICH SIDE IS WHICH. A[i][j] = sum_k u[i][k] s[k] vt[k][j],
+                    // and ov_circuit builds row i = the attended-to (SOURCE)
+                    // character, column j = the promoted (TARGET) one. So u's
+                    // columns live in source space -- what the head READS -- and
+                    // vt's rows live in target space -- what it WRITES.
+                    //
+                    // These were swapped in the first version, which inverted the
+                    // published example (M-23). The invariant that settles it is
+                    // pinned by a test: column-centring zeroes each column over
+                    // sources, so u's columns are zero-sum and vt's rows are not.
+                    const auto side = [&](const char* name, bool source) {
+                        std::partial_sort(idx.begin(), idx.begin() + std::min(4, V), idx.end(),
+                                          [&](int a, int b) {
+                                              const float fa = source
+                                                  ? flip * su[static_cast<std::size_t>(a) * V + d]
+                                                  : flip * svt[static_cast<std::size_t>(d) * V + a];
+                                              const float fb = source
+                                                  ? flip * su[static_cast<std::size_t>(b) * V + d]
+                                                  : flip * svt[static_cast<std::size_t>(d) * V + b];
+                                              return fa > fb;
+                                          });
+                        js += ", \"";
+                        js += name;
+                        js += "\": [";
+                        for (int i = 0; i < std::min(4, V); ++i) {
+                            if (i) js += ", ";
+                            const int k = idx[static_cast<std::size_t>(i)];
+                            const int one[1] = {k};
+                            js += "{\"t\": \"";
+                            json_escape(js, tok.decode(std::span<const int>(one, 1)));
+                            js += "\", \"w\": ";
+                            append_float(js, flip * (source ? su[static_cast<std::size_t>(k) * V + d]
+                                                            : svt[static_cast<std::size_t>(d) * V + k]));
+                            js += "}";
+                        }
+                        js += "]";
+                    };
+                    side("reads", true);    // u -> source space
+                    side("writes", false);  // vt -> target space
+                    js += "}";
+                }
+                js += "]}";
+            }
+        js += "]";
+    }
+    // Corpus artifact (D11), merged in so the viewer still opens one file. The
+    // identity check lives in read_artifact: an artifact from a different
+    // training run renders perfectly and describes another model, so a mismatch
+    // is refused here rather than rendered.
+    // --corpus takes a comma-separated list. Each file declares its own kind, so
+    // one flag carries every offline analysis and adding a third needs no fourth
+    // flag. A path that names a kind this build does not know is an error, not a
+    // silent skip: the reader would see a page missing a panel with nothing to
+    // say why.
+    for (std::size_t cpos = 0; cpos < corpus_path.size();) {
+        const std::size_t comma = corpus_path.find(',', cpos);
+        const std::string one = corpus_path.substr(cpos, comma == std::string::npos
+                                                             ? std::string::npos
+                                                             : comma - cpos);
+        cpos = comma == std::string::npos ? corpus_path.size() : comma + 1;
+        if (one.empty()) continue;
+
+        ArtifactHeader probe_hdr{};
+        {
+            std::ifstream f(one, std::ios::binary);
+            if (!f || !f.read(reinterpret_cast<char*>(&probe_hdr), sizeof(probe_hdr))) {
+                std::fprintf(stderr, "inspect: --corpus '%s' cannot be read\n", one.c_str());
+                return 1;
+            }
+        }
+        const auto kind = static_cast<ArtifactKind>(probe_hdr.kind);
+        if (kind == ArtifactKind::ProbeDirections) {
+            if (!emit_probes(js, one, h.checksum)) return 1;
+            continue;
+        }
+        if (kind == ArtifactKind::InductionScores) {
+            if (!emit_induction(js, one, h.checksum)) return 1;
+            continue;
+        }
+        if (kind != ArtifactKind::NeuronTopK) {
+            std::fprintf(stderr, "inspect: --corpus '%s' has kind %u, which this build does not know\n",
+                         one.c_str(), probe_hdr.kind);
+            return 1;
+        }
+        const std::string& corpus_path_one = one;
+        const auto blob = read_artifact(corpus_path_one.c_str(), ArtifactKind::NeuronTopK, h.checksum);
+        if (!blob) {
+            std::fprintf(stderr,
+                         "inspect: --corpus '%s' rejected: %s\n"
+                         "  It must be an artifact built from THIS checkpoint.\n",
+                         corpus_path_one.c_str(), describe(blob.error()));
+            return 1;
+        }
+        if (blob->size() < sizeof(NeuronTopKHeader)) {
+            std::fprintf(stderr, "inspect: --corpus '%s' is too short to hold a header\n",
+                         one.c_str());
+            return 1;
+        }
+        NeuronTopKHeader nh{};
+        std::memcpy(&nh, blob->data(), sizeof(nh));
+        const auto want = sizeof(nh) + static_cast<std::size_t>(nh.n_neurons) *
+                                           static_cast<std::size_t>(nh.top_k) *
+                                           neuron_entry_bytes(nh.ctx_len);
+        if (nh.reserved != 0 || blob->size() != want) {
+            std::fprintf(stderr,
+                         "inspect: --corpus '%s' payload is %zu bytes; its own header describes "
+                         "%zu\n",
+                         one.c_str(), blob->size(), want);
+            return 1;
+        }
+
+        // Rank neurons by peak activation and emit only the strongest, since the
+        // full table is 2,048 neurons and nobody reads it exhaustively.
+        const auto entry_bytes = neuron_entry_bytes(nh.ctx_len);
+        std::vector<int> order(nh.n_neurons);
+        std::vector<float> peak(nh.n_neurons);
+        for (std::uint32_t i = 0; i < nh.n_neurons; ++i) {
+            std::memcpy(&peak[i],
+                        blob->data() + sizeof(nh) +
+                            static_cast<std::size_t>(i) * nh.top_k * entry_bytes,
+                        sizeof(float));
+            order[i] = static_cast<int>(i);
+        }
+        const int n_show = std::min(neuron_top, static_cast<int>(nh.n_neurons));
+        std::partial_sort(order.begin(), order.begin() + n_show, order.end(),
+                          [&](int a, int b) { return peak[a] > peak[b]; });
+
+        js += ",\n  \"neurons\": {\"count\": " + std::to_string(nh.n_neurons);
+        js += ", \"top_k\": " + std::to_string(nh.top_k) + ", \"shown\": [";
+        for (int i = 0; i < n_show; ++i) {
+            if (i) js += ", ";
+            const int ni = order[static_cast<std::size_t>(i)];
+            js += "{\"neuron\": " + std::to_string(ni);
+            js += ", \"layer\": " + std::to_string(ni / (4 * C));
+            js += ", \"unit\": " + std::to_string(ni % (4 * C)) + ", \"top\": [";
+            for (std::uint32_t j = 0; j < nh.top_k; ++j) {
+                if (j) js += ", ";
+                const char* rec = blob->data() + sizeof(nh) +
+                                  (static_cast<std::size_t>(ni) * nh.top_k + j) * entry_bytes;
+                float act = 0.0f;
+                std::int32_t focus = -1;
+                std::memcpy(&act, rec, sizeof(act));
+                std::memcpy(&focus, rec + sizeof(float), sizeof(focus));
+                js += "{\"act\": ";
+                append_float(js, act);
+                js += ", \"text\": \"";
+                std::string ctx;
+                for (std::uint32_t c = 0; c < nh.ctx_len; ++c) {
+                    std::int32_t id = -1;
+                    std::memcpy(&id, rec + sizeof(float) + sizeof(std::int32_t) +
+                                         static_cast<std::size_t>(c) * sizeof(std::int32_t),
+                                sizeof(id));
+                    if (id < 0 || id >= V) continue;  // padding before the window start
+                    const int one[1] = {id};
+                    ctx += tok.decode(std::span<const int>(one, 1));
+                }
+                json_escape(js, ctx);
+                js += "\", \"focus\": " + std::to_string(focus) + "}";
+            }
+            js += "]}";
         }
         js += "]}";
     }

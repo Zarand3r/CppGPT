@@ -179,6 +179,10 @@
       </p>
       <div id="kl"></div>
       <div id="coax"></div>
+      <div id="circuits"></div>
+      <div id="neurons"></div>
+      <div id="probes"></div>
+      <div id="induction"></div>
     </div>
 
     <div class="panel">
@@ -564,7 +568,7 @@ function drawProv() {
 }
 
 function render() {
-  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax();
+  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax(); drawCircuits(); drawNeurons(); drawProbes(); drawInduction();
   drawAttrib(); drawAblate(); drawPos(); drawProv(); drawArch();
 }
 
@@ -733,6 +737,156 @@ function drawCoax() {
     rows.slice(0, 6).map(fmt).join('') +
     '<tr><td colspan="3" style="padding-top:.4em">\u2026 most negative:</td></tr>' +
     rows.slice(-3).reverse().map(fmt).join('') + '</table>';
+}
+
+// What each head reads for and writes, from the WEIGHTS -- the only panel here
+// that describes the head rather than this prompt. Same checkpoint, same table,
+// whatever you type.
+function drawCircuits() {
+  const box = $('#circuits');
+  if (!D.circuits) {
+    box.innerHTML = '<h2>head circuits</h2><p class="kv">not in this dump — ' +
+      'rerun inspect without <code>--circuits 0</code>.</p>';
+    return;
+  }
+  const best = Math.max(...D.circuits.map(c => c.copying));
+  const rows = D.circuits.slice().sort((a, b) => b.copying - a.copying).map(c => {
+    let top = null;
+    c.ov.forEach(r => { if (r.length && (top === null || r[0].v > top.v)) top = r[0]; });
+    return `<tr><td>L${c.layer}H${c.head}</td>` +
+           `<td style="text-align:right">${(c.copying * 100).toFixed(0)}%</td>` +
+           `<td>${top ? `promotes ${JSON.stringify(top.t)} (${top.v.toFixed(2)})` : ''}</td></tr>`;
+  }).join('');
+  const dirRows = D.circuits.flatMap(c => (c.svd || []).slice(0, 2).map((d, i) =>
+    `<tr><td>L${c.layer}H${c.head}${i ? '\u00b7' + i : ''}</td>` +
+    `<td style="text-align:right">${d.s.toFixed(1)}</td>` +
+    `<td>${d.reads.slice(0, 4).map(x => JSON.stringify(x.t)).join(' ')}</td>` +
+    `<td>${d.writes.slice(0, 4).map(x => JSON.stringify(x.t)).join(' ')}</td></tr>`))
+    .join('');
+
+  box.innerHTML = '<h2>head circuits</h2>' +
+    '<p class="kv">Read from the weights, not from this prompt \u2014 identical for every input. ' +
+    '<em>self%</em> is how often attending to a character promotes that same character above all ' +
+    `others; a copying head scores high. The best here is ${(best * 100).toFixed(0)}%, against ` +
+    `${(100 / D.config.vocab_size).toFixed(1)}% by chance, so this model has no copying heads ` +
+    '\u2014 and therefore no induction heads, which need one. That is a result about a 4-layer ' +
+    'character model, not a missing panel. Magnitudes are relative (no final layernorm) and ' +
+    'columns are centred, so what is comparable is the ranking within a row.</p>' +
+    '<table class="tbl"><tr><th>head</th><th>self%</th><th>strongest write</th></tr>' +
+    rows + '</table>' +
+    '<h3>singular directions</h3>' +
+    '<p class="kv">Each direction is a mix of characters the head reads and a mix it writes, with a ' +
+    'strength. <strong>Do not name these groups.</strong> Their characters do group by category ' +
+    '(letter / punctuation / case) above chance \u2014 but a random head on these same trained ' +
+    'embeddings reaches 0.654 against the real head\u2019s 0.684, so almost all of that belongs to ' +
+    'the vocabulary geometry every head shares, not to this head. The residual is not significant ' +
+    '(p = 0.08), and on the writes side the trained head scores below its own null. An earlier ' +
+    'version of this panel claimed the opposite and had the two columns swapped; see M-23. ' +
+    'What does separate trained from untrained is magnitude: the leading strength is ~3,000\u00d7 ' +
+    'larger. Signs are arbitrary in an SVD and are oriented so the largest write is positive.</p>' +
+    '<table class="tbl"><tr><th>direction</th><th>strength</th><th>reads</th><th>writes</th></tr>' +
+    dirRows + '</table>';
+}
+
+// Max-activating contexts per MLP neuron, from a corpus pass (M7-4).
+//
+// The only panel here built from a CORPUS rather than one prompt, which is what
+// makes it worth having: every other per-component number on this page is a
+// single-prompt claim, and this repo has retracted two of those.
+//
+// It still reports a CORRELATION. What a neuron fires on is not what it causes,
+// and nothing here establishes the second. Naming a neuron from these contexts
+// is the standard error in this field (INTERPRETING.md 4).
+function drawNeurons() {
+  const box = $('#neurons');
+  if (!D.neurons) {
+    box.innerHTML = '<h2>neuron contexts</h2><p class="kv">not in this dump — build one with ' +
+      '<code>neuron_stats</code> and pass <code>--corpus</code>. An artifact from a different ' +
+      'checkpoint is refused, not rendered.</p>';
+    return;
+  }
+  const N = D.neurons;
+  const rows = N.shown.map(e =>
+    `<tr><td>L${e.layer}\u00b7${e.unit}</td>` +
+    `<td style="text-align:right">${e.top[0].act.toFixed(2)}</td>` +
+    `<td>${e.top.slice(0, 3).map(x => `<code>${JSON.stringify(x.text.slice(-16))}</code>`).join(' ')}</td></tr>`
+  ).join('');
+  box.innerHTML = '<h2>neuron contexts</h2>' +
+    `<p class="kv">The corpus contexts that most activate each MLP neuron, over ${N.count} ` +
+    `neurons keeping the top ${N.top_k} each; the ${N.shown.length} with the highest peak are ` +
+    'shown. <strong>This is what a neuron fires on, not what it does.</strong> Firing together ' +
+    'is a correlation; whether the neuron\u2019s activation causes anything downstream is not ' +
+    'established by this panel and needs an intervention. Reading a name off these strings is the ' +
+    'error this repo has already made twice.</p>' +
+    '<table class="tbl"><tr><th>neuron</th><th>peak</th><th>fires on</th></tr>' + rows + '</table>';
+}
+
+// Is a property encoded, and does the model USE it? (M7-5/M7-6)
+//
+// The two halves are shown together because either alone misleads. Accuracy
+// without its base rate looks like a discovery on a property that is 95% one
+// class; accuracy without the causal column names a direction the model may
+// never read. Both failures are ones this repo has published and retracted.
+// Every optional panel says the same thing when its data is absent. Written once
+// so the wording cannot drift between panels, which it already had.
+function emptyPanel(title, how) {
+  return `<h2>${title}</h2><p class="kv">not in this dump \u2014 ${how}.</p>`;
+}
+
+function drawProbes() {
+  const box = $('#probes');
+  if (!D.probes) { box.innerHTML = emptyPanel('probes', 'run <code>probe --out</code> and pass it to <code>--corpus</code>'); return; }
+  const P = D.probes;
+  const rows = P.rows.slice().sort((a, b) => b.beats - a.beats).map(r => {
+    const live = r.beats >= 0.9;
+    const lift = (r.acc - r.base).toFixed(3);
+    return `<tr><td>${r.name}</td><td>L${r.layer}</td>` +
+      `<td style="text-align:right">${r.acc.toFixed(3)}</td>` +
+      `<td style="text-align:right">${r.base.toFixed(3)}</td>` +
+      `<td style="text-align:right">+${lift}</td>` +
+      `<td style="text-align:right">${r.steer.toFixed(3)}</td>` +
+      `<td style="text-align:right">${r.null_mean.toFixed(3)}</td>` +
+      `<td style="text-align:right"><strong>${(r.beats * 100).toFixed(0)}%</strong></td>` +
+      `<td>${live ? 'the model reads this' : ''}</td></tr>`;
+  }).join('');
+  box.innerHTML = '<h2>encoded, and used?</h2>' +
+    `<p class="kv">Left: how well a linear probe decodes the property from the residual stream, ` +
+    `against the <em>base rate</em> of always guessing the majority class \u2014 accuracy alone is ` +
+    `meaningless. Right: steering along that direction at scale ${P.scale}, against a ` +
+    `${P.n_null}-draw null of random directions at the same norm. <strong>Decodable is cheap; read ` +
+    `is not.</strong> A property can decode near-perfectly from a direction the model never uses, ` +
+    `and several here do.</p>` +
+    '<table class="tbl"><tr><th>property</th><th>layer</th><th>acc</th><th>base</th><th>lift</th>' +
+    '<th>steer KL</th><th>null</th><th>beats null</th><th></th></tr>' + rows + '</table>';
+}
+
+// Does any head do induction? (B4)
+//
+// Read the control column, not the score. Some attention lands on those
+// positions by geometry alone, so the question is whether repetition changes
+// anything.
+function drawInduction() {
+  const box = $('#induction');
+  if (!D.induction) { box.innerHTML = emptyPanel('induction', 'run <code>induction --out</code> and pass it to <code>--corpus</code>'); return; }
+  const I = D.induction;
+  const best = Math.max(...I.heads.map(h => h.repeated)) / I.uniform;
+  const rows = I.heads.slice().sort((a, b) => b.repeated - a.repeated).slice(0, 6).map(h =>
+    `<tr><td>L${h.layer}H${h.head}</td>` +
+    `<td style="text-align:right">${h.repeated.toFixed(4)}</td>` +
+    `<td style="text-align:right">${h.control.toFixed(4)}</td>` +
+    `<td style="text-align:right">${(h.repeated / I.uniform).toFixed(2)}\u00d7</td></tr>`).join('');
+  box.innerHTML = '<h2>induction heads</h2>' +
+    `<p class="kv">A random block of ${I.half} repeated twice, ${I.trials} trials. An induction ` +
+    `head attends from the second copy back to whatever followed the matching token in the first. ` +
+    `It counts only if <em>repeated</em> beats both <em>control</em> (the same measurement on ` +
+    `non-repeated text) and uniform attention (${I.uniform.toFixed(4)}). ` +
+    (best < 1.05
+      ? `<strong>Best here is ${best.toFixed(2)}\u00d7 uniform, and every head scores the same on ` +
+        `repeated and control \u2014 repetition changes nothing. This model has no induction heads.</strong>`
+      : `Best here is ${best.toFixed(2)}\u00d7 uniform.`) +
+    '</p>' +
+    '<table class="tbl"><tr><th>head</th><th>repeated</th><th>control</th><th>\u00d7 uniform</th></tr>' +
+    rows + '</table>';
 }
 
 function drawKL() {

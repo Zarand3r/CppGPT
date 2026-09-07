@@ -203,7 +203,7 @@ Method choices are grounded in the literature (§ References at the end of this 
 repo can do something the field normally cannot, that is called out — it is the reason to build it
 here rather than read a paper about it.
 
-**Execution detail for the first three items** — the `forward_with_patch` seam, A1 and A2 — is
+**Execution detail for the first three items** — the patch seam, A1 and A2 — is
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): properties P1–P7, six steps with binary
 acceptance gates, and five design tensions (§D) that need your call before Step 2 lands. This page
 still owns the checkboxes.
@@ -296,8 +296,10 @@ tested), **per-layer KL**, **logit lens** + `lens_grid`, **head_stats**, **posit
       over a position × layer grid rather than over components. *Cost:* 1 forward per site, so the
       grid is `T·L` forwards — 56 (~34 ms) at T=14, 256 (~0.9 s) at T=64. **Cap the grid or it leaves
       the lane.**
-- [ ] **A5 · Weight-based QK/OV circuit panels. [Q1] — the highest insight-per-line item in M6, and
-      the one this repo can do that GPT-2-scale work cannot.**
+- [x] **A5 · Weight-based QK/OV circuit panels. [Q1]** — done 2026-09-02 (M-22). Prompt-independent,
+      zero forwards. Result: **no copying heads** (best 0.092 against 0.015 chance), so no induction
+      heads either. Column-centring was required first — the raw table showed the unembedding, with
+      two rare characters taking the top slot in over half the rows.
       *The viewer today answers Q2 well and Q1 barely — see `docs/INTERPRETING_EXAMPLE.md`, which
       walks every existing panel and ends with what is missing. A5, A6 and A7 are that gap.*
       A head is a **QK circuit** (what it reads) and an **OV circuit** (what it writes). Both have
@@ -366,10 +368,10 @@ median-and-activity-rate summary the rest of this lane should copy (M-16).
 - [ ] **B3 · Max-activating examples. [Q1]** For each of the 2,048 MLP neurons, its top-activating
       contexts over the corpus. Needs **no new model** — `fch_gelu` is already in the arena. One
       corpus pass; artifact is per-neuron top-k contexts. *(Small.)*
-- [ ] **B4 · Induction-head probe. [Q1]** Repeated random sequences (Olsson et al.), giving the
-      **prefix-matching score** that completes A5's pair. A yes/no answer about whether a canonical
-      circuit exists in 4 layers — and if the answer is *no*, that is a result about a character-level
-      model, recorded, not a failure. *(Small.)*
+- [x] **B4 · Induction-head probe. [Q1]** Done 2026-09-07 (M-28). The answer is **no**, and it now
+      rests on two methods sharing no machinery: no head exceeds uniform attention, and every head
+      scores identically on repeated and non-repeated blocks. Confirms M-22, which had rested on a
+      copying statistic of this repo's own construction.
 - [ ] **B5 · Attribution patching, and the measurement of its error. [Q2] — the one item here that is
       a contribution rather than an application.**
       `effect ≈ −∇a·a` scores every site from **1 forward + 1 backward** (the estimator is real-time;
@@ -446,6 +448,58 @@ Features and circuits — [Transcoders find interpretable LLM feature circuits](
 
 ---
 
+## M7 — Representation and concept interpretability
+
+M6 answers *which* component matters and *when*. M7 is the attempt at *what it represents*.
+Execution detail, properties and per-step gates: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+
+Three facts frame it, and none are pessimism for its own sake:
+
+- **This model may have no concepts to find.** Character-level, 4 layers, `n_embd` 128. A5 already
+  found no copying heads and therefore no induction heads (M-22). "Nothing nameable here" is a
+  legitimate outcome and the honest deliverable.
+- **A head does not have *a* concept.** Attention superposition puts several in one head, so the
+  answerable question is which *directions* it reads and writes.
+- **Probes before SAEs.** DeepMind deprioritised SAE research on negative downstream results, tuned
+  linear probes match or beat SAE probes, and on OthelloGPT — a small model with known ground truth,
+  the closest analogue to this repo — SAEs recovered 9 of 180 features.
+
+- [x] **M7-1 · SVD of the OV/QK circuits.** Done 2026-09-06 (M-23). Weights-only, **63 ms** of a 90 ms
+      request in a release build (M-24). An earlier figure of 685 ms was the debug binary. **The
+      structure claim is retracted** (M-23): a random head on the same trained embeddings reaches
+      0.654 against the real head's 0.684, so the category structure belongs to the vocabulary
+      geometry every head shares, not to the head. Three errors found by adversarial review — swapped
+      read/write axes, a chance baseline computed with the wrong statistic, and a control that
+      randomised the embeddings too. What survives: the leading singular value grows ~3,000× with
+      training.
+- [x] **M7-2 · Cache weight-space panels per checkpoint.** Done 2026-09-06 (M-23). The panel is
+      prompt-independent, so `serve_viewer` computes it once at startup: **90 ms → 27 ms** per request
+      (M-24). No invalidation logic — the server serves one checkpoint for its lifetime. Note the
+      honest version: this was argued for on a 685 ms figure that was the debug build. At 63 ms saved
+      it is kept for being fifteen gated lines, not because latency demanded it.
+- [x] **M7-3 · The corpus-artifact channel.** Done 2026-09-06 (D11, M-26). Binary envelope, checksum
+      identity, `Result` on load, merged by `inspect`. Shipped with M7-4 so it has a real consumer.
+      Five mutations fail its tests, including one the first version of the test missed — bounding an
+      allocation sized from an unvalidated header (L3).
+- [x] **M7-4 · Max-activating examples.** Done 2026-09-06 (M-26). 2,048 neurons over 128 windows,
+      852 KB artifact, 0 dead neurons. The panel reports what a neuron *fires on* and says plainly
+      that this is a correlation — the causal half is M7-6.
+- [x] **M7-5 · Linear probes.** Done 2026-09-06 (M-27). Every property decodes far above base at
+      every layer — which is why the causal half exists.
+- [x] **M7-6 · Causal validation.** Done 2026-09-06 (M-27). Null is 20 random directions at matched
+      norm. **`after_punct` is causally live at every layer** (8× its null at L1); `in_caps_run` and
+      `after_space` at some; `after_newline` and `after_vowel` decode at 0.97+ and are not read.
+      A first pass at scale 2 found nothing and was a **dead zone** — 3% of a residual norm of
+      60–285; corrected in M-27.
+- [x] **M7-7 · Attention SAEs — decided against.** The step's condition was met by not being met:
+      4–6 left no specific unexplained thing. M-27's result is that most decodable directions are
+      causally inert, which an SAE does not address — it decomposes activations into more features,
+      and the problem is not too few. Superposition also does not describe a model with 128
+      dimensions and 65 symbols. Revisit if a corpus-wide causal sweep finds directions that are
+      causally live but not linearly separable.
+
+---
+
 ## Deferred from the 3-axis review (2026-08-13)
 
 - [x] **`ldd` allow-list.** All SEVEN binaries link only `libc`/`libm`. To be accurate: `libresolv`
@@ -462,19 +516,25 @@ Features and circuits — [Transcoders find interpretable LLM feature circuits](
       `--top-k < 1` (it silently produced empty predictions).
 - [ ] **`Device`: 17 signatures, 17 tautological asserts, zero callers.** `ops.hpp` additionally
       claims each op "dispatches on it"; there is no dispatch. Pure deletion, ~40 lines.
-- [ ] **Dead code**: `DCHECK`/`UNREACHABLE`/`MUST`/`TRY_OR_CONTINUE` (0 uses, and the last is the sole
-      consumer of `detail::warn`), 4 unreachable `ErrorCode` values, `Storage::reset()` (documented as
-      the per-step mechanism, never called), the 249-line logging subsystem serving 2 call sites.
-- [ ] **`verify.hpp` is test-only code shipped as public library API**, and it sizes six allocations
-      directly from unvalidated file-header ints — an L3 violation inside the fixture loader the
-      constitution's parity promise depends on. Move to `tests/` and bound the sizes.
+- [x] **Dead code — pruned 2026-09-06.** `DCHECK`/`UNREACHABLE`/`MUST`/`TRY_OR_CONTINUE` and
+      `detail::warn` deleted (each had zero uses; the last macro was `warn`'s only consumer). Still
+      open: 4 unreachable `ErrorCode` values, `Storage::reset()`, and the logging subsystem (175
+      lines, one real consumer in `src/model.cpp`).
+- [x] **`verify.hpp` moved to `tests/` 2026-09-06** — it had zero library or tool callers. It still
+      sizes six allocations from unvalidated file-header ints; that is now inside a test target
+      reading a committed fixture rather than in the public library surface, which is the part that
+      mattered. Bounding the sizes remains open.
 - [ ] **~92 lines of tool duplication**; the atomic-write copy has already diverged (only one of the
       two writers checked `close()` — now fixed, but the duplication remains).
 - [ ] **e2e hermeticity**: the `sh_test` shells out to 8 undeclared host binaries (`python3`, GNU
       `stat -c%s`, `cmp`, `sed`, `grep`). `//scripts` already pins a hermetic Python toolchain.
 - [ ] **10 of 14 CLI flags can be ignored** and the e2e stays green — including `--clip` (clipping
       silently disabled) and `--top-k` (greedy silently becomes sampling).
-- [ ] **9 `CHECK_DIES` for 96 `ASSERT` sites**, incl. the `INT_MAX` guard and the lens layer bound.
+- [x] **Every death test now matches its message — 2026-09-06.** The 8 remaining bare `CHECK_DIES`
+      were converted to `CHECK_DIES_WITH`; a bare one passes for *any* abort, which this repo has
+      already been bitten by. Verified: replacing a guard with an unrelated abort now fails the test
+      where it previously passed. (Coverage breadth — 28 death tests against ~96 `ASSERT` sites — is
+      still open; this closes the *quality* half.)
 - [ ] **The document-ownership rule is violated by every document it governs** — measurements appear
       in `DECISIONS.md`, `PLAN.md`, `ROADMAP.md`, both example READMEs and both milestone plans.
 
@@ -534,6 +594,7 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **E2 · Post-training quantization (inference).** int8/int4 weights + KV-cache quant, opt-in inference mode; introduces its own quantized `Storage` (no `DType` exists yet to reuse). Validated within documented tolerance vs fp32 — **not** token-exact; lives behind a flag.
 - [ ] **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious online vector quant (random-rotate → per-coordinate optimal scalar quantizers; 2-stage MSE + 1-bit QJL for unbiased inner products). ~2.5–3.5 bits/channel KV cache near quality-neutral. Plugs into the E2 KV-cache seam. (arXiv 2504.19874)
 - [ ] **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Approximates attention → **breaks canonical GPT-2 parity by construction**; lives on a separate architecture path (also the trigger to reconsider a tape). Hybrid (linear backbone + interleaved full/sparse) is the current sweet spot; watch for "component collapse." Validated on task metrics, not token-exact. (surveys arXiv 2507.19595, 2504.17768)
+- [ ] **E5 · Looped / Universal Transformer (research, architecture-changing).** Share one block (or a small set) across depth and iterate it N times instead of stacking L distinct layers — decouples effective compute from parameter count (reported to match a standard transformer's in-context learning at <10% of the params) and turns the loop count into an inference-time knob for reasoning depth / test-time compute (adaptive halting, à la Universal Transformer ACT). **Breaks canonical GPT-2 parity by construction** (weights tied across depth → no longer stock GPT-2); lives on the same separate architecture path as E4, and is likewise a trigger to reconsider a tape. Validated on task metrics (algorithmic / length-generalization / reasoning), not token-exact. Also a rich interpretability target — iterative refinement across loop steps ties directly to M5–M7. (Universal Transformer, Dehghani et al. 2018; recurrent-depth LLMs Huginn / Ouro; Mixture-of-Recursions)
 
 **Alignment & Post-Training Track (RLHF)** — turns the base LM into an instruction/preference-aligned model. A *capability* axis, not an efficiency one: it changes what the model does, not how fast it runs. The ops (forward/backward/AdamW), tokenizer, and dataloader are reused unchanged, so ops-level parity is untouched — but this is the one track whose *success* is metric-based, not token-exact-parity-based: there is no canonical "GPT-2 RLHF" oracle (outcomes depend on the preference data). New losses are still gradient-checked vs PyTorch; invariant 11's gates are added to, never relaxed. Do not start.
 - [ ] **A1 · SFT (supervised fine-tuning).** Fine-tune the pretrained LM on demonstration / chat data with the loss masked to completion tokens. Reuses forward/backward/AdamW + tokenizer; new pieces are an instruction dataloader and the prompt/completion loss mask. Cheapest; unlocks the rest.

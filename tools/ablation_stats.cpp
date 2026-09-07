@@ -28,10 +28,11 @@
 
 #include "cppgpt/checkpoint.hpp"
 #include "cppgpt/core.hpp"
-#include "cppgpt/interpret.hpp"
+#include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
 #include "tools/cli.hpp"
+#include "tools/io.hpp"
 
 namespace {
 using namespace cppgpt;
@@ -66,23 +67,6 @@ struct Samples {
     }
 };
 
-std::vector<std::uint16_t> read_tokens(const std::string& path) {
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) {
-        std::fprintf(stderr, "ablation_stats: cannot open '%s'\n", path.c_str());
-        std::exit(1);
-    }
-    const std::streamoff bytes = f.tellg();
-    if (bytes < 0 || bytes % 2 != 0) {
-        std::fprintf(stderr, "ablation_stats: '%s' is not a whole number of uint16 tokens\n",
-                     path.c_str());
-        std::exit(1);
-    }
-    std::vector<std::uint16_t> t(static_cast<std::size_t>(bytes) / 2);
-    f.seekg(0);
-    if (!t.empty()) f.read(reinterpret_cast<char*>(t.data()), bytes);
-    return t;
-}
 
 }  // namespace
 
@@ -130,7 +114,13 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    const std::vector<std::uint16_t> toks = read_tokens(data);
+    const auto toks_r = toolio::read_tokens(data.c_str());
+    if (!toks_r) {
+        std::fprintf(stderr, "ablation_stats: cannot read '%s': %s\n", data.c_str(),
+                     describe(toks_r.error()));
+        return 1;
+    }
+    const std::vector<std::uint16_t>& toks = *toks_r;
     if (toks.size() < static_cast<std::size_t>(T) + 1) {
         std::fprintf(stderr, "ablation_stats: corpus has %zu tokens, need at least %d\n",
                      toks.size(), T + 1);

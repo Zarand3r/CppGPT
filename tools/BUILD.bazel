@@ -10,6 +10,13 @@ package(default_visibility = ["//tests:__subpackages__"])
 # behavior is reject_unknown() — a mistyped flag must be an error, never a silent
 # no-op that trains the wrong model.
 cc_library(
+    name = "io",
+    hdrs = ["io.hpp"],
+    deps = ["//:cppgpt_model"],
+    visibility = ["//visibility:private"],
+)
+
+cc_library(
     name = "cli",
     hdrs = ["cli.hpp"],
     visibility = ["//tests:__subpackages__"],
@@ -64,6 +71,7 @@ cc_binary(
     srcs = ["ablation_stats.cpp"],
     deps = [
         ":cli",
+        ":io",
         "//:cppgpt",
     ],
 )
@@ -102,4 +110,33 @@ cc_binary(
         ":cli",
         "//:cppgpt",
     ],
+)
+
+# M7-4: one corpus pass over fch_gelu, producing the first D11 artifact.
+cc_binary(
+    name = "neuron_stats",
+    srcs = ["neuron_stats.cpp"],
+    deps = [
+        ":cli",
+        ":io",
+        "//:cppgpt",
+    ],
+)
+
+# M7-5/M7-6: linear probes and their causal validation.
+cc_binary(
+    name = "probe",
+    srcs = ["probe.cpp"],
+    deps = [
+        ":cli",
+        ":io",
+        "//:cppgpt",
+    ],
+)
+
+# B4: the canonical induction-head test, independent of the weight-space work.
+cc_binary(
+    name = "induction",
+    srcs = ["induction.cpp"],
+    deps = [":cli", "//:cppgpt"],
 )

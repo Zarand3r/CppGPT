@@ -146,12 +146,12 @@ int main() {
     {
         const float nan_logits[3] = {std::nanf(""), std::nanf(""), std::nanf("")};
         Generator g(5ULL);
-        CHECK_DIES(IGNORE(sample(nan_logits, 3, 1.0f, 0, g)));
+        CHECK_DIES_WITH(IGNORE(sample(nan_logits, 3, 1.0f, 0, g)), "not a finite distribution");
 
         const float inf_logits[3] = {-std::numeric_limits<float>::infinity(),
                                      -std::numeric_limits<float>::infinity(),
                                      -std::numeric_limits<float>::infinity()};
-        CHECK_DIES(IGNORE(sample(inf_logits, 3, 1.0f, 0, g)));
+        CHECK_DIES_WITH(IGNORE(sample(inf_logits, 3, 1.0f, 0, g)), "not a finite distribution");
     }
 
     // Greedy decoding must hit the finite guard too. top_k == 1 returns via
@@ -161,8 +161,8 @@ int main() {
     {
         const float nan3[3] = {std::nanf(""), std::nanf(""), std::nanf("")};
         Generator g(9ULL);
-        CHECK_DIES(IGNORE(sample(nan3, 3, 1.0f, 1, g)));   // greedy path
-        CHECK_DIES(IGNORE(sample(nan3, 3, 1.0f, 0, g)));   // sampling path
+        CHECK_DIES_WITH(IGNORE(sample(nan3, 3, 1.0f, 1, g)), "not a finite distribution");   // greedy path
+        CHECK_DIES_WITH(IGNORE(sample(nan3, 3, 1.0f, 0, g)), "not a finite distribution");   // sampling path
     }
 
     return cppgpt::test::summary();

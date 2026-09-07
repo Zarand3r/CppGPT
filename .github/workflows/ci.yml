@@ -104,7 +104,14 @@ jobs:
           # Without both, drawCoax takes its "not in this dump" branch and the
           # baseline label takes its "predates schema 6" branch, so the real code
           # paths for the two newest features are never exercised in CI.
+          # A corpus artifact too, so the neuron panel's populated branch renders.
+          $B/neuron_stats --checkpoint /tmp/ci.ckpt --data /tmp/ci.val.bin \
+                          --out /tmp/ci_neurons.art --windows 8 --seq 16 --top-k 2 --ctx 8
+          $B/probe --checkpoint /tmp/ci.ckpt --vocab /tmp/ci.vocab --data /tmp/ci.val.bin \
+                   --windows 8 --seq 16 --scale 10 --out /tmp/ci_probes.art
+          $B/induction --checkpoint /tmp/ci.ckpt --half 8 --trials 4 --out /tmp/ci_ind.art
           $B/inspect --checkpoint /tmp/ci.ckpt --vocab /tmp/ci.vocab \
                      --prompt "the king" --donor "king the" --coax 1 \
+                     --corpus /tmp/ci_neurons.art,/tmp/ci_probes.art,/tmp/ci_ind.art \
                      --out /tmp/ci_run.json --top-k 5
           python3 tools/check_viewer.py --html tools/viewer.html --dump /tmp/ci_run.json --require-dump
