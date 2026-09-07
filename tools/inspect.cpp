@@ -204,6 +204,90 @@ TopK top_k_of(const float* logits, int V, int k) {
     return false;
 }
 
+// Emit a ProbeDirections artifact. Decodability and its causal test travel
+// together; the panel cannot show one without the other.
+[[nodiscard]] bool emit_probes(std::string& js, const std::string& path, std::uint64_t ckpt) {
+    const auto blob = read_artifact(path.c_str(), ArtifactKind::ProbeDirections, ckpt);
+    if (!blob) {
+        std::fprintf(stderr, "inspect: --corpus '%s' rejected: %s\n", path.c_str(),
+                     describe(blob.error()));
+        return false;
+    }
+    ProbeHeader ph{};
+    if (blob->size() < sizeof(ph)) return false;
+    std::memcpy(&ph, blob->data(), sizeof(ph));
+    const auto n = static_cast<std::size_t>(ph.n_layer) * static_cast<std::size_t>(ph.n_props);
+    if (blob->size() != sizeof(ph) + n * sizeof(ProbeRecord)) {
+        std::fprintf(stderr, "inspect: --corpus '%s' probe payload size disagrees with its header\n",
+                     path.c_str());
+        return false;
+    }
+    js += ",\n  \"probes\": {\"scale\": ";
+    append_float(js, ph.scale);
+    js += ", \"n_null\": " + std::to_string(ph.n_null) + ", \"rows\": [";
+    for (std::size_t i = 0; i < n; ++i) {
+        ProbeRecord r{};
+        std::memcpy(&r, blob->data() + sizeof(ph) + i * sizeof(ProbeRecord), sizeof(r));
+        if (i) js += ", ";
+        char nm[17] = {0};
+        std::memcpy(nm, r.name, sizeof(r.name));
+        js += "{\"name\": \"";
+        json_escape(js, std::string(nm));
+        js += "\", \"layer\": " + std::to_string(r.layer) + ", \"acc\": ";
+        append_float(js, r.accuracy);
+        js += ", \"base\": ";
+        append_float(js, r.base_rate);
+        js += ", \"shuffled\": ";
+        append_float(js, r.shuffled);
+        js += ", \"steer\": ";
+        append_float(js, r.steer_kl);
+        js += ", \"null_mean\": ";
+        append_float(js, r.null_mean);
+        js += ", \"beats\": ";
+        append_float(js, r.beats_null);
+        js += "}";
+    }
+    js += "]}";
+    return true;
+}
+
+// Emit an InductionScores artifact. `control` rides along because the raw score
+// is unreadable without it.
+[[nodiscard]] bool emit_induction(std::string& js, const std::string& path, std::uint64_t ckpt) {
+    const auto blob = read_artifact(path.c_str(), ArtifactKind::InductionScores, ckpt);
+    if (!blob) {
+        std::fprintf(stderr, "inspect: --corpus '%s' rejected: %s\n", path.c_str(),
+                     describe(blob.error()));
+        return false;
+    }
+    InductionHeader ih{};
+    if (blob->size() < sizeof(ih)) return false;
+    std::memcpy(&ih, blob->data(), sizeof(ih));
+    const auto n = static_cast<std::size_t>(ih.n_layer) * static_cast<std::size_t>(ih.n_head);
+    if (blob->size() != sizeof(ih) + n * sizeof(InductionRecord)) {
+        std::fprintf(stderr, "inspect: --corpus '%s' induction payload size disagrees with header\n",
+                     path.c_str());
+        return false;
+    }
+    js += ",\n  \"induction\": {\"uniform\": ";
+    append_float(js, ih.uniform);
+    js += ", \"trials\": " + std::to_string(ih.trials);
+    js += ", \"half\": " + std::to_string(ih.half) + ", \"heads\": [";
+    for (std::size_t i = 0; i < n; ++i) {
+        InductionRecord r{};
+        std::memcpy(&r, blob->data() + sizeof(ih) + i * sizeof(InductionRecord), sizeof(r));
+        if (i) js += ", ";
+        js += "{\"layer\": " + std::to_string(i / ih.n_head);
+        js += ", \"head\": " + std::to_string(i % ih.n_head) + ", \"repeated\": ";
+        append_float(js, r.repeated);
+        js += ", \"control\": ";
+        append_float(js, r.control);
+        js += "}";
+    }
+    js += "]}";
+    return true;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
@@ -967,18 +1051,53 @@ int main(int argc, char** argv) {
     // identity check lives in read_artifact: an artifact from a different
     // training run renders perfectly and describes another model, so a mismatch
     // is refused here rather than rendered.
-    if (!corpus_path.empty()) {
-        const auto blob = read_artifact(corpus_path.c_str(), ArtifactKind::NeuronTopK, h.checksum);
+    // --corpus takes a comma-separated list. Each file declares its own kind, so
+    // one flag carries every offline analysis and adding a third needs no fourth
+    // flag. A path that names a kind this build does not know is an error, not a
+    // silent skip: the reader would see a page missing a panel with nothing to
+    // say why.
+    for (std::size_t cpos = 0; cpos < corpus_path.size();) {
+        const std::size_t comma = corpus_path.find(',', cpos);
+        const std::string one = corpus_path.substr(cpos, comma == std::string::npos
+                                                             ? std::string::npos
+                                                             : comma - cpos);
+        cpos = comma == std::string::npos ? corpus_path.size() : comma + 1;
+        if (one.empty()) continue;
+
+        ArtifactHeader probe_hdr{};
+        {
+            std::ifstream f(one, std::ios::binary);
+            if (!f || !f.read(reinterpret_cast<char*>(&probe_hdr), sizeof(probe_hdr))) {
+                std::fprintf(stderr, "inspect: --corpus '%s' cannot be read\n", one.c_str());
+                return 1;
+            }
+        }
+        const auto kind = static_cast<ArtifactKind>(probe_hdr.kind);
+        if (kind == ArtifactKind::ProbeDirections) {
+            if (!emit_probes(js, one, h.checksum)) return 1;
+            continue;
+        }
+        if (kind == ArtifactKind::InductionScores) {
+            if (!emit_induction(js, one, h.checksum)) return 1;
+            continue;
+        }
+        if (kind != ArtifactKind::NeuronTopK) {
+            std::fprintf(stderr, "inspect: --corpus '%s' has kind %u, which this build does not know\n",
+                         one.c_str(), probe_hdr.kind);
+            return 1;
+        }
+        const std::string& corpus_path_one = one;
+        const auto blob = read_artifact(corpus_path_one.c_str(), ArtifactKind::NeuronTopK, h.checksum);
         if (!blob) {
             std::fprintf(stderr,
                          "inspect: --corpus '%s' rejected: %s\n"
-                         "  It must be a NeuronTopK artifact built from THIS checkpoint.\n",
-                         corpus_path.c_str(), describe(blob.error()));
+                         "  It must be an artifact built from THIS checkpoint.\n",
+                         corpus_path_one.c_str(), describe(blob.error()));
             return 1;
         }
         if (blob->size() < sizeof(NeuronTopKHeader)) {
             std::fprintf(stderr, "inspect: --corpus '%s' is too short to hold a header\n",
-                         corpus_path.c_str());
+                         one.c_str());
             return 1;
         }
         NeuronTopKHeader nh{};
@@ -990,7 +1109,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr,
                          "inspect: --corpus '%s' payload is %zu bytes; its own header describes "
                          "%zu\n",
-                         corpus_path.c_str(), blob->size(), want);
+                         one.c_str(), blob->size(), want);
             return 1;
         }
 

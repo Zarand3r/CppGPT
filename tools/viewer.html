@@ -181,6 +181,8 @@
       <div id="coax"></div>
       <div id="circuits"></div>
       <div id="neurons"></div>
+      <div id="probes"></div>
+      <div id="induction"></div>
     </div>
 
     <div class="panel">
@@ -566,7 +568,7 @@ function drawProv() {
 }
 
 function render() {
-  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax(); drawCircuits(); drawNeurons();
+  drawLens(); drawNorms(); drawAttn(); drawLensGrid(); drawHeads(); drawAttnText(); drawKL(); drawCoax(); drawCircuits(); drawNeurons(); drawProbes(); drawInduction();
   drawAttrib(); drawAblate(); drawPos(); drawProv(); drawArch();
 }
 
@@ -817,6 +819,74 @@ function drawNeurons() {
     'established by this panel and needs an intervention. Reading a name off these strings is the ' +
     'error this repo has already made twice.</p>' +
     '<table class="tbl"><tr><th>neuron</th><th>peak</th><th>fires on</th></tr>' + rows + '</table>';
+}
+
+// Is a property encoded, and does the model USE it? (M7-5/M7-6)
+//
+// The two halves are shown together because either alone misleads. Accuracy
+// without its base rate looks like a discovery on a property that is 95% one
+// class; accuracy without the causal column names a direction the model may
+// never read. Both failures are ones this repo has published and retracted.
+// Every optional panel says the same thing when its data is absent. Written once
+// so the wording cannot drift between panels, which it already had.
+function emptyPanel(title, how) {
+  return `<h2>${title}</h2><p class="kv">not in this dump \u2014 ${how}.</p>`;
+}
+
+function drawProbes() {
+  const box = $('#probes');
+  if (!D.probes) { box.innerHTML = emptyPanel('probes', 'run <code>probe --out</code> and pass it to <code>--corpus</code>'); return; }
+  const P = D.probes;
+  const rows = P.rows.slice().sort((a, b) => b.beats - a.beats).map(r => {
+    const live = r.beats >= 0.9;
+    const lift = (r.acc - r.base).toFixed(3);
+    return `<tr><td>${r.name}</td><td>L${r.layer}</td>` +
+      `<td style="text-align:right">${r.acc.toFixed(3)}</td>` +
+      `<td style="text-align:right">${r.base.toFixed(3)}</td>` +
+      `<td style="text-align:right">+${lift}</td>` +
+      `<td style="text-align:right">${r.steer.toFixed(3)}</td>` +
+      `<td style="text-align:right">${r.null_mean.toFixed(3)}</td>` +
+      `<td style="text-align:right"><strong>${(r.beats * 100).toFixed(0)}%</strong></td>` +
+      `<td>${live ? 'the model reads this' : ''}</td></tr>`;
+  }).join('');
+  box.innerHTML = '<h2>encoded, and used?</h2>' +
+    `<p class="kv">Left: how well a linear probe decodes the property from the residual stream, ` +
+    `against the <em>base rate</em> of always guessing the majority class \u2014 accuracy alone is ` +
+    `meaningless. Right: steering along that direction at scale ${P.scale}, against a ` +
+    `${P.n_null}-draw null of random directions at the same norm. <strong>Decodable is cheap; read ` +
+    `is not.</strong> A property can decode near-perfectly from a direction the model never uses, ` +
+    `and several here do.</p>` +
+    '<table class="tbl"><tr><th>property</th><th>layer</th><th>acc</th><th>base</th><th>lift</th>' +
+    '<th>steer KL</th><th>null</th><th>beats null</th><th></th></tr>' + rows + '</table>';
+}
+
+// Does any head do induction? (B4)
+//
+// Read the control column, not the score. Some attention lands on those
+// positions by geometry alone, so the question is whether repetition changes
+// anything.
+function drawInduction() {
+  const box = $('#induction');
+  if (!D.induction) { box.innerHTML = emptyPanel('induction', 'run <code>induction --out</code> and pass it to <code>--corpus</code>'); return; }
+  const I = D.induction;
+  const best = Math.max(...I.heads.map(h => h.repeated)) / I.uniform;
+  const rows = I.heads.slice().sort((a, b) => b.repeated - a.repeated).slice(0, 6).map(h =>
+    `<tr><td>L${h.layer}H${h.head}</td>` +
+    `<td style="text-align:right">${h.repeated.toFixed(4)}</td>` +
+    `<td style="text-align:right">${h.control.toFixed(4)}</td>` +
+    `<td style="text-align:right">${(h.repeated / I.uniform).toFixed(2)}\u00d7</td></tr>`).join('');
+  box.innerHTML = '<h2>induction heads</h2>' +
+    `<p class="kv">A random block of ${I.half} repeated twice, ${I.trials} trials. An induction ` +
+    `head attends from the second copy back to whatever followed the matching token in the first. ` +
+    `It counts only if <em>repeated</em> beats both <em>control</em> (the same measurement on ` +
+    `non-repeated text) and uniform attention (${I.uniform.toFixed(4)}). ` +
+    (best < 1.05
+      ? `<strong>Best here is ${best.toFixed(2)}\u00d7 uniform, and every head scores the same on ` +
+        `repeated and control \u2014 repetition changes nothing. This model has no induction heads.</strong>`
+      : `Best here is ${best.toFixed(2)}\u00d7 uniform.`) +
+    '</p>' +
+    '<table class="tbl"><tr><th>head</th><th>repeated</th><th>control</th><th>\u00d7 uniform</th></tr>' +
+    rows + '</table>';
 }
 
 function drawKL() {

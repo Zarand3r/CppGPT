@@ -58,6 +58,8 @@ sh_test(
     data = [
         "//tools:ablation_stats",
         "//tools:neuron_stats",
+        "//tools:probe",
+        "//tools:induction",
         "//tools:eval",
         "//tools:generate",
         "//tools:inspect",

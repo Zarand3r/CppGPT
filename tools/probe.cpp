@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "cppgpt/checkpoint.hpp"
+#include "cppgpt/interp/artifact.hpp"
 #include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
@@ -66,7 +67,7 @@ bool label_for(const Property& p, char prev, char cur) {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const cli::Args args(argc, argv,
-                         {"checkpoint", "vocab", "data", "windows", "seq", "seed", "scale"});
+                         {"checkpoint", "vocab", "data", "windows", "seq", "seed", "scale", "out"});
     const std::string ckpt(args.str("checkpoint", ""));
     const std::string vocab(args.str("vocab", ""));
     const std::string data(args.str("data", ""));
@@ -77,6 +78,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const int n_windows = args.integer("windows", 64);
+    const std::string out(args.str("out", ""));
     const float scale = static_cast<float>(args.real("scale", 2.0f));
 
     auto peek = CheckpointFile::open(ckpt.c_str());
@@ -133,6 +135,8 @@ int main(int argc, char** argv) {
     std::printf("probe: %s over %s\n", ckpt.c_str(), data.c_str());
     std::printf("  %d windows x %d tokens = %d rows, %d train / %d held out, scale %.1f\n",
                 n_windows, T, rows, n_train, rows - n_train, static_cast<double>(scale));
+    std::vector<ProbeRecord> recs;
+    recs.reserve(static_cast<std::size_t>(L) * std::size(kProps));
     std::printf("\n  %-14s %-6s %8s %8s %9s %10s %10s %8s\n", "property", "layer", "acc", "base",
                 "shuffled", "steer KL", "null mean", "beats");
 
@@ -170,6 +174,16 @@ int main(int argc, char** argv) {
                 window[static_cast<std::size_t>(t)] = static_cast<int>((*toks)[starts[0] + static_cast<std::size_t>(t)]);
             const SteerResult sr =
                 steer_effect(model, window.data(), l, T - 1, dir.data(), scale, 20, gen);
+            ProbeRecord rec{};
+            std::snprintf(rec.name, sizeof(rec.name), "%s", kProps[pi].name);
+            rec.layer = static_cast<std::uint32_t>(l);
+            rec.accuracy = pr.accuracy;
+            rec.base_rate = pr.base_rate;
+            rec.shuffled = pr.shuffled;
+            rec.steer_kl = sr.kl_direction;
+            rec.null_mean = sr.kl_random_mean;
+            rec.beats_null = sr.beats_random;
+            recs.push_back(rec);
             std::printf("  %-14s L%-5d %8.3f %8.3f %9.3f %10.4f %10.4f %7.0f%%\n", kProps[pi].name, l,
                         static_cast<double>(pr.accuracy), static_cast<double>(pr.base_rate),
                         static_cast<double>(pr.shuffled), static_cast<double>(sr.kl_direction),
@@ -180,5 +194,25 @@ int main(int argc, char** argv) {
     std::printf(
         "\n  A direction is a finding only if acc clears base AND shuffled sits at base\n"
         "  AND it beats most of a 20-draw random null. Decodable-but-not-causal is the common case.\n");
+
+    if (!out.empty()) {
+        ProbeHeader ph{};
+        ph.n_layer = static_cast<std::uint32_t>(L);
+        ph.n_props = static_cast<std::uint32_t>(std::size(kProps));
+        ph.scale = scale;
+        ph.n_null = 20;
+        std::string payload;
+        payload.resize(sizeof(ph) + recs.size() * sizeof(ProbeRecord));
+        std::memcpy(payload.data(), &ph, sizeof(ph));
+        std::memcpy(payload.data() + sizeof(ph), recs.data(), recs.size() * sizeof(ProbeRecord));
+        if (const auto r = write_artifact(out.c_str(), ArtifactKind::ProbeDirections, h.checksum,
+                                          payload);
+            !r) {
+            std::fprintf(stderr, "probe: writing '%s' failed: %s\n", out.c_str(),
+                         describe(r.error()));
+            return 1;
+        }
+        std::printf("  wrote %s (%zu records)\n", out.c_str(), recs.size());
+    }
     return 0;
 }

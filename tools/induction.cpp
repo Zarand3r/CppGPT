@@ -14,10 +14,12 @@
 // repo has already published two single-sample claims it had to retract.
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "cppgpt/checkpoint.hpp"
+#include "cppgpt/interp/artifact.hpp"
 #include "cppgpt/interp/interpret.hpp"
 #include "cppgpt/model.hpp"
 #include "cppgpt/random.hpp"
@@ -27,7 +29,7 @@ using namespace cppgpt;
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
-    const cli::Args args(argc, argv, {"checkpoint", "half", "trials", "seed"});
+    const cli::Args args(argc, argv, {"checkpoint", "half", "trials", "seed", "out"});
     const std::string ckpt(args.str("checkpoint", ""));
     if (ckpt.empty()) {
         std::fprintf(stderr,
@@ -35,6 +37,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const int trials = args.integer("trials", 64);
+    const std::string out(args.str("out", ""));
 
     auto peek = CheckpointFile::open(ckpt.c_str());
     if (!peek) {
@@ -115,5 +118,31 @@ int main(int argc, char** argv) {
     std::printf(
         "\n  An induction head attends far above uniform on repeated blocks and not on the\n"
         "  control. Best here is %.2fx uniform.\n", best);
+
+    if (!out.empty()) {
+        InductionHeader ih{};
+        ih.n_layer = static_cast<std::uint32_t>(L);
+        ih.n_head = static_cast<std::uint32_t>(NH);
+        ih.trials = static_cast<std::uint32_t>(trials);
+        ih.half = static_cast<std::uint32_t>(half);
+        ih.uniform = uniform;
+        ih.reserved = 0;
+        std::vector<InductionRecord> recs(n_head_total);
+        for (std::size_t i = 0; i < n_head_total; ++i)
+            recs[i] = InductionRecord{static_cast<float>(sum[i] / n),
+                                      static_cast<float>(ctrl[i] / n)};
+        std::string payload;
+        payload.resize(sizeof(ih) + recs.size() * sizeof(InductionRecord));
+        std::memcpy(payload.data(), &ih, sizeof(ih));
+        std::memcpy(payload.data() + sizeof(ih), recs.data(), recs.size() * sizeof(InductionRecord));
+        if (const auto r = write_artifact(out.c_str(), ArtifactKind::InductionScores, h.checksum,
+                                          payload);
+            !r) {
+            std::fprintf(stderr, "induction: writing '%s' failed: %s\n", out.c_str(),
+                         describe(r.error()));
+            return 1;
+        }
+        std::printf("  wrote %s (%zu heads)\n", out.c_str(), recs.size());
+    }
     return 0;
 }

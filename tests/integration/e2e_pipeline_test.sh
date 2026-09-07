@@ -22,6 +22,8 @@ INSPECT="$TEST_SRCDIR/_main/tools/inspect"
 EVAL="$TEST_SRCDIR/_main/tools/eval"
 ABLSTATS="$TEST_SRCDIR/_main/tools/ablation_stats"
 NEURONS="$TEST_SRCDIR/_main/tools/neuron_stats"
+PROBE="$TEST_SRCDIR/_main/tools/probe"
+INDUCTION="$TEST_SRCDIR/_main/tools/induction"
 WORK="$TEST_TMPDIR/work"
 mkdir -p "$WORK"
 
@@ -281,6 +283,60 @@ peaks = [e["top"][0]["act"] for e in n["shown"]]
 assert peaks == sorted(peaks, reverse=True), peaks
 PYEOF
 [ $? -eq 0 ] || fail "corpus artifact contract failed"
+
+# ---------- every artifact kind travels through the ONE --corpus flag ----------
+# probe and induction used to print to stdout only, so nothing they found could
+# reach a panel. They now emit artifacts with the same envelope and identity
+# check as neuron_stats, and inspect dispatches on the kind each file declares.
+"$PROBE" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --data "$WORK/base.val.bin" \
+         --windows 4 --seq 8 --scale 10 --out "$WORK/p.art" > /dev/null 2>&1 \
+  || fail "probe --out failed"
+"$INDUCTION" --checkpoint "$WORK/base.ckpt" --half 4 --trials 3 --out "$WORK/i.art" \
+  > /dev/null 2>&1 || fail "induction --out failed"
+
+"$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --prompt "alpha be" \
+           --corpus "$WORK/n.art,$WORK/p.art,$WORK/i.art" --out "$WORK/all.json" \
+           > /dev/null 2>&1 || fail "inspect rejected a valid multi-artifact --corpus"
+
+python3 - "$WORK/all.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for k in ("neurons", "probes", "induction"):
+    assert k in d, f"one flag did not carry {k}"
+# Decodability and its causal test must travel together: a probe row without its
+# control is the claim this repo has twice retracted.
+for r in d["probes"]["rows"]:
+    for f in ("acc", "base", "shuffled", "steer", "null_mean", "beats"):
+        assert f in r, f"probe row missing {f}"
+    assert 0.0 <= r["beats"] <= 1.0, r
+# The induction control rides along for the same reason.
+assert d["induction"]["uniform"] > 0
+for hh in d["induction"]["heads"]:
+    assert "control" in hh and "repeated" in hh, hh
+PYEOF
+[ $? -eq 0 ] || fail "multi-artifact dump contract failed"
+
+# An artifact of a KNOWN kind but the WRONG checkpoint is still refused.
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --prompt "alpha be" \
+              --corpus "$WORK/p.art,$WORK/other.art" --out "$WORK/x.json" > "$WORK/mx.log" 2>&1; then
+  fail "a mismatched artifact passed when mixed with a valid one"
+fi
+
+# An artifact declaring a kind this build does not know is REFUSED, not skipped.
+# Skipping would render a page missing a panel with nothing to say why, which is
+# the silent-degradation failure this repo forbids. The kind is read from the
+# header before the checksum, so patching that field exercises exactly this path.
+python3 - "$WORK/p.art" "$WORK/unknown.art" <<'PYEOF'
+import struct, sys
+raw = bytearray(open(sys.argv[1], "rb").read())
+struct.pack_into("<I", raw, 8, 99)          # ArtifactHeader.kind
+open(sys.argv[2], "wb").write(bytes(raw))
+PYEOF
+if "$INSPECT" --checkpoint "$WORK/base.ckpt" --vocab "$WORK/base.vocab" --prompt "alpha be" \
+              --corpus "$WORK/unknown.art" --out "$WORK/y.json" > "$WORK/uk.log" 2>&1; then
+  fail "inspect accepted an artifact of an unknown kind"
+fi
+grep -q "does not know" "$WORK/uk.log" || fail "unknown-kind refusal did not say why"
 
 # The dump's contract, checked rather than assumed: valid JSON, attention that is
 # a causal distribution, and a last-layer lens that agrees with the model's own

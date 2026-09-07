@@ -28,7 +28,9 @@ inline constexpr std::uint32_t kArtifactVersion = 1;
 // What a payload contains. The envelope is shared; the payload layout belongs to
 // whichever producer owns the kind.
 enum class ArtifactKind : std::uint32_t {
-    NeuronTopK = 1,  // per-MLP-neuron top-activating contexts over a corpus
+    NeuronTopK = 1,        // per-MLP-neuron top-activating contexts over a corpus
+    ProbeDirections = 2,   // per (layer, property): decodability and its causal test
+    InductionScores = 3,   // per head: attention on repeated blocks, against a control
 };
 
 // Fixed 40-byte little-endian header, then the payload.
@@ -72,6 +74,55 @@ struct NeuronTopKHeader {
     std::uint32_t reserved;
 };
 static_assert(sizeof(NeuronTopKHeader) == 16, "NeuronTopKHeader must be 16 bytes on disk");
+
+// ---------------------------------------------------------------------------
+// ProbeDirections payload
+// ---------------------------------------------------------------------------
+//
+// One record per (layer, property). Both halves travel together on purpose: a
+// decodability number without its causal test is the claim this repo has twice
+// had to retract, so the format does not let them be separated.
+struct ProbeHeader {
+    std::uint32_t n_layer;
+    std::uint32_t n_props;
+    float scale;          // steering scale, in units of residual norm
+    std::uint32_t n_null; // draws in the random null
+};
+static_assert(sizeof(ProbeHeader) == 16, "ProbeHeader must be 16 bytes on disk");
+
+struct ProbeRecord {
+    char name[16];        // property, null-padded
+    std::uint32_t layer;
+    float accuracy;       // held-out
+    float base_rate;      // majority class -- accuracy is unreadable without it
+    float shuffled;       // the leakage control
+    float steer_kl;
+    float null_mean;
+    float beats_null;     // fraction of the null the direction exceeds
+};
+static_assert(sizeof(ProbeRecord) == 44, "ProbeRecord must be 44 bytes on disk");
+
+// ---------------------------------------------------------------------------
+// InductionScores payload
+// ---------------------------------------------------------------------------
+//
+// `control` is not optional decoration: the raw score is unreadable without it,
+// because some attention lands on those positions by geometry alone. A head is
+// only doing induction if `repeated` exceeds BOTH `control` and `uniform`.
+struct InductionHeader {
+    std::uint32_t n_layer;
+    std::uint32_t n_head;
+    std::uint32_t trials;
+    std::uint32_t half;
+    float uniform;        // what uniform attention scores on the same positions
+    std::uint32_t reserved;
+};
+static_assert(sizeof(InductionHeader) == 24, "InductionHeader must be 24 bytes on disk");
+
+struct InductionRecord {
+    float repeated;
+    float control;
+};
 
 // Bytes one entry occupies: activation + focus + ctx_len token ids.
 [[nodiscard]] inline std::size_t neuron_entry_bytes(std::uint32_t ctx_len) noexcept {
