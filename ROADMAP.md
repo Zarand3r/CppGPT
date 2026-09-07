@@ -487,9 +487,10 @@ Three facts frame it, and none are pessimism for its own sake:
 - [x] **M7-5 · Linear probes.** Done 2026-09-06 (M-27). Every property decodes far above base at
       every layer — which is why the causal half exists.
 - [x] **M7-6 · Causal validation.** Done 2026-09-06 (M-27). Null is 20 random directions at matched
-      norm. Most decodable directions sit at chance; **layer 1 is the exception** — 4 of 5 properties
-      beat their null at ≥90%, p = 0.0074 after correcting for four layers. No individual cell is
-      significant at 20 comparisons; the concentration is.
+      norm. **`after_punct` is causally live at every layer** (8× its null at L1); `in_caps_run` and
+      `after_space` at some; `after_newline` and `after_vowel` decode at 0.97+ and are not read.
+      A first pass at scale 2 found nothing and was a **dead zone** — 3% of a residual norm of
+      60–285; corrected in M-27.
 - [x] **M7-7 · Attention SAEs — decided against.** The step's condition was met by not being met:
       4–6 left no specific unexplained thing. M-27's result is that most decodable directions are
       causally inert, which an SAE does not address — it decomposes activations into more features,

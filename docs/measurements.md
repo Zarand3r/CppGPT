@@ -967,60 +967,75 @@ $B/inspect --checkpoint $PWD/data/shakespeare.ckpt --vocab $PWD/data/shakespeare
 What is" --corpus /tmp/neurons.art --out /tmp/n.json
 ```
 
-## M-27 · Probes decode nearly everything; steering says layer 1 is where it matters
+## M-27 · Probes decode nearly everything; steering separates what the model reads
 
 `//tools:probe`, 64 windows × 32 tokens of the validation split, 1,488 training rows / 496 held out,
 split by corpus position. Five properties, each requiring **context** rather than the current
-character — a probe that recovers "this character is a vowel" has rediscovered the embedding.
+character — a probe recovering "this character is a vowel" has rediscovered the embedding.
 
-Steering scale 2.0 in units of residual norm, null = **20 random directions of the same norm**.
+Null = **20 random directions of the same norm**. Steering scale **30**, and that number is the
+correction below.
 
-| property | layer | acc | base | shuffled | steer KL | null mean | beats null |
-|---|---|---|---|---|---|---|---|
-| after_space | L1 | 0.986 | 0.861 | 0.861 | 0.0036 | 0.0007 | **100%** |
-| after_vowel | L1 | 0.974 | 0.722 | 0.696 | 0.0050 | 0.0010 | **100%** |
-| after_punct | L1 | 1.000 | 0.944 | 0.750 | 0.0032 | 0.0014 | **90%** |
-| in_caps_run | L0 | 0.992 | 0.954 | 0.923 | 0.0024 | 0.0008 | 95% |
-| after_space | L2 | 0.982 | 0.861 | 0.849 | 0.0015 | 0.0006 | 95% |
-| in_caps_run | L1 | 0.998 | 0.954 | 0.962 | 0.0003 | 0.0008 | 30% |
-| after_newline | L2 | 1.000 | 0.972 | 0.960 | 0.0001 | 0.0006 | 20% |
-| after_space | L3 | 0.938 | 0.861 | 0.825 | 0.0000 | 0.0001 | 5% |
+### The first version measured in a dead zone
 
-### Decodability is nearly free, and nearly meaningless
+This section originally used scale 2.0 and concluded that most decodable directions are causally
+inert, with layer 1 the exception. **That was an artifact of the scale.** The residual stream at this
+model's layers has norm **60–285**; adding a unit vector at scale 2 is a ~3% perturbation, and the
+resulting KLs were 0.0001–0.005 nats. Nothing was happening, and the direction-versus-null comparison
+was between two near-zero quantities.
 
-Every property decodes far above its base rate at every layer — `after_vowel` reaches 0.974 against a
-0.722 base. **This is the trap the causal half exists for.** Decodability says the property is present
-in the representation; it says nothing about whether the model reads that direction. Eleven of the
-twenty cells beat their null at roughly chance (20–55%), and two are *below* it — decodable
-directions the model demonstrably does not use.
+At scale 30 — a perturbation the model actually feels — the picture is different and much sharper.
 
-### Layer 1 is a real finding; individual cells are not
+### The corrected result
 
-Four of five properties beat their null at ≥90% **at layer 1**, and nowhere else does more than one.
+| property | L0 | L1 | L2 | L3 |
+|---|---|---|---|---|
+| **after_punct** | **100%** | **100%** | 90% | **100%** |
+| **in_caps_run** | **100%** | 90% | **100%** | 20% |
+| after_space | 75% | 90% | 95% | 10% |
+| after_newline | 75% | 30% | 35% | 65% |
+| after_vowel | 25% | 55% | 75% | 10% |
 
-Under the null, a direction beats ≥18 of 20 draws with probability 3/21 = 0.143. Getting 4 or more of
-5 in one layer has probability **0.0018**, or **0.0074** after correcting for the four layers tested.
+(Fraction of the 20-draw null the direction beats.) The effect sizes behind the strong cells are not
+marginal: `after_punct` at L1 moves the output **3.28 nats against a null mean of 0.40** — 8×. At L0,
+`in_caps_run` is 2.82 against 0.39.
 
-That correction matters and cuts the other way for single cells: with 20 comparisons, "beats all 20
-draws" alone is p ≈ 0.048 and expected to happen about once by chance. **So no individual row here is
-significant. The concentration at layer 1 is.** It is also consistent with M-20, where layer 1
-contributes 0.996 of 1.011 nats of the step KL on the seed prompt.
+**`after_punct` is causally live at every layer.** `in_caps_run` and `after_space` are live at some.
+`after_newline` and `after_vowel` decode at 0.97–0.99 accuracy and are **not** ones the model reads —
+which is the point of doing the causal half at all, and remains true after the correction.
+
+### What the scale-dependence itself says
+
+The ranking is not scale-free, and that is a limitation rather than a nuisance:
+
+| | scale 2 | scale 30 | scale 60 |
+|---|---|---|---|
+| after_punct L1 | 100% | 100% | 95% |
+| in_caps_run L1 | 20% | 90% | 100% |
+| after_vowel L1 | 95% | 55% | 40% |
+
+The top group (`after_punct`, `in_caps_run`) is stable across 30 and 60; the weak cells move around,
+which is what noise looks like. But a large enough perturbation takes the model off its own
+activation distribution — the same objection that made zero ablation the wrong baseline (§4a of
+`INTERPRETING.md`) — so a big KL at scale 60 is not automatically evidence the model *uses* a
+direction. There is a middle band where the comparison is informative, this reports scale 30, and a
+principled way to choose it does not exist here yet.
 
 ### Caveats that are not decoration
 
-- **Effect sizes are tiny in absolute terms** — 0.005 nats at the largest. The claim is that these
-  directions matter *more than random ones*, not that steering along them substantially changes the
-  model.
-- **The shuffled control is noisy at this sample size.** Several cells land well *below* their base
-  rate (0.488, 0.681, 0.700). That is over-fitting noise that anti-transfers, not leakage — leakage
-  would push it *above* base — but it means the accuracy column deserves less weight where the
-  control is far from base.
+- **The shuffled control is noisy at this sample size.** Several cells land well *below* base
+  (0.488, 0.681, 0.700). That is over-fitting noise that anti-transfers, not leakage — leakage pushes
+  it *above* base — but the accuracy column deserves less weight where the control is far from base.
 - **One prompt is steered.** The probe is fitted over 64 windows; the causal test perturbs a single
   window. A corpus-wide causal sweep is the obvious next measurement and is not this one.
+- **20 comparisons.** With `beats = 100%` at p ≈ 0.048 per cell, about one false positive is expected.
+  `after_punct` clearing 100% at three of four layers is not that; a lone 100% elsewhere might be.
 
 **Reproduce**
 ```sh
 bazel build --config=release //tools:probe
 bazel-out/k8-opt/bin/tools/probe --checkpoint $PWD/data/shakespeare.ckpt \
-  --vocab $PWD/data/shakespeare.vocab --data $PWD/data/shakespeare.val.bin --windows 64 --seq 32
+  --vocab $PWD/data/shakespeare.vocab --data $PWD/data/shakespeare.val.bin \
+  --windows 64 --seq 32 --scale 30
+# and the sweep that found the dead zone: --scale 2 / 30 / 60
 ```

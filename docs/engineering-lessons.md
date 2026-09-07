@@ -342,3 +342,24 @@ number without a working reproduce command is a rumour.
 **Corollary.** State the build configuration in the measurement itself. Every row in
 `docs/measurements.md` that reports wall-clock now says "release build", because "we ran the tool" is
 not a specification when two builds of it differ by 8.8×.
+
+## L21 — State an intervention's magnitude relative to what it perturbs
+
+**Incident (2026-09-07, M-27).** A causal test added a unit direction to the residual stream at
+`scale = 2.0` and concluded that most decodable directions are causally inert. The residual norm at
+this model's layers is **60–285**, so that was a ~3% perturbation, and every measured KL landed at
+0.0001–0.005 nats. The direction-versus-null comparison was between two quantities that were both
+approximately zero, and it produced a confident negative result.
+
+At scale 30 the same directions separate clearly — `after_punct` moves the output 3.28 nats against a
+null mean of 0.40 — and the conclusion inverts for three of five properties.
+
+**Rule.** An intervention's magnitude is meaningless in isolation. State it **relative to the thing
+it perturbs**, and check that the perturbation is in a regime where the system responds at all before
+reading anything into the comparison. A sweep costs one run and would have caught this immediately.
+
+**Corollary, and it points the other way.** Too large is also wrong: a big enough perturbation takes
+the model off its own activation distribution, which is the objection that made zero ablation the
+wrong baseline (`docs/INTERPRETING.md` §4a). Both failure modes produce numbers. Report the scale, and
+report whether the ranking is stable across a range of them — M-27 does both, and notes that a
+principled way to pick the scale does not exist here yet.

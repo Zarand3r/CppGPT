@@ -61,7 +61,8 @@ Time through `bazel-out/k8-opt/bin/`, never `bazel-bin/`.
 - [x] **Step 3** — The corpus-artifact channel. Done (D11, M-26). Gates P3.
 - [x] **Step 4** — Max-activating examples over `fch_gelu`. Done (M-26).
 - [x] **Step 5** — Linear probes. Done (M-27). Gates P4.
-- [x] **Step 6** — Causal validation against a 20-draw random null. Done (M-27). Gates P5.
+- [x] **Step 6** — Causal validation against a 20-draw random null, at a steering scale that
+      actually perturbs the model. Done (M-27). Gates P5.
 - [x] **Step 7** — Attention SAEs. **Decided against for now**, which is what the step's own
       condition asks for; see below.
 
