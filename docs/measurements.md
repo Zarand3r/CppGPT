@@ -727,7 +727,12 @@ this much*. It reads **only weights**, so it describes the head rather than a pr
 
 Chance is 1/65 = 0.015, so the best head is ~6× chance and still negligible. **There are no copying
 heads in this model**, and therefore no induction heads either — an induction head needs a copying OV
-circuit by definition (Olsson et al. 2022). That is a result about a 4-layer character model whose
+circuit by definition (Olsson et al. 2022).
+
+> **Independently confirmed by M-28.** That inference ran through a copying statistic of this
+> repo's own construction, so it was reasonable to suspect the statistic. The canonical operational
+> test — attention on repeated random blocks, sharing no machinery with this one — agrees: no head
+> exceeds uniform, and every head scores the same on repeated and non-repeated sequences. That is a result about a 4-layer character model whose
 regularities are n-gram statistics, capitalisation and line structure, none of which require copying
 a token forward.
 
@@ -1038,4 +1043,56 @@ bazel-out/k8-opt/bin/tools/probe --checkpoint $PWD/data/shakespeare.ckpt \
   --vocab $PWD/data/shakespeare.vocab --data $PWD/data/shakespeare.val.bin \
   --windows 64 --seq 32 --scale 30
 # and the sweep that found the dead zone: --scale 2 / 30 / 60
+```
+
+## M-28 · The induction probe independently confirms M-22's negative
+
+`//tools:induction`, 64 trials, a random block of 16 repeated twice (T=32), vocabulary 65.
+
+The canonical operational test (Olsson et al. 2022): feed a repeated block and see whether any head
+attends from the second copy back to what *followed* the matching token in the first. This shares no
+machinery with M-22 — that composed weight matrices into an OV circuit and applied a copying
+statistic of this repo's own construction; this reads attention from a real forward.
+
+**Uniform-attention baseline on those positions: 0.0431.**
+
+| head | repeated | sd | control | × uniform |
+|---|---|---|---|---|
+| L0H1 | 0.0426 | 0.0008 | 0.0426 | **0.99** |
+| L1H1 | 0.0404 | 0.0175 | 0.0396 | 0.94 |
+| L3H1 | 0.0260 | 0.0198 | 0.0243 | 0.60 |
+| L3H2 | 0.0202 | 0.0140 | 0.0233 | 0.47 |
+| … | | | | |
+| L1H0 | 0.0028 | 0.0022 | 0.0024 | 0.07 |
+
+**No head exceeds uniform, and every head's repeated score equals its control.** L0H1 scores 0.0426
+on repeated blocks and 0.0426 on non-repeated ones; L1H1, 0.0404 against 0.0396. Repetition makes no
+difference to where any head attends.
+
+An induction head would show repeated ≫ control *and* repeated ≫ uniform. Neither holds anywhere.
+
+### Why this measurement was worth building
+
+M-22's copying score is **not** Elhage's eigenvalue statistic — that needs a nonsymmetric eigensolver
+this repo does not have — so "no copying heads, therefore no induction heads" rested on one
+home-grown number over composed weight matrices. It was reasonable to suspect the statistic rather
+than the model.
+
+It was not the statistic. Two methods sharing no code now agree, and the control makes the agreement
+readable: this is not "the score is small", it is "repetition changes nothing".
+
+### What it does and does not license
+
+It licenses: **this model has no induction heads.** For a 4-layer character-level model that is the
+expected outcome — induction is driven by repeated *sequences*, and at character level over
+Shakespeare that signal is far weaker than at token level.
+
+It does not license "the model learned nothing". It beats a well-smoothed 5-gram by 8.9% (M-13), and
+M-27 finds `after_punct` causally live at every layer. The absent thing is this specific circuit, not
+structure in general.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:induction
+bazel-out/k8-opt/bin/tools/induction --checkpoint $PWD/data/shakespeare.ckpt --half 16 --trials 64
 ```

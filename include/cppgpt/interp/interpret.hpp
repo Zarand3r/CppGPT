@@ -350,6 +350,32 @@ struct SteerResult {
                                        Generator& gen) noexcept;
 
 // ---------------------------------------------------------------------------
+// Induction score (M7-B4)
+// ---------------------------------------------------------------------------
+//
+// The canonical operational test for an induction head (Olsson et al. 2022),
+// and deliberately INDEPENDENT of the OV/QK circuit work: it reads attention
+// from a real forward rather than composing weight matrices, so it can confirm
+// or overturn M-22's negative result without sharing any of its machinery.
+//
+// Feed a sequence that is a random block repeated twice: r[0..n-1] r[0..n-1].
+// At position n+i the model is seeing r[i] again, and the token that followed
+// it last time sits at position i+1. A head doing induction attends there.
+//
+//   score(head) = mean over i in [0, n-1) of att[n+i][i+1]
+//
+// The number only means something against its baseline. A head attending
+// UNIFORMLY over its causal prefix puts 1/(n+i+1) on that position, so
+// `out_uniform` receives what uniform attention would score on the same
+// sequence. A score at the baseline is no induction; the multiple over it is
+// the effect size.
+//
+// Call after `forward()` on such a sequence. `out_per_head` receives
+// [n_layer * n_head] layer-major; `out_uniform` is a single float. Read-only.
+void induction_scores(const GPT2& model, int half, float* out_per_head,
+                      float* out_uniform) noexcept;
+
+// ---------------------------------------------------------------------------
 // The component enumeration
 // ---------------------------------------------------------------------------
 //

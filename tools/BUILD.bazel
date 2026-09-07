@@ -133,3 +133,10 @@ cc_binary(
         "//:cppgpt",
     ],
 )
+
+# B4: the canonical induction-head test, independent of the weight-space work.
+cc_binary(
+    name = "induction",
+    srcs = ["induction.cpp"],
+    deps = [":cli", "//:cppgpt"],
+)

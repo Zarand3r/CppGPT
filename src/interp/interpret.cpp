@@ -884,4 +884,38 @@ SteerResult steer_effect(GPT2& model, const int* tokens, int layer, int pos,
     return r;
 }
 
+void induction_scores(const GPT2& model, int half, float* out_per_head,
+                      float* out_uniform) noexcept {
+    const Config& cfg = model.config();
+    const int T = model.seq_len(), B = model.batch(), NH = cfg.n_head, L = cfg.n_layer;
+    ASSERT(out_per_head != nullptr && out_uniform != nullptr);
+    // The sequence must be a block repeated exactly twice, and the block must be
+    // long enough for there to be a prefix to match at all.
+    ASSERT_MSG(half >= 2 && 2 * half == T, "induction_scores: half must be >= 2 and exactly T/2");
+
+    const auto Tz = static_cast<std::size_t>(T);
+    const int pairs = half - 1;
+
+    for (int l = 0; l < L; ++l)
+        for (int h = 0; h < NH; ++h) {
+            const float* a = head_slice(model.acts().att, l, h, B, NH, T);
+            double acc = 0.0;
+            // At position half+i the model sees r[i] again; the token that
+            // followed it last time is at i+1.
+            for (int i = 0; i < pairs; ++i)
+                acc += static_cast<double>(a[(static_cast<std::size_t>(half + i)) * Tz +
+                                             static_cast<std::size_t>(i + 1)]);
+            out_per_head[static_cast<std::size_t>(l) * static_cast<std::size_t>(NH) +
+                         static_cast<std::size_t>(h)] =
+                static_cast<float>(acc / static_cast<double>(pairs));
+        }
+
+    // What uniform attention over the causal prefix would score on the same
+    // positions. Without it the raw number is unreadable: it falls as the
+    // sequence lengthens simply because attention is spread wider.
+    double u = 0.0;
+    for (int i = 0; i < pairs; ++i) u += 1.0 / static_cast<double>(half + i + 1);
+    *out_uniform = static_cast<float>(u / static_cast<double>(pairs));
+}
+
 }  // namespace cppgpt

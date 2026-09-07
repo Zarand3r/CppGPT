@@ -368,10 +368,10 @@ median-and-activity-rate summary the rest of this lane should copy (M-16).
 - [ ] **B3 · Max-activating examples. [Q1]** For each of the 2,048 MLP neurons, its top-activating
       contexts over the corpus. Needs **no new model** — `fch_gelu` is already in the arena. One
       corpus pass; artifact is per-neuron top-k contexts. *(Small.)*
-- [ ] **B4 · Induction-head probe. [Q1]** Repeated random sequences (Olsson et al.), giving the
-      **prefix-matching score** that completes A5's pair. A yes/no answer about whether a canonical
-      circuit exists in 4 layers — and if the answer is *no*, that is a result about a character-level
-      model, recorded, not a failure. *(Small.)*
+- [x] **B4 · Induction-head probe. [Q1]** Done 2026-09-07 (M-28). The answer is **no**, and it now
+      rests on two methods sharing no machinery: no head exceeds uniform attention, and every head
+      scores identically on repeated and non-repeated blocks. Confirms M-22, which had rested on a
+      copying statistic of this repo's own construction.
 - [ ] **B5 · Attribution patching, and the measurement of its error. [Q2] — the one item here that is
       a contribution rather than an application.**
       `effect ≈ −∇a·a` scores every site from **1 forward + 1 backward** (the estimator is real-time;
@@ -594,6 +594,7 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **E2 · Post-training quantization (inference).** int8/int4 weights + KV-cache quant, opt-in inference mode; introduces its own quantized `Storage` (no `DType` exists yet to reuse). Validated within documented tolerance vs fp32 — **not** token-exact; lives behind a flag.
 - [ ] **E3 · TurboQuant-class near-optimal quantization (research).** Data-oblivious online vector quant (random-rotate → per-coordinate optimal scalar quantizers; 2-stage MSE + 1-bit QJL for unbiased inner products). ~2.5–3.5 bits/channel KV cache near quality-neutral. Plugs into the E2 KV-cache seam. (arXiv 2504.19874)
 - [ ] **E4 · Sparse / linear / hybrid attention (research, architecture-changing).** Approximates attention → **breaks canonical GPT-2 parity by construction**; lives on a separate architecture path (also the trigger to reconsider a tape). Hybrid (linear backbone + interleaved full/sparse) is the current sweet spot; watch for "component collapse." Validated on task metrics, not token-exact. (surveys arXiv 2507.19595, 2504.17768)
+- [ ] **E5 · Looped / Universal Transformer (research, architecture-changing).** Share one block (or a small set) across depth and iterate it N times instead of stacking L distinct layers — decouples effective compute from parameter count (reported to match a standard transformer's in-context learning at <10% of the params) and turns the loop count into an inference-time knob for reasoning depth / test-time compute (adaptive halting, à la Universal Transformer ACT). **Breaks canonical GPT-2 parity by construction** (weights tied across depth → no longer stock GPT-2); lives on the same separate architecture path as E4, and is likewise a trigger to reconsider a tape. Validated on task metrics (algorithmic / length-generalization / reasoning), not token-exact. Also a rich interpretability target — iterative refinement across loop steps ties directly to M5–M7. (Universal Transformer, Dehghani et al. 2018; recurrent-depth LLMs Huginn / Ouro; Mixture-of-Recursions)
 
 **Alignment & Post-Training Track (RLHF)** — turns the base LM into an instruction/preference-aligned model. A *capability* axis, not an efficiency one: it changes what the model does, not how fast it runs. The ops (forward/backward/AdamW), tokenizer, and dataloader are reused unchanged, so ops-level parity is untouched — but this is the one track whose *success* is metric-based, not token-exact-parity-based: there is no canonical "GPT-2 RLHF" oracle (outcomes depend on the preference data). New losses are still gradient-checked vs PyTorch; invariant 11's gates are added to, never relaxed. Do not start.
 - [ ] **A1 · SFT (supervised fine-tuning).** Fine-tune the pretrained LM on demonstration / chat data with the loss masked to completion tokens. Reuses forward/backward/AdamW + tokenizer; new pieces are an instruction dataloader and the prompt/completion loss mask. Cheapest; unlocks the rest.

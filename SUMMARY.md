@@ -105,7 +105,8 @@ layer: lens, attention, residual norms, KL, viewer, live server), GPT-2 124M wei
 | ⬜ | **A7 — component card.** Consolidates numbers that today live in seven panels | next |
 | ⬜ | A3 path patching · A4 causal-tracing grid · A6 neuron views · A8–A15 viewer work | |
 | ✅ | **M7-3 artifact channel · M7-4 max-activating examples** — 2,048 neurons over a corpus (M-26) | PR #44 |
-| ⬜ | B2 corpus attention stats · B4 induction probe | the channel now exists |
+| ✅ | **B4 induction probe** — no induction heads, confirmed independently of M-22 (M-28) | PR #44 |
+| ⬜ | B2 corpus attention stats | the channel now exists |
 | ✅ | **M7-5 probes · M7-6 causal validation** — `after_punct` is causally live at every layer; most decodable directions are not (M-27) | PR #44 |
 | ✅ | **M7-7 SAEs — decided against**, condition not met | |
 | ⬜ | B5 attribution patching + error study · B6 tuned lens · B8 transcoders | |
