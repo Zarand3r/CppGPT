@@ -320,3 +320,36 @@ single addition rejects both the constant and the inverted encoding.
 **Mechanical check.** `tools/mutation_suite.sh` runs a curated battery over the load-bearing files and
 reports survivors. Prose did not prevent recurrence here — the same author wrote all three — so the
 rule ships with something that runs.
+
+## L22 — A vectorisation win must be confirmed in the emitted code, not in the wall-clock
+
+> **Numbering.** L20 and L21 are taken by the open interpretability PR (#44); this starts at L22 so
+> neither branch has to renumber the other.
+
+**Incident (2026-09-17, M-30).** A register-blocked `matmul_forward` candidate measured **2.0–2.1x**
+in a standalone file, and the result was reported before the kernel existed anywhere the repo builds.
+Moved verbatim into `tools/bench.cpp` — same source, same flags, same machine — the R=2 and R=4
+variants measured **30.1** and **15.5** GFLOP/s, *below* the shipping kernel they were supposed to
+beat. Bit-identity still passed, so the kernel was correct; clang had simply declined to vectorise the
+R-loop in the new translation unit. Disassembly: 2 packed FP ops against ~100 scalar ones, where the
+standalone build emitted 10–13 packed. R=8 vectorised in both, and only R=8 is reported.
+
+Nothing about reading the source suggested a difference, and both numbers were stable across runs.
+Had the first figure gone into `docs/measurements.md` it would have justified a staging decision with
+a number the repo's own build could not reproduce.
+
+**Rule.** A speedup attributed to vectorisation is a claim about **generated instructions**, and the
+loop vectoriser's cost model is a property of the translation unit — inlining context, alias
+information, surrounding code — not of the source. Before recording such a number:
+
+1. `objdump` the loop and count packed against scalar FP ops. Packed ops are the claim; a wall-clock
+   number is only evidence *for* it.
+2. Measure in the TU the code will actually ship in. A microbenchmark in a standalone file measures
+   that file.
+3. Report the configuration that survives **every** TU tried, and say how many were tried.
+
+**Corollary.** This is D1's own note — *"if the blocked-matmul work behaves unexpectedly, disassemble
+before theorising"* — recorded in 2026-08 and not followed in 2026-09 by the author who read it. A
+caution in a decision record did not prevent the mistake it described, which is the second time that
+has happened here (see L15). The check now runs inside `//tools:bench`, which prints the caveat next
+to the numbers it applies to.

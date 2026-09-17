@@ -626,3 +626,102 @@ bazel run --config=release //tools:inspect -- --checkpoint $PWD/data/shakespeare
   --vocab $PWD/data/shakespeare.vocab --prompt "ROMEO:
 What is" --coax 1 --out /tmp/coax.json
 ```
+
+## M-30 · Register blocking is worth ~2x before any thread exists — and the vectoriser is not reliable
+
+> **Numbering.** M-21…M-29 are taken by the open interpretability PR (#44). This row starts at M-30
+> so the two branches do not have to renumber each other at merge.
+
+`//tools:bench --blocked`, **release build**, run through the explicit config path (never
+`bazel-bin/`, per L20), best of 20, AMD Ryzen 9 9950X3D, hermetic clang 20.1.8.
+
+The candidate holds `R` input rows in flight so each loaded weight vector is reused `R` times,
+instead of re-loading every weight row for every input row. It is **bit-identical** to the shipping
+kernel by construction — each output element still sums over `c` in the same order into the same
+eight lanes (D8); only the order in which output *elements are visited* changes, which is not a
+floating-point property. `--blocked` checks `max|diff| == 0` at every reported `R` before printing a
+single timing.
+
+| shape | shipping | R=8 candidate | ratio |
+|---|---|---|---|
+| `attn_qkv  BT=1024 C=768 OC=2304` | 59.57 | **128.47** | **2.16x** |
+| `attn_proj BT=1024 C=768 OC=768`  | 60.78 | **129.13** | **2.12x** |
+| `mlp_fc    BT=1024 C=768 OC=3072` | 59.22 | **125.19** | **2.11x** |
+| `mlp_proj  BT=1024 C=3072 OC=768` | 46.18 | **89.33**  | **1.93x** |
+
+`max|diff|` is `0.00e+00` on all four.
+
+### Why this matters for the threading decision
+
+`docs/THREADING_PLAN.md` argued that "every other optimisation on the table is worth a few percent;
+[threading] is worth most of an order of magnitude." That is false. Register blocking is ~2x, it was
+already named in `PLAN.md`'s M2 sequence ("multiple independent accumulators to break the chain,
+**then register-blocking over BT rows for weight reuse**, then the `std::thread` row partition"), and
+it was skipped after D8 landed the first half. It needs **no** determinism argument, no pool, no TSan
+config and no `ldd` allow-list change — unlike threading, which needs all four.
+
+### The shipping baseline was understated
+
+M-1 records 49.38 GFLOP/s for `mlp_fc` (2026-08-14). `matmul_forward_cpu` is byte-identical since
+that commit (`git diff c70fd98..HEAD -- src/ops.cpp` touches only `attention_forward_cpu` and the
+LayerNorm epsilon), and the same command reads **59–61** today. The kernel did not change; the
+recorded number is low. M-1 is left as the historical record rather than silently restated, exactly
+as M-9 was.
+
+### The kernel is NOT bound on cache capacity or memory bandwidth
+
+`//tools:bench --footprint` holds the FLOPs fixed and varies only the weight-matrix size by trading
+`OC` against `BT`. A kernel bound on weight footprint falls off as the matrix leaves each cache level.
+
+| OC | BT | weight bytes | GFLOP/s |
+|---|---|---|---|
+| 16 | 196,608 | 48 KiB (L1) | 53.07 |
+| 64 | 49,152 | 192 KiB (L2) | 67.25 |
+| 256 | 12,288 | 768 KiB (L2) | 66.23 |
+| 1024 | 3,072 | 3 MiB (L3) | 61.93 |
+| 3072 | 1,024 | 9 MiB (L3) | 60.92 |
+| 12288 | 256 | 36 MiB (L3) | 65.33 |
+
+**Flat** across a 768x range of footprint. `THREADING_PLAN.md` Risk 3 asserted "at 49 GFLOP/s the
+matmul is already partly bandwidth-bound"; it is not, and that claim is withdrawn. The caution it
+carried — that 16 threads will not give 16x — may still hold, but not for the stated reason. This is
+L13 (the direction of a performance claim is a measurement, not a deduction).
+
+**Not determined:** which resource the shipping kernel *is* saturating. `perf` is unavailable on this
+host (`perf_event_paranoid = 4`, no `CAP_PERFMON`), so no counter evidence is offered and none is
+claimed. What is ruled out: cache capacity and bandwidth (above), and accumulator-chain latency —
+raising `kLanes` from 8 to 16 or 32 moves `mlp_fc` only 62.2 -> 64.6 / 64.5. To close it:
+`sudo sysctl kernel.perf_event_paranoid=1` then `perf stat -e cycles,instructions,ls_dispatch.ld_dispatch`.
+
+### The 2x is real; the source shape that produces it is not portable
+
+R=2 and R=4 measure **30.1** and **15.5** GFLOP/s in this translation unit — *below* the shipping
+kernel. That is not the algorithm. Disassembly of the same source compiled two ways:
+
+| | packed `vmulps`/`vaddps` | scalar `vmulss`/`vaddss` |
+|---|---|---|
+| `tools/bench.cpp` R=2 | **2** | 35 / 56 |
+| `tools/bench.cpp` R=4 | **2** | 65 / 133 |
+| `tools/bench.cpp` R=8 | 8 | 22 / 153 |
+| standalone `.cpp`, R=2 | 10 | 18 / 54 |
+| standalone `.cpp`, R=4 | 13 | 52 / 148 |
+| standalone `.cpp`, R=8 | 8 | 9 / 146 |
+
+Identical source, identical flags, different TU: clang vectorised the R-loop in one and scalarised it
+in the other. In the standalone file R=2 and R=4 reach 86 and 125 GFLOP/s. **R=8 vectorises in both**,
+which is why it is the only configuration reported above.
+
+Consequence for the implementation PR: the acceptance gate must inspect the **emitted code**, not only
+the wall-clock, or the win silently evaporates when the kernel moves into `src/ops.cpp` — a third TU,
+with a third cost-model outcome. See L22.
+
+**Reproduce**
+```sh
+bazel build --config=release //tools:bench
+bazel-out/k8-opt/bin/tools/bench 20 --blocked --footprint    # NOT bazel-bin/
+
+# the codegen claim
+CD=$(dirname $(find ~/.cache/bazel -path '*llvm_toolchain_llvm/bin/clang++' | head -1))
+$CD/llvm-objdump -d --no-show-raw-insn bazel-out/k8-opt/bin/tools/bench \
+  | awk '/<_ZN12_GLOBAL__N_114matmul_blockedILi4EEE/,/^$/' | grep -cE 'vmulps|vaddps'
+```

@@ -125,8 +125,15 @@ The three verbs. Each box is wiring over code that already exists and is tested.
       compiler fusing the reduction but also stopped it splitting one — eight fixed lanes break the
       dependency chain without a fast-math flag, so the order stays deterministic. The parity gate
       *improved* (logit 1.91e-6 -> 1.43e-6). See `docs/DECISIONS.md` D8, `docs/measurements.md` M-1.
-- [ ] Threading is now the remaining lever (16 cores idle). Still not an MVP gate: it needs its own
-      determinism argument, since a parallel reduction is where reproducibility gets genuinely hard.
+- [ ] **Register blocking over BT rows** — the step `PLAN.md`'s M2 sequence puts between the
+      multi-accumulator work (D8, done) and threading, and which was skipped. Measured **~2.1x**
+      (1.93x on `mlp_proj`), **bit-identical**, no determinism argument needed
+      (`docs/measurements.md` M-30). Ahead of threading on cost, not on size. Its gate must check the
+      **emitted code**, not just the clock (L22).
+- [ ] Threading is the larger lever (16 cores idle), but no longer the *only* one worth doing: the
+      claim that everything else was worth a few percent was measured and withdrawn (M-30). Still not
+      an MVP gate: it needs its own determinism argument, since a parallel reduction is where
+      reproducibility gets genuinely hard. `docs/THREADING_PLAN.md` (PR #35) has the design.
 - [ ] *(optional)* Gradient accumulation — only if a batch you want exceeds RAM (measured: B=64 at
       T=256 costs 8.15 GB).
 
@@ -511,8 +518,10 @@ the goal ever changes; `docs/M3_INFERENCE_PLAN.md` remains the reference for the
 - [ ] **GPT-2 medium (350M) inference**, GPU-seam audit, observability CSV, `docs/ARCHITECTURE.md`.
 - [ ] **CI** — one Linux build + `ldd` allow-list + ASan/UBSan. The only genuinely open M0 box; worth
       doing whenever, independent of scope.
-- [ ] **Threading** — the 30 GFLOP/s matmul half is done (D8: 49.38 GFLOP/s single-thread). Threading
-      remains, and remains gated on a determinism argument rather than on throughput alone.
+- [ ] **Threading** — the 30 GFLOP/s matmul half is done (D8; the shipping kernel reads 59–61
+      GFLOP/s today, M-30). Threading remains, and remains gated on a determinism argument rather
+      than on throughput alone. **Register blocking (~2.1x, bit-identical) now sits ahead of it** —
+      see the M2 list above and `docs/measurements.md` M-30.
 
 ---
 
@@ -589,11 +598,12 @@ directory starts oriented.
 what is left) → `docs/EXPERIMENTS.md` (why the training runs were shaped as they
 were, with predictions registered before results) → `docs/DECISIONS.md` D1–D9
 (the architectural calls and the two that were reversed) →
-`docs/engineering-lessons.md` L1–L19 (the failure modes this repo has actually
-hit) → `docs/measurements.md` M-1…M-16 (every number, each with a reproduce
-command).
+`docs/engineering-lessons.md` L1–L19 + L22 (the failure modes this repo has
+actually hit) → `docs/measurements.md` M-1…M-20 + M-30 (every number, each with a
+reproduce command).
 
-**Open PRs, none merged.** #35 threading design (needs three decisions, no code),
+**Open PRs, none merged.** #35 threading design (needs four decisions; now carries
+the `//tools:bench --blocked/--footprint` measurement that restages it),
 #36 viewer provenance, #37 architecture map (stacked on #36), #38 ablation
 variance. `git log --oneline origin/main..<branch>` shows each.
 
@@ -615,7 +625,8 @@ Consolidated so it is not scattered across sections. Everything here is open
 
 | # | item | why it matters now |
 |---|---|---|
-| 1 | **Threading** | GPT-2 generates at **5.1 s/token**, single-threaded on 16 idle cores. Correct and unusable. The binding constraint — ahead of any further single-thread work. |
+| 1 | **Register blocking (`matmul_forward`, R=8)** | ~2.1x, **bit-identical**, no determinism argument, no pool, no new CI config. Named in `PLAN.md`'s M2 sequence and skipped after D8. Cheapest real win on the board (M-30). |
+| 1b | **Threading** | GPT-2 generates at **5.1 s/token**, single-threaded on 16 idle cores. Correct and unusable. Still the larger win — but "ahead of any further single-thread work" was measured and withdrawn (M-30). Design in PR #35. |
 | 2 | **KV cache / right-sized window** | `generate_absolute` pays a full `T=1024` forward per step regardless of prompt length. The algorithmic half of (1); they compound. |
 | 3 | **S2 — Unicode pre-tokenizer** | ASCII is exact; `\p{L}`/`\p{N}` need generated property tables. Non-ASCII currently *fails loudly*, which is correct but limits the tokenizer to English-ish text. |
 | 4 | **Run `review-codify-loop`** | Required by `CLAUDE.md` after any review with ≥3 findings; the 2026-08-18 audit produced five. `docs/engineering-lessons.md` still has no entry for this period's dominant failure mode. |
@@ -629,9 +640,11 @@ Consolidated so it is not scattered across sections. Everything here is open
 - [x] **CI** — done 2026-08-18. Every gate verified in BOTH directions before being trusted: the
       `ldd` check fails on a `libz`-linked binary, and `--config=asan` catches a deliberate
       out-of-bounds read (2 findings). A gate that has never been seen to fail is not a gate.
-- [ ] **Threading — now the binding constraint, not a nicety.** GPT-2 124M generates at **5.1 s per
-      token** (12 tokens in 61 s at ctx 1024), single-threaded on a 16-core box. Correct and
-      unusable. This outranks any further single-thread work. (`docs/measurements.md` M-14.)
+- [ ] **Threading — the binding constraint, but not the only lever.** GPT-2 124M generates at
+      **5.1 s per token** (12 tokens in 61 s at ctx 1024), single-threaded on a 16-core box. Correct
+      and unusable. (`docs/measurements.md` M-14.) The claim that it "outranks any further
+      single-thread work" was **withdrawn 2026-09-17**: register blocking is ~2.1x and bit-identical
+      (M-30), so it is both cheaper and free of the determinism argument threading still owes.
 - [ ] **`generate_absolute` pays a full T=1024 forward per step** regardless of prompt length. A KV
       cache or a right-sized window is the algorithmic half of the same problem.
 - [ ] **`gelu` is 22.5% of a forward pass**, now the largest single op — but canonical GPT-2 pins
