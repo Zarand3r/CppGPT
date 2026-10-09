@@ -110,8 +110,11 @@ no schema, no loader, no place on disk. Needs a `DECISIONS.md` entry before B2/B
 
 **Open, not interpretability:**
 
-- **Threading** — GPT-2 124M generates at 5.1 s/token on 16 idle cores. Correct and unusable; the
-  binding constraint. KV cache is the algorithmic half.
+- **Register blocking, then threading.** GPT-2 124M generates at 5.1 s/token on 16 idle cores —
+  correct and unusable. Threading is the larger lever, but "nothing else is worth doing first" was
+  measured and withdrawn: register blocking is ~2.1× and bit-identical, needs no determinism
+  argument, and sits ahead of it (`docs/measurements.md` M-30, PR #35). KV cache is the algorithmic
+  half.
 - **Verification debt** — 3 constitution clauses still have no enforcing test (per-op fixtures,
   intermediate-activation parity, alloc-counter hook); training parity is proven only at `n_embd=8`;
   `dump_logits` has no test.
@@ -127,4 +130,4 @@ no schema, no loader, no place on disk. Needs a `DECISIONS.md` entry before B2/B
 `docs/INTERPRETING.md` (how to read the tools, and what they do not support) ·
 `docs/INTERPRETING_EXAMPLE.md` (a worked walkthrough, panel by panel) ·
 `docs/measurements.md` (every number, with a reproduce command) · `docs/DECISIONS.md` (D1–D10) ·
-`docs/engineering-lessons.md` (L1–L19) · `docs/constitution.md` (human-frozen deal-breakers).
+`docs/engineering-lessons.md` (L1–L19, L22) · `docs/constitution.md` (human-frozen deal-breakers).
