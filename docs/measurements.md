@@ -700,8 +700,8 @@ for b in zero donor; do
 done
 ## M-30 · Register blocking is worth ~2x before any thread exists — and the vectoriser is not reliable
 
-> **Numbering.** M-21…M-29 are taken by the open interpretability PR (#44). This row starts at M-30
-> so the two branches do not have to renumber each other at merge.
+> **Numbering.** M-21 landed with #43; M-22…M-29 are taken by the open interpretability PR (#44).
+> This row starts at M-30 so the two branches do not have to renumber each other at merge.
 
 `//tools:bench --blocked`, **release build**, run through the explicit config path (never
 `bazel-bin/`, per L20), best of 20, AMD Ryzen 9 9950X3D, hermetic clang 20.1.8.

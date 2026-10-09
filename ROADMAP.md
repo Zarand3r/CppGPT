@@ -603,7 +603,7 @@ what is left) → `docs/EXPERIMENTS.md` (why the training runs were shaped as th
 were, with predictions registered before results) → `docs/DECISIONS.md` D1–D9
 (the architectural calls and the two that were reversed) →
 `docs/engineering-lessons.md` L1–L19 + L22 (the failure modes this repo has
-actually hit) → `docs/measurements.md` M-1…M-20 + M-30 (every number, each with a
+actually hit) → `docs/measurements.md` M-1…M-21 + M-30 (every number, each with a
 reproduce command).
 
 **Open PRs, none merged.** #35 threading design (needs four decisions; now carries
